@@ -1,0 +1,443 @@
+# Architecture
+
+> **Deterministic, replicated, in-memory balance and delegated-spending engine
+> built on Aeron Cluster, targeting strong consistency and ultra-low latency.**
+
+---
+
+## Table of Contents
+
+- [Overview](#overview)
+- [Workspace Layout](#workspace-layout)
+- [System Diagram](#system-diagram)
+- [Module Structure](#module-structure)
+    - [adbe-protocol - Wire and Snapshot Codecs](#adbe-protocol---wire-and-snapshot-codecs)
+    - [adbe-core - Deterministic State Machine](#adbe-core---deterministic-state-machine)
+    - [adbe-launcher - Cluster Bootstrap](#adbe-launcher---cluster-bootstrap)
+    - [adbe-tests - Verification and Fixtures](#adbe-tests---verification-and-fixtures)
+- [Wire Format](#wire-format)
+- [Data Flows](#data-flows)
+    - [Flow 1 - Command Dispatch and ACK](#flow-1---command-dispatch-and-ack)
+    - [Flow 2 - Idempotent Retry](#flow-2---idempotent-retry)
+    - [Flow 3 - Snapshot and Recovery](#flow-3---snapshot-and-recovery)
+    - [Flow 4 - Session Lifecycle](#flow-4---session-lifecycle)
+- [Command Processing Pipeline](#command-processing-pipeline)
+- [Determinism Rules](#determinism-rules)
+- [Snapshot Format](#snapshot-format)
+- [Configuration](#configuration)
+- [Test Coverage](#test-coverage)
+- [Build and Run](#build-and-run)
+
+---
+
+## Overview
+
+ADBE Core is the single source of truth for account balances and delegated
+allowances. It runs as one Aeron `ClusteredService` replicated by Raft, and does
+exactly one thing: execute deterministic state transitions on balance and
+allowance state.
+
+Two concerns, strictly separated:
+
+- **Business logic** (`BalanceEngine`) - pure, single-writer, allocation-free,
+  free of any Aeron dependency so it can be unit and replay tested in isolation.
+- **Cluster integration** (`BalanceService`) - decodes session messages, drives
+  the engine, encodes results to egress, and handles snapshot read/write.
+
+Everything the core needs arrives through the replicated log. There is no
+external I/O, no local clock, and no random or GUID generation in the state
+machine. Identifiers are minted at the Edge and carried in the command envelope.
+
+Out of scope (owned by other bounded contexts): Edge gateway, authentication,
+audit storage, analytics, and - for now - sharding and cross-shard atomicity
+(see [decisions/0003-cross-shard-deferred.md](decisions/0003-cross-shard-deferred.md)).
+
+---
+
+## Workspace Layout
+
+```
+addendum/
+|-- settings.gradle.kts             Gradle multi-module (4 modules)
+|-- build.gradle.kts                Shared conventions: JDK 21, spotless, checkstyle, -Werror
+|-- gradle/libs.versions.toml       Version catalog (Aeron, Agrona, SBE, JMH, ...)
+|
+|-- adbe-protocol/                  SBE schema + generated flyweight codecs
+|   |-- build.gradle.kts            SbeTool code generation task
+|   +-- src/main/resources/messages.xml   CommandEnvelope, CommandResult, snapshot records
+|
+|-- adbe-core/                      Deterministic state machine (this is the hot path)
+|   |-- build.gradle.kts            Determinism checkstyle config, JMH source set
+|   |-- config/checkstyle/determinism.xml   Bans clocks, randomness, unordered maps, streams
+|   +-- src/main/java/com/adbe/
+|       |-- config/CoreConfig.java          Preallocated, power-of-two capacities
+|       |-- util/Amounts.java               Overflow-checked 64-bit arithmetic
+|       |-- collections/
+|       |   |-- BalanceStore.java           Long2LongHashMap + total supply invariant
+|       |   |-- AllowanceStore.java         Nested primitive map, keyed by (owner, delegate)
+|       |   |-- DedupTable.java              Per-client dedup rings (idempotency)
+|       |   +-- DedupRing.java               Power-of-two ring, seq & (capacity - 1)
+|       |-- core/
+|       |   |-- BalanceEngine.java          Dispatch + dedup (cluster-independent)
+|       |   |-- BalanceService.java         ClusteredService: decode, apply, ACK, snapshot
+|       |   |-- CommandOutcome.java          Reusable result holder (no per-command allocation)
+|       |   +-- handlers/                    Credit, Debit, Transfer, Approve, DelegatedTransfer
+|       |-- persistence/SnapshotManager.java Streaming SBE snapshot write/load
+|       +-- telemetry/CoreMetrics.java       Single-writer counters
+|   +-- src/jmh/java/com/adbe/bench/         BalanceEngineBenchmark (decode, lookup, dispatch)
+|
+|-- adbe-launcher/                  Aeron component bootstrap
+|   +-- src/main/java/com/adbe/launcher/
+|       |-- ClusterConfig.java              Endpoints and directories per node
+|       |-- ClusterNode.java                Media Driver + Archive + Consensus + Service Container
+|       +-- ClusterLauncher.java            main(): start one node, block until terminated
+|
+|-- adbe-tests/                     Unit, property, and integration tests
+|   +-- src/testFixtures/java/com/adbe/testkit/   Test-only helpers (NOT the Edge SDK)
+|   |   |-- CommandFixtures.java             Encode envelopes, wrap decoders
+|   |   |-- InMemorySnapshot.java            Snapshot to/from an in-memory buffer
+|   |   |-- WorkloadGenerator.java           Deterministic pseudo-random workload
+|   |   +-- ClusterTestClient.java           Minimal AeronCluster client for integration tests
+|   +-- src/test/java/com/adbe/              Test suites (see Test Coverage)
+|
++-- docs/
+    |-- ARCHITECTURE.md             This document
+    +-- decisions/                  Architectural source of truth (ADRs)
+```
+
+Each module organises sources by the package structure defined in the project
+guidelines (`config`, `core`, `collections`, `persistence`, `telemetry`,
+`util`).
+
+---
+
+## System Diagram
+
+```mermaid
+flowchart TB
+    subgraph EDGE["Edge (out of scope)"]
+        CLIENT["Client"]
+        GW["Gateway\nAuthN / AuthZ, rate-limit, retry policy"]
+    end
+
+    subgraph NODE["Cluster Node (adbe-launcher)"]
+        direction TB
+        MD["Media Driver\n(transport)"]
+        CM["Consensus Module\n(Raft leader / follower)"]
+        AR["Archive\n(log + snapshots)"]
+        subgraph SC["Clustered Service Agent (single thread)"]
+            BS["BalanceService\n(ClusteredService)"]
+            BE["BalanceEngine\n(deterministic dispatch)"]
+            DT["DedupTable\n(idempotency)"]
+            BM["BalanceStore / AllowanceStore"]
+            BS --> BE
+            BE --> DT
+            BE --> BM
+        end
+        CM -->|" committed log "| BS
+        BS -->|" snapshot offer "| AR
+        AR -->|" snapshot image "| BS
+    end
+
+    CLIENT -->|" request "| GW
+    GW -->|" CommandEnvelope (SBE) via Aeron ingress "| CM
+    BS -->|" CommandResult (SBE) via Aeron egress "| GW
+    GW -->|" response "| CLIENT
+```
+
+All communication between a node's components uses IPC, so they may run in one
+process or several. The `ClusteredServiceAgent` polls a spy subscription of the
+committed log, so every command reaches `BalanceService` in total order on a
+single thread.
+
+---
+
+## Module Structure
+
+### adbe-protocol - Wire and Snapshot Codecs
+
+A dependency-only module (no dependency on `adbe-core`) holding the SBE schema
+and the codecs generated from it. SBE produces type-safe flyweight encoders and
+decoders that operate directly on buffers, with no reflection and no
+intermediate objects. Little-endian, fixed field order.
+
+| Message          | Template Id | Purpose                                            |
+|------------------|-------------|----------------------------------------------------|
+| `CommandEnvelope`| 1           | Command submitted by the Edge on behalf of a client|
+| `CommandResult`  | 2           | Exactly one deterministic result per command       |
+| `SnapshotHeader` | 10          | First snapshot record: log position, counts, supply|
+| `BalanceEntry`   | 11          | One account balance (ascending account id)         |
+| `AllowanceEntry` | 12          | One allowance (ascending owner, delegate)          |
+| `DedupEntry`     | 13          | One cached result (ascending clientId, clientSeq)  |
+| `SnapshotFooter` | 14          | Terminal record with integrity checksum            |
+
+Optional fields (`presence="optional"`) prepare the schema for
+backward-compatible evolution, which SBE supports and which matters for reading
+older snapshots.
+
+### adbe-core - Deterministic State Machine
+
+The allocation-conscious heart of the engine. `BalanceEngine` is deliberately
+free of Aeron so it can run in tests; `BalanceService` adapts it to the cluster.
+
+| Component           | Purpose                                                                 |
+|---------------------|-------------------------------------------------------------------------|
+| `BalanceService`    | ClusteredService callbacks: decode, dispatch, ACK, snapshot read/write  |
+| `BalanceEngine`     | Idempotent dispatch over balance/allowance state (single-writer)        |
+| `CommandOutcome`    | Reusable result holder, reset per command; no per-event allocation      |
+| `CreditHandler`     | Increase balance and total supply, overflow-checked                     |
+| `DebitHandler`      | Decrease balance and total supply, funds-checked                        |
+| `TransferHandler`   | Atomic move between two accounts, total supply preserved                |
+| `ApproveHandler`    | Allowance overwrite, relative increase, relative decrease               |
+| `DelegatedTransferHandler` | Delegate spends owner funds, distinguishes allowance vs balance  |
+| `BalanceStore`      | `Long2LongHashMap` of balances plus the running total supply            |
+| `AllowanceStore`    | Nested primitive map keyed by (owner, delegate), no lossy hashing       |
+| `DedupTable`        | Per-client `DedupRing`s providing 100% idempotency in the dedup window  |
+| `DedupRing`         | Power-of-two ring, O(1) lookup via `seq & (capacity - 1)`               |
+| `SnapshotManager`   | Streaming SBE snapshot writer/loader with deterministic key ordering    |
+| `CoreMetrics`       | Single-writer counters (ops, duplicates, backpressure, snapshot timing) |
+
+### adbe-launcher - Cluster Bootstrap
+
+Launches and owns the Aeron components for one node and hosts a single
+`BalanceService`. Internal components reach the Archive over an IPC local-control
+channel; the Archive also exposes a UDP control channel for external tools.
+
+| Component        | Purpose                                                        |
+|------------------|----------------------------------------------------------------|
+| `ClusterConfig`  | Endpoints and directories; `singleNodeLocalhost` default       |
+| `ClusterNode`    | Launches Media Driver + Archive + Consensus Module + Container |
+| `ClusterLauncher`| Entry point: start a node and block until terminated           |
+
+### adbe-tests - Verification and Fixtures
+
+Unit, property, and integration tests plus a `testFixtures` toolkit. The cluster
+client here is a test harness only, never the shipped Edge SDK.
+
+| Fixture             | Purpose                                                         |
+|---------------------|-----------------------------------------------------------------|
+| `CommandFixtures`   | Encode a `CommandEnvelope` and return a wrapped decoder         |
+| `InMemorySnapshot`  | Serialise/restore engine state via an in-memory record stream   |
+| `WorkloadGenerator` | Deterministic pseudo-random command workload (seeded)           |
+| `ClusterTestClient` | Minimal `AeronCluster` client that matches results by command id|
+
+---
+
+## Wire Format
+
+Every command carries a `CommandEnvelope` with three identifiers that make audit
+and idempotency possible without the core knowing any real user identity.
+
+| Field         | Role                                                             |
+|---------------|-----------------------------------------------------------------|
+| `clientId`    | Session identity assigned by the Edge after authentication      |
+| `clientSeq`   | Monotonic per-client sequence; drives the dedup window          |
+| `commandId`   | Globally unique id minted at the Edge (128-bit: hi + lo)        |
+| `commandType` | CREDIT, DEBIT, TRANSFER, APPROVE, INCREASE/DECREASE_ALLOWANCE, DELEGATED_TRANSFER |
+| `accountA/B/C`| Operands (from/owner, to/delegate, delegated-transfer target)   |
+| `amount`      | 64-bit signed value with a fixed scale                          |
+
+The reply is a `CommandResult` carrying the original `commandId` and a
+`StatusCode`: SUCCESS, INSUFFICIENT_BALANCE, INSUFFICIENT_ALLOWANCE,
+INVALID_ACCOUNT, DUPLICATE, OVERFLOW, INVALID_AMOUNT.
+
+---
+
+## Data Flows
+
+### Flow 1 - Command Dispatch and ACK
+
+```mermaid
+sequenceDiagram
+    participant GW as Edge Gateway
+    participant CM as Consensus Module (Leader)
+    participant BS as BalanceService
+    participant BE as BalanceEngine
+
+    GW ->> CM: CommandEnvelope (ingress)
+    CM ->> CM: append to Raft log, replicate to majority
+    CM ->> BS: onSessionMessage (committed, total order)
+    BS ->> BE: process(decoder, outcome)
+    Note over BE: dedup check -> dispatch -> store dedup result
+    BE -->> BS: outcome (status, balance, allowance)
+    BS ->> GW: CommandResult (egress, matched by commandId)
+```
+
+### Flow 2 - Idempotent Retry
+
+```mermaid
+sequenceDiagram
+    participant GW as Edge Gateway
+    participant BE as BalanceEngine
+    participant DT as DedupTable
+
+    GW ->> BE: CommandEnvelope (clientId, clientSeq, commandId)
+    BE ->> DT: ringFor(clientId).contains(clientSeq)?
+    alt first submission
+        DT -->> BE: miss
+        Note over BE: apply command, then store result at seq & (capacity - 1)
+        BE ->> GW: fresh CommandResult
+    else retry with same clientSeq
+        DT -->> BE: hit (cached result)
+        Note over BE: return cached result verbatim, do NOT re-apply
+        BE ->> GW: identical CommandResult
+    end
+```
+
+### Flow 3 - Snapshot and Recovery
+
+```mermaid
+sequenceDiagram
+    participant OPS as Operator / ClusterTool
+    participant BS as BalanceService
+    participant AR as Archive
+
+    OPS ->> BS: trigger snapshot (low-load window)
+    Note over BS: write header, balances, allowances, dedup, footer<br/>keys sorted for byte-identical output, idling between records
+    BS ->> AR: offer records to snapshot publication
+
+    Note over BS,AR: later, on restart
+    AR ->> BS: onStart(cluster, snapshotImage)
+    BS ->> BS: loadSnapshot -> rebuild stores -> resume from log position
+```
+
+### Flow 4 - Session Lifecycle
+
+```mermaid
+stateDiagram-v2
+    [*] --> Received: onSessionMessage (leader timestamp)
+    Received --> Duplicate: dedup hit
+    Received --> Applied: dedup miss
+    Duplicate --> Replied: cached result
+    Applied --> Replied: fresh result + dedup store
+    Replied --> [*]: egress offer (retry on back-pressure)
+```
+
+---
+
+## Command Processing Pipeline
+
+`onSessionMessage` is the only place business logic runs. The fast, common path
+comes first; error and cold branches live in small private methods.
+
+```mermaid
+flowchart TD
+    IN(["onSessionMessage(buffer)"]) --> HDR{"templateId ==\nCommandEnvelope?"}
+    HDR -- No --> IGN["ignore (do not corrupt state)"]
+    HDR -- Yes --> WRAP["wrap envelope decoder"]
+    WRAP --> DEDUP{"dedup hit for\n(clientId, clientSeq)?"}
+    DEDUP -- Yes --> CACHED["load cached result\n(no re-apply)"]
+    DEDUP -- No --> DISPATCH{"commandType"}
+    DISPATCH -->|" CREDIT "| H1["CreditHandler"]
+    DISPATCH -->|" DEBIT "| H2["DebitHandler"]
+    DISPATCH -->|" TRANSFER "| H3["TransferHandler"]
+    DISPATCH -->|" APPROVE / INCREASE / DECREASE "| H4["ApproveHandler"]
+    DISPATCH -->|" DELEGATED_TRANSFER "| H5["DelegatedTransferHandler"]
+    H1 --> STORE["store dedup result"]
+    H2 --> STORE
+    H3 --> STORE
+    H4 --> STORE
+    H5 --> STORE
+    STORE --> SEND["encode CommandResult"]
+    CACHED --> SEND
+    SEND --> EGRESS["offer to session\n(retry + idle on back-pressure)"]
+```
+
+---
+
+## Determinism Rules
+
+The state machine must produce byte-identical results on every node. The
+following are forbidden in `adbe-core` and enforced by a Checkstyle rule set
+([adbe-core/config/checkstyle/determinism.xml](../adbe-core/config/checkstyle/determinism.xml)):
+
+- No `System.currentTimeMillis()` / `System.nanoTime()`. The only time source is
+  the leader-assigned `timestamp` parameter.
+- No `Math.random()` or `UUID.randomUUID()`. Identifiers are minted at the Edge.
+- No `java.util.HashMap` / `TreeMap` / `ConcurrentHashMap`. Use Agrona primitive
+  maps; iteration for snapshots sorts keys explicitly.
+- No `Optional`, no `BigDecimal`, no streams, no `String.format`, no blocking
+  primitives on the hot path.
+
+Money and allowances are 64-bit signed `long` values; overflow is detected and
+returned as `StatusCode.OVERFLOW` rather than thrown, so exceptions are never
+used for control flow.
+
+---
+
+## Snapshot Format
+
+Records are written one at a time into a small reusable buffer and offered to the
+Archive, so the writer never allocates a dataset-sized buffer. The order is
+fixed, and keys within each section are sorted so two nodes produce identical
+bytes.
+
+```
+[SnapshotHeader]   logPosition, schemaVersion, counts, totalSupply
+[BalanceEntry...]  sorted by accountId
+[AllowanceEntry..] sorted by (ownerId, delegateId)
+[DedupEntry...]    sorted by (clientId, clientSeq)   <-- idempotency survives recovery
+[SnapshotFooter]   checksum (sum of balances)
+```
+
+On load, records are fed to `SnapshotManager.onRecord` in the same order; the
+footer confirms completion and the checksum verifies the invariant
+`sum(balances) == totalSupply`.
+
+---
+
+## Configuration
+
+`CoreConfig` holds preallocated, power-of-two capacities validated at
+construction. Defaults suit a large single node; tests use smaller values.
+
+| Setting                  | Default | Purpose                                       |
+|--------------------------|---------|-----------------------------------------------|
+| `accountCapacity`        | 2^20    | Preallocated balance-map slots                |
+| `allowanceOwnerCapacity` | 2^16    | Preallocated allowance owners                 |
+| `delegateCapacity`       | 2^4     | Per-owner delegate slots                      |
+| `dedupClientCapacity`    | 2^16    | Preallocated dedup clients                    |
+| `dedupWindow`            | 2^10    | Most recent commands retained per client      |
+
+`ClusterConfig` provides node id, cluster members, directories, and channels; the
+JVM must run with `--add-opens java.base/jdk.internal.misc=ALL-UNNAMED` and
+`--add-opens java.base/sun.nio.ch=ALL-UNNAMED` for Aeron/Agrona.
+
+---
+
+## Test Coverage
+
+| Suite                       | Type        | What it covers                                             |
+|-----------------------------|-------------|------------------------------------------------------------|
+| `DedupIdempotencyTest`      | Unit        | Duplicate command applied exactly once; distinct seqs all apply |
+| `OverflowTest`              | Unit        | 64-bit boundary returns OVERFLOW; negative amount rejected |
+| `HandlerBehaviourTest`      | Unit        | Credit/debit/transfer/allowance/delegated cases and status codes |
+| `SnapshotRoundTripTest`     | Unit        | Write then load reproduces byte-identical state and invariant |
+| `ReplayDeterminismTest`     | Unit        | Two engines replaying the same log produce identical snapshots |
+| `AmountsPropertyTest`       | Property    | Overflow detection matches `Math.addExact` (jqwik)         |
+| `ClusterIntegrationTest`    | Integration | End-to-end over a real single-node cluster, idempotency verified |
+
+Integration tests use an in-process Media Driver and are selected by the JUnit
+`integration` tag, run via the `integrationTest` Gradle task.
+
+---
+
+## Build and Run
+
+```bash
+# Format, lint, compile (warnings are errors), and test
+./gradlew spotlessApply
+./gradlew checkstyleMain checkstyleTest
+./gradlew compileJava
+./gradlew test integrationTest
+
+# Micro-benchmarks (add -PquickBench for a fast smoke run)
+./gradlew :adbe-core:jmh -PquickBench
+
+# Run a single-node cluster
+./gradlew :adbe-launcher:run
+```
+
+Toolchain: JDK 21 LTS. Aeron 1.48, Agrona 2.2, SBE 1.35. The dependency chain
+for changes: a schema change in `adbe-protocol` regenerates codecs used by
+`adbe-core`, `adbe-launcher`, and `adbe-tests`, so all layers rebuild together.

@@ -1,0 +1,33 @@
+package com.adbe.core;
+
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+
+import com.adbe.config.CoreConfig;
+import com.adbe.persistence.SnapshotManager;
+import com.adbe.telemetry.CoreMetrics;
+import com.adbe.testkit.InMemorySnapshot;
+import com.adbe.testkit.WorkloadGenerator;
+import org.junit.jupiter.api.Test;
+
+class ReplayDeterminismTest {
+
+    private static CoreConfig config() {
+        return CoreConfig.of(1024, 64, 8, 64, 16);
+    }
+
+    @Test
+    void independentEnginesReplayingSameLogProduceIdenticalState() {
+        final BalanceEngine first = new BalanceEngine(config(), new CoreMetrics());
+        final BalanceEngine second = new BalanceEngine(config(), new CoreMetrics());
+
+        WorkloadGenerator.apply(first, 0xC0FFEEL, 5000);
+        WorkloadGenerator.apply(second, 0xC0FFEEL, 5000);
+
+        final InMemorySnapshot snapshotFirst = new InMemorySnapshot();
+        final InMemorySnapshot snapshotSecond = new InMemorySnapshot();
+        snapshotFirst.writeFrom(new SnapshotManager(), first, 1L);
+        snapshotSecond.writeFrom(new SnapshotManager(), second, 1L);
+
+        assertArrayEquals(snapshotFirst.toByteArray(), snapshotSecond.toByteArray());
+    }
+}
