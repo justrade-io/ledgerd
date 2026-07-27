@@ -1,5 +1,8 @@
 # ADBE - Aeron Distributed Balance Engine
 
+[![CI](https://github.com/brianpht/addendum/actions/workflows/ci.yml/badge.svg)](https://github.com/brianpht/addendum/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 A deterministic, replicated, in-memory balance and delegated-spending engine in
 Java, built on Aeron Cluster. Strong consistency and ultra-low latency for a
 core ledger: the single source of truth for balances and allowances.
@@ -66,6 +69,14 @@ dependencies {
 ```
 
 ## Quick Start
+
+The fastest way to see the engine work end to end is the runnable example. It
+boots an in-process single-node cluster, connects an `AdbeClient`, submits a
+credit and a transfer, and prints the resulting balances:
+
+```bash
+./gradlew :adbe-examples:run
+```
 
 Run a single-node cluster:
 
@@ -203,6 +214,30 @@ nanoseconds, balance / allowance-owner / dedup-client map sizes). The endpoint
 runs on its own daemon thread and only reads counter values, never touching the
 single-writer hot path.
 
+## Running a Cluster with Docker
+
+A `docker-compose.yml` brings up a local three-node Raft cluster, each node in
+its own container on a shared bridge network:
+
+```bash
+docker compose up --build
+```
+
+Node 0 publishes its ingress port (`20100/udp`) to the host so an external client
+can connect, and each node exposes its Prometheus endpoint (`9100`, `9101`,
+`9102` on the host). The topology is supplied entirely through environment
+variables in the compose file (member id, advertised host, and the Aeron member
+string), so the image itself stays generic. On a fresh start the three members
+elect a leader and replicate committed commands.
+
+An end-to-end smoke test connects a client to all three members over the internal
+network, submits a credit and a transfer, and exits non-zero if the expected
+results do not arrive:
+
+```bash
+docker compose run --rm client
+```
+
 ## Architecture
 
 ```mermaid
@@ -335,6 +370,16 @@ Run with the GC profiler to confirm zero steady-state allocation:
 ```bash
 ./gradlew :adbe-core:jmh -Pjmh.profilers=gc
 ```
+
+Baseline numbers a reviewer can diff against are committed in
+[benchmark-baseline.txt](benchmark-baseline.txt).
+
+## Contributing
+
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the CI
+gate, the opt-in test suites, the performance budget, and the determinism rules.
+Please report security vulnerabilities privately as described in
+[SECURITY.md](SECURITY.md).
 
 ## License
 

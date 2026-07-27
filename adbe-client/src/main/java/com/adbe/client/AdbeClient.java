@@ -89,7 +89,7 @@ public final class AdbeClient implements EgressListener, AutoCloseable {
                     .egressListener(this)
                     .aeronDirectoryName(aeronDir)
                     .ingressChannel("aeron:udp")
-                    .egressChannel("aeron:udp?endpoint=localhost:0")
+                    .egressChannel(config.egressChannel())
                     .messageTimeoutNs(config.messageTimeoutNs())
                     .ingressEndpoints(config.ingressEndpoints()));
         } catch (final RuntimeException e) {

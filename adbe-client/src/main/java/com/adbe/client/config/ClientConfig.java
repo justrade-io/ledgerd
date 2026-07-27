@@ -14,6 +14,7 @@ public final class ClientConfig {
     private final long clientId;
     private final String ingressEndpoints;
     private final String aeronDirectoryName;
+    private final String egressChannel;
     private final long messageTimeoutNs;
     private final long retryBackoffNs;
     private final int maxRetries;
@@ -23,6 +24,7 @@ public final class ClientConfig {
         this.clientId = builder.clientId;
         this.ingressEndpoints = builder.ingressEndpoints;
         this.aeronDirectoryName = builder.aeronDirectoryName;
+        this.egressChannel = builder.egressChannel;
         this.messageTimeoutNs = builder.messageTimeoutNs;
         this.retryBackoffNs = builder.retryBackoffNs;
         this.maxRetries = builder.maxRetries;
@@ -43,6 +45,10 @@ public final class ClientConfig {
 
     public String aeronDirectoryName() {
         return aeronDirectoryName;
+    }
+
+    public String egressChannel() {
+        return egressChannel;
     }
 
     public long messageTimeoutNs() {
@@ -66,6 +72,7 @@ public final class ClientConfig {
         private final long clientId;
         private final String ingressEndpoints;
         private String aeronDirectoryName;
+        private String egressChannel = "aeron:udp?endpoint=localhost:0";
         private long messageTimeoutNs = TimeUnit.SECONDS.toNanos(30);
         private long retryBackoffNs = TimeUnit.MILLISECONDS.toNanos(250);
         private int maxRetries;
@@ -79,6 +86,19 @@ public final class ClientConfig {
         /** Attach to an existing media driver rather than launching an embedded one. */
         public Builder aeronDirectoryName(final String value) {
             this.aeronDirectoryName = value;
+            return this;
+        }
+
+        /**
+         * Egress (result) channel the client binds and advertises to the cluster.
+         * Defaults to {@code aeron:udp?endpoint=localhost:0}, which is correct for a
+         * client co-located with the cluster. When the client and cluster are on
+         * different hosts (for example separate containers), set an endpoint the
+         * cluster nodes can route back to, such as this host's address with an
+         * ephemeral port.
+         */
+        public Builder egressChannel(final String value) {
+            this.egressChannel = value;
             return this;
         }
 

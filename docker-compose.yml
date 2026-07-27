@@ -1,0 +1,89 @@
+# Local 3-node ADBE cluster. Each service is one Raft member on a shared bridge
+# network, so containers reach each other by service name on any port (only
+# ingress is published to the host for an external client).
+#
+#   docker compose up --build
+#
+# Then point a client at localhost:20100 (node 0 ingress). On a fresh start the
+# three members elect a leader and replicate committed commands.
+#
+# Note: Aeron uses UDP unicast between members plus ephemeral replication ports.
+# Containers on this user-defined bridge network can reach each other on all
+# ports without publishing them; only host->container access needs "ports".
+
+name: adbe
+
+# The Aeron member string is identical for every node; only the per-node id and
+# advertised host differ. Ports follow ClusterConfig: base 20100, stride 100,
+# offsets ingress/consensus/log/catchup/archive = +0/+1/+2/+3/+4.
+x-cluster-members: &cluster_members >-
+  0,adbe-node-0:20100,adbe-node-0:20101,adbe-node-0:20102,adbe-node-0:20103,adbe-node-0:20104|1,adbe-node-1:20200,adbe-node-1:20201,adbe-node-1:20202,adbe-node-1:20203,adbe-node-1:20204|2,adbe-node-2:20300,adbe-node-2:20301,adbe-node-2:20302,adbe-node-2:20303,adbe-node-2:20304
+
+x-node-common: &node_common
+  build:
+    context: .
+    dockerfile: Dockerfile
+    target: node
+  image: adbe-launcher:local
+  networks:
+    - adbe
+  # Aeron benefits from a larger shared-memory segment than the 64MB default.
+  shm_size: "512m"
+  restart: unless-stopped
+
+services:
+  adbe-node-0:
+    <<: *node_common
+    hostname: adbe-node-0
+    environment:
+      ADBE_NODE_ID: "0"
+      ADBE_HOST: adbe-node-0
+      ADBE_CLUSTER_MEMBERS: *cluster_members
+      ADBE_METRICS_PORT: "9100"
+    ports:
+      - "20100:20100/udp" # ingress for an external client
+      - "9100:9100/tcp" # Prometheus metrics / healthz
+
+  adbe-node-1:
+    <<: *node_common
+    hostname: adbe-node-1
+    environment:
+      ADBE_NODE_ID: "1"
+      ADBE_HOST: adbe-node-1
+      ADBE_CLUSTER_MEMBERS: *cluster_members
+      ADBE_METRICS_PORT: "9100"
+    ports:
+      - "9101:9100/tcp"
+
+  adbe-node-2:
+    <<: *node_common
+    hostname: adbe-node-2
+    environment:
+      ADBE_NODE_ID: "2"
+      ADBE_HOST: adbe-node-2
+      ADBE_CLUSTER_MEMBERS: *cluster_members
+      ADBE_METRICS_PORT: "9100"
+    ports:
+      - "9102:9100/tcp"
+
+  # Remote client smoke test. Not started by default; run on demand with:
+  #   docker compose run --rm client
+  # It connects to all three members over the internal network and submits a
+  # credit and a transfer, exiting non-zero if the expected results do not arrive.
+  client:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: client
+    image: adbe-client-example:local
+    profiles: ["client"]
+    networks:
+      - adbe
+    shm_size: "512m"
+    environment:
+      ADBE_INGRESS_ENDPOINTS: "0=adbe-node-0:20100,1=adbe-node-1:20200,2=adbe-node-2:20300"
+      ADBE_CLIENT_ID: "1"
+
+networks:
+  adbe:
+    driver: bridge

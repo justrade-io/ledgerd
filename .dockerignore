@@ -1,0 +1,12 @@
+# Keep the Docker build context small and reproducible.
+.git
+.github
+.gradle
+**/build/
+docs/
+tmp/
+*.md
+!settings.gradle.kts
+.idea
+.vscode
+*.iml
