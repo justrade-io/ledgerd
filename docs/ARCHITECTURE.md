@@ -14,6 +14,7 @@
     - [adbe-protocol - Wire and Snapshot Codecs](#adbe-protocol---wire-and-snapshot-codecs)
     - [adbe-core - Deterministic State Machine](#adbe-core---deterministic-state-machine)
     - [adbe-launcher - Cluster Bootstrap](#adbe-launcher---cluster-bootstrap)
+    - [adbe-client - Edge Client SDK](#adbe-client---edge-client-sdk)
     - [adbe-tests - Verification and Fixtures](#adbe-tests---verification-and-fixtures)
 - [Wire Format](#wire-format)
 - [Data Flows](#data-flows)
@@ -205,9 +206,25 @@ channel; the Archive also exposes a UDP control channel for external tools.
 
 | Component        | Purpose                                                        |
 |------------------|----------------------------------------------------------------|
-| `ClusterConfig`  | Endpoints and directories; `singleNodeLocalhost` default       |
-| `ClusterNode`    | Launches Media Driver + Archive + Consensus Module + Container |
-| `ClusterLauncher`| Entry point: start a node and block until terminated           |
+| `ClusterConfig`  | Endpoints and directories; `singleNodeLocalhost`, `multiNodeLocalhost`, `fromProperties` |
+| `ClusterNode`    | Launches Media Driver + Archive + Consensus Module + Container; `cleanStart` controls state reuse on restart; mirrors core counters into a standalone off-heap `CountersManager` |
+| `ClusterLauncher`| Entry point: start a node (single-node or `--config` properties) and block until terminated |
+
+### adbe-client - Edge Client SDK
+
+The Edge-side SDK. It depends only on the `adbe-protocol` wire contract, never on
+`adbe-core`: the Edge is a separate bounded context (see ADR 0004). It adds
+leader-change handling, idempotent retry (reusing the original `commandId`),
+asynchronous request/response correlation, explicit backpressure signalling, and
+HdrHistogram latency measurement on top of an Aeron cluster client.
+
+| Component         | Purpose                                                        |
+|-------------------|----------------------------------------------------------------|
+| `AdbeClient`      | Async submit/poll client: resend on leader change, correlate results by command id, record end-to-end latency |
+| `ClientConfig`    | Immutable client configuration (endpoints, timeouts, retry, in-flight window) |
+| `ResultHandler`   | Callback invoked when a `CommandResult` is correlated to a request |
+| `PendingCommand`  | Pooled holder of an in-flight command's encoded bytes for verbatim resend |
+| `BackpressureException` | Signals a full in-flight window rather than silently dropping a command |
 
 ### adbe-tests - Verification and Fixtures
 
@@ -219,7 +236,13 @@ client here is a test harness only, never the shipped Edge SDK.
 | `CommandFixtures`   | Encode a `CommandEnvelope` and return a wrapped decoder         |
 | `InMemorySnapshot`  | Serialise/restore engine state via an in-memory record stream   |
 | `WorkloadGenerator` | Deterministic pseudo-random command workload (seeded)           |
-| `ClusterTestClient` | Minimal `AeronCluster` client that matches results by command id|
+| `ClusterTestClient` | Minimal `AeronCluster` client that matches results by command id; supports an embedded media driver for fault tests |
+| `MultiNodeCluster`  | Launches an in-process multi-node cluster; stops/restarts nodes for failover and catch-up tests |
+
+Test suites are grouped by JUnit tag and Gradle task: `test` (unit), `integrationTest`
+(single-node, tag `integration`), `clusterTest` (multi-node, tag `cluster`),
+`faultTest` (leader kill, tag `fault`), and `soakTest` (sustained load, tag `soak`).
+Only `test` and `integrationTest` run in the default `check` gate.
 
 ---
 

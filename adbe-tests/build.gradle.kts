@@ -9,6 +9,7 @@ plugins {
 dependencies {
     testImplementation(project(":adbe-core"))
     testImplementation(project(":adbe-launcher"))
+    testImplementation(project(":adbe-client"))
     testImplementation(libs.bundles.aeron)
 
     testFixturesApi(project(":adbe-protocol"))
@@ -31,9 +32,42 @@ val integrationTest by tasks.registering(Test::class) {
     shouldRunAfter(tasks.named("test"))
 }
 
+// Multi-node cluster tests (leader election, catch-up replay). Heavier and
+// slower than single-node integration; opt-in, NOT wired into `check`.
+val clusterTest by tasks.registering(Test::class) {
+    description = "Runs multi-node Aeron cluster tests (leader election, catch-up)."
+    group = "verification"
+    useJUnitPlatform {
+        includeTags("cluster")
+    }
+    shouldRunAfter(integrationTest)
+}
+
+// Fault-injection tests (kill-leader mid-ACK). Can be timing-sensitive; opt-in,
+// NOT wired into `check`.
+val faultTest by tasks.registering(Test::class) {
+    description = "Runs fault-injection tests (leader kill, failover)."
+    group = "verification"
+    useJUnitPlatform {
+        includeTags("fault")
+    }
+    shouldRunAfter(clusterTest)
+}
+
+// Long-running chaos/soak tests asserting zero-GC and tail-latency budgets.
+// Opt-in only, NOT wired into `check`.
+val soakTest by tasks.registering(Test::class) {
+    description = "Runs long-running soak/chaos tests (zero-GC, tail latency)."
+    group = "verification"
+    useJUnitPlatform {
+        includeTags("soak")
+    }
+    shouldRunAfter(faultTest)
+}
+
 tasks.named<Test>("test") {
     useJUnitPlatform {
-        excludeTags("integration")
+        excludeTags("integration", "cluster", "fault", "soak")
     }
 }
 

@@ -32,6 +32,15 @@ double-applied command or a nondeterministic replay is a correctness failure.
   returns a status code, never a silent wrap-around.
 - **SBE Wire Format**: fixed binary layout, no reflection, backward-compatible
   schema evolution via optional fields.
+- **Fault-Tolerant Failover**: multi-node Raft cluster with leader election and
+  catch-up recovery; in-flight commands are retried idempotently across leader
+  changes with no double-apply.
+- **Edge Client SDK**: `adbe-client` adds leader-change handling, idempotent
+  retry, asynchronous result correlation, explicit backpressure signalling, and
+  end-to-end HdrHistogram latency, consuming only the wire contract.
+- **Off-Heap Telemetry**: core counters are mirrored to a standalone off-heap
+  `CountersManager` so operators can read them from another thread without
+  perturbing the single-writer hot path.
 
 > Requires JDK 21 and Linux. Aeron/Agrona need the JVM flags
 > `--add-opens java.base/jdk.internal.misc=ALL-UNNAMED` and
@@ -46,11 +55,13 @@ git clone <repo-url> adbe && cd adbe
 ./gradlew build
 ```
 
-To embed the engine in another Gradle build, depend on the core module:
+To embed the engine in another Gradle build, depend on the core module (or on
+`adbe-client` for the Edge-side SDK):
 
 ```kotlin
 dependencies {
-    implementation(project(":adbe-core"))
+    implementation(project(":adbe-core"))    // deterministic engine
+    implementation(project(":adbe-client"))  // Edge-side client SDK
 }
 ```
 
@@ -60,6 +71,17 @@ Run a single-node cluster:
 
 ```bash
 ./gradlew :adbe-launcher:run
+```
+
+Run a specific node of a multi-node cluster, or load a deployment from a
+properties file:
+
+```bash
+# node 1 of a localhost cluster, preserving prior state across restarts
+./gradlew :adbe-launcher:run -Dadbe.nodeId=1 -Dadbe.cleanStart=false
+
+# from a properties file (must define adbe.clusterMembers)
+./gradlew :adbe-launcher:run --args="--config=production.properties"
 ```
 
 Drive the deterministic engine directly (no cluster required), which is exactly
@@ -104,6 +126,30 @@ System.out.println(duplicate);                // false
 Resubmitting the same `clientId` and `clientSeq` returns the cached result and
 does not re-apply the command (`duplicate == true`).
 
+### Using the client SDK
+
+`adbe-client` is the Edge-side SDK. It depends only on the wire contract (never on
+`adbe-core`) and handles leader changes, idempotent retries, and result
+correlation for you:
+
+```java
+import com.adbe.client.AdbeClient;
+import com.adbe.client.config.ClientConfig;
+import com.adbe.launcher.ClusterConfig;
+import com.adbe.protocol.CommandType;
+
+ClientConfig config = ClientConfig.builder(1L, ClusterConfig.ingressEndpoints(1)).build();
+try (AdbeClient client = new AdbeClient(config,
+        (idHi, idLo, status, balance, hasBalance, allowance, hasAllowance) ->
+            System.out.println(status + " balance=" + balance))) {
+
+    client.submit(CommandType.CREDIT, 100, 0, 0, 500);
+    while (client.pendingCount() > 0) {
+        client.poll(); // drives egress delivery and idempotent retransmission
+    }
+}
+```
+
 ## How It Works
 
 ADBE Core is a replicated state machine. Commands flow through Aeron Cluster and
@@ -135,8 +181,10 @@ public static final int DEFAULT_DEDUP_CLIENT_CAPACITY     = 1 << 16; // dedup cl
 public static final int DEFAULT_DEDUP_WINDOW              = 1 << 10; // commands retained per client
 ```
 
-Node endpoints and directories are described by `ClusterConfig`, which provides a
-`singleNodeLocalhost` default for local runs and integration tests.
+Node endpoints and directories are described by `ClusterConfig`: `singleNodeLocalhost`
+for local runs and integration tests, `multiNodeLocalhost` for an in-process
+multi-node cluster, and `fromProperties` to load a node from a deployment
+properties file (`adbe.clusterMembers`, `adbe.baseDir`, `adbe.host`).
 
 ## Architecture
 
@@ -166,6 +214,7 @@ flowchart TB
 | `adbe-protocol` | SBE schema and generated flyweight codecs (wire and snapshot)         |
 | `adbe-core`     | Deterministic engine, handlers, dedup, snapshot, telemetry            |
 | `adbe-launcher` | Aeron bootstrap: Media Driver, Archive, Consensus Module, Container   |
+| `adbe-client`   | Edge-side SDK: leader-change handling, idempotent retry, correlation  |
 | `adbe-tests`    | Unit, property, and integration tests plus test-only fixtures         |
 
 Within `adbe-core`:
@@ -192,6 +241,8 @@ Indicative micro-benchmark results on x86_64 Linux, JDK 21 (JMH quick run):
 | Envelope decode               | ~1.9 ns | SBE flyweight wrap plus field reads    |
 | Primitive map lookup          | ~0.7 ns | `Long2LongHashMap` get                 |
 | Credit dispatch (in-process)  | ~19 ns  | dedup check, handler, dedup store      |
+| Snapshot write (16k accounts) | ~20 ms  | streamed SBE records, deterministic    |
+| Snapshot read (16k accounts)  | ~105 ms | recovery: fresh state plus replay      |
 
 ## Performance Design
 
@@ -228,6 +279,11 @@ principles. Key architectural decisions include:
 # Run the integration test (in-process single-node cluster)
 ./gradlew integrationTest
 
+# Opt-in cluster tests (heavier / timing-sensitive; not part of the default gate)
+./gradlew clusterTest   # multi-node: leader election, catch-up replay, determinism
+./gradlew faultTest     # kill the leader mid-flight, verify exactly-once failover
+./gradlew soakTest      # sustained load: tail-latency budget and GC observation
+
 # Full gate: format, lint, compile with warnings-as-errors, test
 ./gradlew spotlessApply checkstyleMain checkstyleTest compileJava test integrationTest
 ```
@@ -243,6 +299,12 @@ principles. Key architectural decisions include:
 | `ReplayDeterminismTest`  | Unit        | Two engines, same log, identical snapshots            |
 | `AmountsPropertyTest`    | Property    | Overflow matches `Math.addExact` (jqwik)              |
 | `ClusterIntegrationTest` | Integration | End-to-end over a real cluster, idempotency verified  |
+| `AdbeClientIntegrationTest` | Integration | Client SDK submit/poll, command-id correlation     |
+| `MultiNodeClusterTest`   | Cluster     | Three-node leader election and committed results      |
+| `CatchUpReplayTest`      | Cluster     | Restarted node recovers its log and rejoins consensus |
+| `ClusterReplayDeterminismTest` | Cluster | Identical command streams yield identical balances  |
+| `FaultInjectionTest`     | Fault       | Leader killed mid-flight; retry applies exactly once  |
+| `ChaosSoakTest`          | Soak        | Sustained load within the tail-latency budget         |
 
 ## Benchmarks
 

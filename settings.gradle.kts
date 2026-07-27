@@ -9,4 +9,5 @@ dependencyResolutionManagement {
 include("adbe-protocol")
 include("adbe-core")
 include("adbe-launcher")
+include("adbe-client")
 include("adbe-tests")

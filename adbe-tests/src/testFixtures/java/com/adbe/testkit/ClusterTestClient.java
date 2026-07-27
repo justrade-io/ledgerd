@@ -8,7 +8,10 @@ import com.adbe.protocol.MessageHeaderEncoder;
 import com.adbe.protocol.StatusCode;
 import io.aeron.cluster.client.AeronCluster;
 import io.aeron.cluster.client.EgressListener;
+import io.aeron.driver.MediaDriver;
+import io.aeron.driver.ThreadingMode;
 import io.aeron.logbuffer.Header;
+import java.util.concurrent.TimeUnit;
 import org.agrona.DirectBuffer;
 import org.agrona.concurrent.UnsafeBuffer;
 
@@ -20,6 +23,7 @@ import org.agrona.concurrent.UnsafeBuffer;
 public final class ClusterTestClient implements EgressListener, AutoCloseable {
 
     private final AeronCluster cluster;
+    private final MediaDriver ownMediaDriver;
     private final UnsafeBuffer buffer = new UnsafeBuffer(new byte[256]);
     private final MessageHeaderEncoder headerEncoder = new MessageHeaderEncoder();
     private final CommandEnvelopeEncoder envelopeEncoder = new CommandEnvelopeEncoder();
@@ -31,14 +35,41 @@ public final class ClusterTestClient implements EgressListener, AutoCloseable {
     private StatusCode lastStatus = StatusCode.NULL_VAL;
     private long lastBalance;
     private long lastAllowance;
+    private int leaderMemberId = -1;
+    private int leaderChanges;
 
     public ClusterTestClient(final String aeronDirectoryName, final String ingressEndpoints) {
+        this(aeronDirectoryName, ingressEndpoints, null);
+    }
+
+    private ClusterTestClient(
+            final String aeronDirectoryName, final String ingressEndpoints, final MediaDriver ownMediaDriver) {
+        this.ownMediaDriver = ownMediaDriver;
         this.cluster = AeronCluster.connect(new AeronCluster.Context()
                 .egressListener(this)
                 .aeronDirectoryName(aeronDirectoryName)
                 .ingressChannel("aeron:udp")
                 .egressChannel("aeron:udp?endpoint=localhost:0")
+                .messageTimeoutNs(TimeUnit.SECONDS.toNanos(30))
                 .ingressEndpoints(ingressEndpoints));
+    }
+
+    /**
+     * Creates a client backed by its own embedded media driver, so it survives
+     * the shutdown of any individual cluster node (required for fault-injection
+     * tests that kill the leader).
+     */
+    public static ClusterTestClient withOwnMediaDriver(final String ingressEndpoints) {
+        final MediaDriver mediaDriver = MediaDriver.launchEmbedded(new MediaDriver.Context()
+                .threadingMode(ThreadingMode.SHARED)
+                .dirDeleteOnStart(true)
+                .dirDeleteOnShutdown(true));
+        try {
+            return new ClusterTestClient(mediaDriver.aeronDirectoryName(), ingressEndpoints, mediaDriver);
+        } catch (final RuntimeException e) {
+            mediaDriver.close();
+            throw e;
+        }
     }
 
     /** Encodes and reliably offers one command to the cluster. */
@@ -116,6 +147,16 @@ public final class ClusterTestClient implements EgressListener, AutoCloseable {
         received = true;
     }
 
+    @Override
+    public void onNewLeader(
+            final long clusterSessionId,
+            final long leadershipTermId,
+            final int leaderMemberId,
+            final String ingressEndpoints) {
+        this.leaderMemberId = leaderMemberId;
+        this.leaderChanges++;
+    }
+
     public StatusCode lastStatus() {
         return lastStatus;
     }
@@ -128,8 +169,22 @@ public final class ClusterTestClient implements EgressListener, AutoCloseable {
         return lastAllowance;
     }
 
+    /** The member id of the current cluster leader as tracked by the client, or -1. */
+    public int leaderMemberId() {
+        final int fromCluster = cluster.leaderMemberId();
+        return fromCluster >= 0 ? fromCluster : leaderMemberId;
+    }
+
+    /** Number of leader-change notifications received on this client's session. */
+    public int leaderChanges() {
+        return leaderChanges;
+    }
+
     @Override
     public void close() {
         cluster.close();
+        if (ownMediaDriver != null) {
+            ownMediaDriver.close();
+        }
     }
 }
