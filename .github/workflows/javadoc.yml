@@ -33,6 +33,13 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+        with:
+          # Enable Pages (source = GitHub Actions) if it is not already, so the
+          # deploy step does not 404 on a repository where Pages was never turned on.
+          enablement: true
+
       - name: Generate aggregated Javadoc
         run: ./gradlew --no-daemon aggregateJavadoc
 
