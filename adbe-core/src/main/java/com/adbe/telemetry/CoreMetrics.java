@@ -29,6 +29,9 @@ public final class CoreMetrics {
     private long leaderElections;
     private long lastSnapshotWriteNanos;
     private long lastSnapshotReadNanos;
+    private long balanceCount;
+    private long allowanceOwnerCount;
+    private long dedupClientCount;
 
     /** Creates metrics that only maintain in-heap counters (tests, raw engine). */
     public CoreMetrics() {
@@ -87,10 +90,30 @@ public final class CoreMetrics {
 
     public void snapshotWriteNanos(final long nanos) {
         this.lastSnapshotWriteNanos = nanos;
+        sink.set(CounterSink.Gauge.SNAPSHOT_WRITE_NANOS, nanos);
     }
 
     public void snapshotReadNanos(final long nanos) {
         this.lastSnapshotReadNanos = nanos;
+        sink.set(CounterSink.Gauge.SNAPSHOT_READ_NANOS, nanos);
+    }
+
+    /** Publishes the current balance map size as a gauge. */
+    public void balanceCount(final long count) {
+        this.balanceCount = count;
+        sink.set(CounterSink.Gauge.BALANCE_COUNT, count);
+    }
+
+    /** Publishes the current allowance owner count as a gauge. */
+    public void allowanceOwnerCount(final long count) {
+        this.allowanceOwnerCount = count;
+        sink.set(CounterSink.Gauge.ALLOWANCE_OWNER_COUNT, count);
+    }
+
+    /** Publishes the current dedup client count as a gauge. */
+    public void dedupClientCount(final long count) {
+        this.dedupClientCount = count;
+        sink.set(CounterSink.Gauge.DEDUP_CLIENT_COUNT, count);
     }
 
     public long commandsProcessed() {
@@ -135,5 +158,17 @@ public final class CoreMetrics {
 
     public long lastSnapshotReadNanos() {
         return lastSnapshotReadNanos;
+    }
+
+    public long balanceCount() {
+        return balanceCount;
+    }
+
+    public long allowanceOwnerCount() {
+        return allowanceOwnerCount;
+    }
+
+    public long dedupClientCount() {
+        return dedupClientCount;
     }
 }

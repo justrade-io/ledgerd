@@ -43,6 +43,13 @@ public final class ClusterLauncher {
         final ClusterNode node = new ClusterNode(clusterConfig, coreConfig, cleanStart);
         Runtime.getRuntime().addShutdownHook(new Thread(node::close, "adbe-shutdown"));
 
+        // Optional Prometheus metrics endpoint, enabled with -Dadbe.metricsPort=<port>.
+        final Integer metricsPort = Integer.getInteger("adbe.metricsPort");
+        if (metricsPort != null) {
+            final MetricsHttpServer metricsServer = new MetricsHttpServer(node.countersManager(), metricsPort);
+            Runtime.getRuntime().addShutdownHook(new Thread(metricsServer::close, "adbe-metrics-shutdown"));
+        }
+
         // Park the main thread; the service runs on the clustered service agent thread.
         while (!Thread.currentThread().isInterrupted()) {
             LockSupport.parkNanos(1_000_000_000L);

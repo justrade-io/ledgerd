@@ -164,6 +164,8 @@ public final class BalanceService implements io.aeron.cluster.service.ClusteredS
         if (cluster != null) {
             metrics.snapshotReadNanos(cluster.time() - start);
         }
+        // Reflect the restored map sizes immediately, before any command arrives.
+        engine.publishSizeGauges();
     }
 
     private void onSnapshotFragment(

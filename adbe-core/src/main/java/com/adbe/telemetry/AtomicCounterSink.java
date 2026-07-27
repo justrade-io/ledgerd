@@ -18,16 +18,23 @@ import org.agrona.concurrent.status.AtomicCounter;
 public final class AtomicCounterSink implements CounterSink {
 
     private final AtomicCounter[] counters;
+    private final AtomicCounter[] gauges;
 
     /**
      * @param counters one counter per {@link Counter} ordinal; length must equal
      *     {@link Counter#COUNT}.
+     * @param gauges one counter per {@link Gauge} ordinal; length must equal
+     *     {@link Gauge#COUNT}.
      */
-    public AtomicCounterSink(final AtomicCounter[] counters) {
+    public AtomicCounterSink(final AtomicCounter[] counters, final AtomicCounter[] gauges) {
         if (counters.length != Counter.COUNT) {
             throw new IllegalArgumentException("expected " + Counter.COUNT + " counters, got " + counters.length);
         }
+        if (gauges.length != Gauge.COUNT) {
+            throw new IllegalArgumentException("expected " + Gauge.COUNT + " gauges, got " + gauges.length);
+        }
         this.counters = counters;
+        this.gauges = gauges;
     }
 
     @Override
@@ -38,5 +45,10 @@ public final class AtomicCounterSink implements CounterSink {
     @Override
     public void set(final Counter counter, final long value) {
         counters[counter.ordinal()].setOrdered(value);
+    }
+
+    @Override
+    public void set(final Gauge gauge, final long value) {
+        gauges[gauge.ordinal()].setOrdered(value);
     }
 }

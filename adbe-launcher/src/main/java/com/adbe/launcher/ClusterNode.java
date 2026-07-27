@@ -52,7 +52,8 @@ public final class ClusterNode implements AutoCloseable {
      */
     public ClusterNode(final ClusterConfig config, final CoreConfig coreConfig, final boolean cleanStart) {
         this.countersManager = newCountersManager();
-        this.metrics = new CoreMetrics(new AtomicCounterSink(allocateCounters(countersManager)));
+        this.metrics = new CoreMetrics(
+                new AtomicCounterSink(allocateCounters(countersManager), allocateGauges(countersManager)));
 
         final String localControlChannel = "aeron:ipc?term-length=64k";
 
@@ -98,7 +99,7 @@ public final class ClusterNode implements AutoCloseable {
     }
 
     private static CountersManager newCountersManager() {
-        final int maxCounters = CounterSink.Counter.COUNT;
+        final int maxCounters = CounterSink.Counter.COUNT + CounterSink.Gauge.COUNT;
         final UnsafeBuffer valuesBuffer = new UnsafeBuffer(BufferUtil.allocateDirectAligned(
                 maxCounters * CountersManager.COUNTER_LENGTH, BitUtil.CACHE_LINE_LENGTH));
         final UnsafeBuffer metadataBuffer = new UnsafeBuffer(BufferUtil.allocateDirectAligned(
@@ -110,10 +111,20 @@ public final class ClusterNode implements AutoCloseable {
         final CounterSink.Counter[] all = CounterSink.Counter.values();
         final AtomicCounter[] counters = new AtomicCounter[all.length];
         for (final CounterSink.Counter counter : all) {
-            counters[counter.ordinal()] =
-                    countersManager.newCounter("adbe." + counter.name().toLowerCase(Locale.ROOT));
+            counters[counter.ordinal()] = countersManager.newCounter(
+                    "adbe." + counter.name().toLowerCase(Locale.ROOT), CounterSink.TYPE_COUNTER);
         }
         return counters;
+    }
+
+    private static AtomicCounter[] allocateGauges(final CountersManager countersManager) {
+        final CounterSink.Gauge[] all = CounterSink.Gauge.values();
+        final AtomicCounter[] gauges = new AtomicCounter[all.length];
+        for (final CounterSink.Gauge gauge : all) {
+            gauges[gauge.ordinal()] =
+                    countersManager.newCounter("adbe." + gauge.name().toLowerCase(Locale.ROOT), CounterSink.TYPE_GAUGE);
+        }
+        return gauges;
     }
 
     public CoreMetrics metrics() {

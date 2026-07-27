@@ -209,6 +209,7 @@ channel; the Archive also exposes a UDP control channel for external tools.
 | `ClusterConfig`  | Endpoints and directories; `singleNodeLocalhost`, `multiNodeLocalhost`, `fromProperties` |
 | `ClusterNode`    | Launches Media Driver + Archive + Consensus Module + Container; `cleanStart` controls state reuse on restart; mirrors core counters into a standalone off-heap `CountersManager` |
 | `ClusterLauncher`| Entry point: start a node (single-node or `--config` properties) and block until terminated |
+| `MetricsHttpServer` | Optional Prometheus `/metrics` (and `/healthz`) endpoint exporting the off-heap counters on a daemon thread |
 
 ### adbe-client - Edge Client SDK
 

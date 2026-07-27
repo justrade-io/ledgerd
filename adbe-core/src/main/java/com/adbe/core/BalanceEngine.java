@@ -35,6 +35,10 @@ public final class BalanceEngine {
     private final ApproveHandler approveHandler;
     private final DelegatedTransferHandler delegatedTransferHandler;
 
+    private long lastBalanceCount = -1L;
+    private long lastAllowanceOwnerCount = -1L;
+    private long lastDedupClientCount = -1L;
+
     public BalanceEngine(final CoreConfig config, final CoreMetrics metrics) {
         this.balances = new BalanceStore(config.accountCapacity());
         this.allowances = new AllowanceStore(config.allowanceOwnerCapacity(), config.delegateCapacity());
@@ -81,6 +85,7 @@ public final class BalanceEngine {
 
         metrics.onCommandProcessed();
         recordStatus(out);
+        publishSizeGauges();
         return false;
     }
 
@@ -133,6 +138,29 @@ public final class BalanceEngine {
             default -> {
                 // SUCCESS / DUPLICATE require no error counter.
             }
+        }
+    }
+
+    /**
+     * Publishes the current map sizes as gauges, but only when a size actually
+     * changed, so steady-state processing performs no gauge writes. Sizes grow
+     * only when a new account, owner, or client is first seen.
+     */
+    public void publishSizeGauges() {
+        final long balanceSize = balances.size();
+        if (balanceSize != lastBalanceCount) {
+            lastBalanceCount = balanceSize;
+            metrics.balanceCount(balanceSize);
+        }
+        final long ownerCount = allowances.ownerCount();
+        if (ownerCount != lastAllowanceOwnerCount) {
+            lastAllowanceOwnerCount = ownerCount;
+            metrics.allowanceOwnerCount(ownerCount);
+        }
+        final long clientCount = dedup.clientCount();
+        if (clientCount != lastDedupClientCount) {
+            lastDedupClientCount = clientCount;
+            metrics.dedupClientCount(clientCount);
         }
     }
 

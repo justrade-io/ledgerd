@@ -186,6 +186,23 @@ for local runs and integration tests, `multiNodeLocalhost` for an in-process
 multi-node cluster, and `fromProperties` to load a node from a deployment
 properties file (`adbe.clusterMembers`, `adbe.baseDir`, `adbe.host`).
 
+### Observability
+
+The launcher can expose the off-heap counters over HTTP in Prometheus text format
+for SRE scraping, enabled with a system property:
+
+```bash
+./gradlew :adbe-launcher:run -Dadbe.metricsPort=9100
+curl http://localhost:9100/metrics   # adbe_commands_processed, adbe_duplicates_detected, ...
+curl http://localhost:9100/healthz   # ok
+```
+
+The export includes counters (commands processed, duplicates, backpressure,
+leader elections, error statuses) and gauges (snapshot write/read time in
+nanoseconds, balance / allowance-owner / dedup-client map sizes). The endpoint
+runs on its own daemon thread and only reads counter values, never touching the
+single-writer hot path.
+
 ## Architecture
 
 ```mermaid
