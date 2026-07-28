@@ -281,8 +281,12 @@ Within `adbe-core`:
 | `SnapshotManager` | Deterministic streaming snapshot write and load                   |
 | `CoreMetrics`     | Single-writer observability counters                              |
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full component map,
-wire format, data flows, and determinism rules.
+| Document | Covers |
+|---|---|
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Component map, wire format, data flows, determinism rules |
+| [docs/API-REFERENCE.md](docs/API-REFERENCE.md) | Client SDK, commands, use cases, status codes, observability |
+| [docs/OPERATIONS.md](docs/OPERATIONS.md) | Snapshot management, node restart, deployment, Prometheus metrics |
+| [docs/decisions/](docs/decisions/) | Architectural decision records |
 
 ## Performance
 
