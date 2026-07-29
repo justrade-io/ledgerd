@@ -1,0 +1,71 @@
+# Local 3-node read-enabled ADBE cluster. Every member runs ReadModelService
+# (a superset of BalanceService: it applies the identical committed log AND
+# serves reads), so the cluster accepts writes on ingress and answers reads on
+# HTTP from any node. Homogeneous services keep snapshots byte-identical across
+# members - the correct way to run a read replica in Aeron Cluster.
+#
+#   docker compose -f docker-compose.read.yml up --build
+#
+# Write with an AdbeClient against localhost:20100 (node 0 ingress). Read with:
+#   curl http://localhost:8080/balance/100
+#   curl http://localhost:8080/supply
+#
+# The Aeron member string is identical for every node; only the per-node id and
+# advertised host differ. Ports follow ClusterConfig: base 20100, stride 100,
+# offsets ingress/consensus/log/catchup/archive = +0/+1/+2/+3/+4.
+
+name: adbe-read
+
+x-cluster-members: &cluster_members >-
+  0,adbe-node-0:20100,adbe-node-0:20101,adbe-node-0:20102,adbe-node-0:20103,adbe-node-0:20104|1,adbe-node-1:20200,adbe-node-1:20201,adbe-node-1:20202,adbe-node-1:20203,adbe-node-1:20204|2,adbe-node-2:20300,adbe-node-2:20301,adbe-node-2:20302,adbe-node-2:20303,adbe-node-2:20304
+
+x-read-common: &read_common
+  build:
+    context: .
+    dockerfile: Dockerfile
+    target: read
+  image: adbe-read:local
+  networks:
+    - adbe
+  # Aeron benefits from a larger shared-memory segment than the 64MB default.
+  shm_size: "512m"
+  restart: unless-stopped
+
+services:
+  adbe-node-0:
+    <<: *read_common
+    hostname: adbe-node-0
+    environment:
+      ADBE_NODE_ID: "0"
+      ADBE_HOST: adbe-node-0
+      ADBE_CLUSTER_MEMBERS: *cluster_members
+      ADBE_HTTP_PORT: "8080"
+    ports:
+      - "20100:20100/udp" # ingress for an external writer
+      - "8080:8080/tcp" # HTTP read query API
+
+  adbe-node-1:
+    <<: *read_common
+    hostname: adbe-node-1
+    environment:
+      ADBE_NODE_ID: "1"
+      ADBE_HOST: adbe-node-1
+      ADBE_CLUSTER_MEMBERS: *cluster_members
+      ADBE_HTTP_PORT: "8080"
+    ports:
+      - "8081:8080/tcp"
+
+  adbe-node-2:
+    <<: *read_common
+    hostname: adbe-node-2
+    environment:
+      ADBE_NODE_ID: "2"
+      ADBE_HOST: adbe-node-2
+      ADBE_CLUSTER_MEMBERS: *cluster_members
+      ADBE_HTTP_PORT: "8080"
+    ports:
+      - "8082:8080/tcp"
+
+networks:
+  adbe:
+    driver: bridge

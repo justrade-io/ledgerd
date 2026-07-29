@@ -15,6 +15,7 @@ observability for ADBE operators and SREs. For the client integration surface se
 5. [Node Restart and Recovery](#5-node-restart-and-recovery)
 6. [CoreConfig Capacity Reference](#6-coreconfig-capacity-reference)
 7. [Prometheus Metrics](#7-prometheus-metrics)
+8. [Read Service (HTTP Query API)](#8-read-service-http-query-api)
 
 ---
 
@@ -310,3 +311,76 @@ scrape_configs:
   degrades; plan a rolling restart with a larger `CoreConfig`.
 - **`adbe_snapshot_write_nanos` suddenly large**: snapshot took longer than expected; check I/O on
   the archive directory.
+
+---
+
+## 8. Read Service (HTTP Query API)
+
+The read service (`adbe-read`) serves eventually-consistent balance, allowance, and total-supply
+reads over HTTP. It runs a `ReadModelService` as a cluster follower, applies the identical committed
+log through the same `BalanceEngine`, and answers queries on the single service thread. For the full
+endpoint contract see [API-REFERENCE.md - Read API](API-REFERENCE.md#13-read-api-http) and
+[ADR 0005](decisions/0005-read-side-cqrs.md).
+
+### Running a read node
+
+```bash
+# Gradle (development): single-node localhost cluster, HTTP on :8080.
+./gradlew :adbe-read:run
+
+# Standalone process configured from the environment.
+java \
+    --add-opens java.base/jdk.internal.misc=ALL-UNNAMED \
+    --add-opens java.base/sun.nio.ch=ALL-UNNAMED \
+    -cp 'adbe-read/build/libs/*' com.adbe.read.ReadServiceLauncher
+```
+
+Recognised environment variables:
+
+| Variable               | Required | Default                 | Description                                        |
+|------------------------|:--------:|-------------------------|----------------------------------------------------|
+| `ADBE_NODE_ID`         | no       | `0`                     | This member's cluster id.                          |
+| `ADBE_CLUSTER_MEMBERS` | no       | single-node localhost   | Aeron member string (see Section 3).               |
+| `ADBE_HOST`            | no       | `localhost`             | This node's advertised host.                       |
+| `ADBE_BASE_DIR`        | no       | `build/adbe-read-node`  | Root directory for archive and cluster state.      |
+| `ADBE_HTTP_PORT`       | no       | `8080`                  | Port for the HTTP query API.                        |
+| `ADBE_CLEAN_START`     | no       | `true`                  | Wipe prior archive and cluster state on start.     |
+
+### Consistency and health
+
+- Reads are eventually consistent: a response reflects the follower's applied log position, which
+  trails the leader by the replication and query round-trip latency. Do not use for linearizable
+  reads.
+- Liveness probe: `GET /healthz` returns `{"status":"ok"}`.
+- Gateway counters: `GET /metrics` returns `submitted`, `completed`, `pending`, `overloads`, and
+  `orphanResponses` as JSON. A rising `overloads` count means the request ring is saturated - raise
+  `requestRingCapacity` or add read nodes. A rising `orphanResponses` count means responses arrived
+  after their HTTP request timed out - raise `requestTimeoutMs` or investigate follower lag.
+
+### Deployment model and caveat
+
+Aeron Cluster requires every member to host identical clustered services so that all members produce
+byte-identical snapshots. Consequently a read node **cannot** join a cluster whose other members run
+the plain `BalanceService`: the differing service would break snapshot consistency. Two supported
+topologies:
+
+- **Dedicated read follower**: run a separate single-follower deployment (or a homogeneous cluster)
+  whose members all host `ReadModelService`, and point read traffic at it.
+- **Homogeneous read-enabled cluster**: run `ReadModelService` on every member and enable the HTTP
+  query port only on the members chosen to serve reads.
+
+A ready-made homogeneous cluster is provided in `docker-compose.read.yml`: three members that each
+host `ReadModelService`, accept writes on ingress, and serve reads over HTTP.
+
+```bash
+# Build and start a 3-node read-enabled cluster.
+docker compose -f docker-compose.read.yml up --build
+
+# Write with an AdbeClient against localhost:20100, then read from any node:
+curl http://localhost:8080/balance/100     # node 0
+curl http://localhost:8081/supply          # node 1
+curl http://localhost:8082/healthz         # node 2
+```
+
+Authentication, authorization, and rate limiting are out of scope for the read module and must be
+added at the Edge before any production exposure.

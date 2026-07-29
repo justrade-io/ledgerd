@@ -15,6 +15,7 @@
     - [adbe-core - Deterministic State Machine](#adbe-core---deterministic-state-machine)
     - [adbe-launcher - Cluster Bootstrap](#adbe-launcher---cluster-bootstrap)
     - [adbe-client - Edge Client SDK](#adbe-client---edge-client-sdk)
+    - [adbe-read - Read Side (CQRS Query)](#adbe-read---read-side-cqrs-query)
     - [adbe-tests - Verification and Fixtures](#adbe-tests---verification-and-fixtures)
 - [Wire Format](#wire-format)
 - [Data Flows](#data-flows)
@@ -59,9 +60,9 @@ audit storage, analytics, and - for now - sharding and cross-shard atomicity
 
 ```
 addendum/
-|-- settings.gradle.kts             Gradle multi-module (4 modules)
+|-- settings.gradle.kts             Gradle multi-module (7 modules)
 |-- build.gradle.kts                Shared conventions: JDK 21, spotless, checkstyle, -Werror
-|-- gradle/libs.versions.toml       Version catalog (Aeron, Agrona, SBE, JMH, ...)
+|-- gradle/libs.versions.toml       Version catalog (Aeron, Agrona, SBE, JMH, Netty, ...)
 |
 |-- adbe-protocol/                  SBE schema + generated flyweight codecs
 |   |-- build.gradle.kts            SbeTool code generation task
@@ -92,6 +93,21 @@ addendum/
 |       |-- ClusterConfig.java              Endpoints and directories per node
 |       |-- ClusterNode.java                Media Driver + Archive + Consensus + Service Container
 |       +-- ClusterLauncher.java            main(): start one node, block until terminated
+|
+|-- adbe-client/                    Edge client SDK (depends only on adbe-protocol)
+|   +-- src/main/java/com/adbe/client/
+|       |-- AdbeClient.java                 Async submit/poll, leader-change resend, correlation
+|       |-- config/ClientConfig.java        Immutable client configuration
+|       +-- ResultHandler.java              Result callback correlated by command id
+|
+|-- adbe-read/                      Read side (CQRS query, HTTP over Netty)
+|   +-- src/main/java/com/adbe/read/
+|       |-- projection/ReadModelService.java  Follower service, answers reads in doBackgroundWork
+|       |-- query/                            QueryCodec, ReadQueryGateway (lock-free rings)
+|       |-- http/QueryHttpServer.java         Netty HTTP boundary
+|       +-- ReadNode.java / ReadServiceLauncher.java   Compose follower + gateway + HTTP
+|
+|-- adbe-examples/                  Runnable examples (QuickStart, RemoteClient)
 |
 |-- adbe-tests/                     Unit, property, and integration tests
 |   +-- src/testFixtures/java/com/adbe/testkit/   Test-only helpers (NOT the Edge SDK)
@@ -226,6 +242,40 @@ HdrHistogram latency measurement on top of an Aeron cluster client.
 | `ResultHandler`   | Callback invoked when a `CommandResult` is correlated to a request |
 | `PendingCommand`  | Pooled holder of an in-flight command's encoded bytes for verbatim resend |
 | `BackpressureException` | Signals a full in-flight window rather than silently dropping a command |
+
+### adbe-read - Read Side (CQRS Query)
+
+The read (query) bounded context. Unlike the deterministic core, it may use the
+system clock, Netty, and heap allocation at the HTTP boundary. `ReadModelService`
+runs as a cluster follower, composing the core `BalanceService` so it applies the
+identical committed log and holds a complete, byte-identical copy of engine state
+(it observes both sides of every `TRANSFER`, which the egress stream never
+carries). Reads are eventually consistent with bounded staleness and are answered
+on the single service thread via `ClusteredService.doBackgroundWork`, reached over
+a lock-free ring from the HTTP boundary, so the single-writer discipline holds.
+See [ADR 0005](decisions/0005-read-side-cqrs.md).
+
+| Component            | Purpose                                                                        |
+|----------------------|--------------------------------------------------------------------------------|
+| `ReadModelService`   | Follower service: delegates cluster callbacks to `BalanceService`, answers reads in `doBackgroundWork` |
+| `ReadQueryGateway`   | Lock-free bridge: request `ManyToOneRingBuffer`, response `OneToOneRingBuffer`, correlation dispatcher |
+| `QueryCodec`         | Fixed little-endian request/response layout over the in-process rings           |
+| `QueryHttpServer`    | Netty HTTP boundary: routes REST reads to the gateway, completes them as JSON    |
+| `ReadNode`           | Composes a cluster follower, the gateway, and the HTTP server into one process   |
+| `ReadServiceConfig`  | Immutable read config (HTTP port, ring capacities, request timeout, batch size)  |
+| `ReadServiceLauncher`| Standalone entry point configured from environment variables                     |
+
+```mermaid
+flowchart LR
+    USER["User"] -->|" HTTP GET/POST "| NETTY["QueryHttpServer (Netty)"]
+    NETTY -->|" request + correlationId "| REQ["request ring\n(ManyToOne)"]
+    REQ --> SVC["ReadModelService\n(service thread)"]
+    LOG["committed log\n(follower replication)"] -->|" apply via BalanceEngine "| SVC
+    SVC -->|" lookup, answer "| RESP["response ring\n(OneToOne)"]
+    RESP --> DISP["dispatcher thread"]
+    DISP -->|" complete by correlationId, JSON "| NETTY
+    NETTY -->|" HTTP 200 "| USER
+```
 
 ### adbe-tests - Verification and Fixtures
 
@@ -440,6 +490,8 @@ JVM must run with `--add-opens java.base/jdk.internal.misc=ALL-UNNAMED` and
 | `ReplayDeterminismTest`     | Unit        | Two engines replaying the same log produce identical snapshots |
 | `AmountsPropertyTest`       | Property    | Overflow detection matches `Math.addExact` (jqwik)         |
 | `ClusterIntegrationTest`    | Integration | End-to-end over a real single-node cluster, idempotency verified |
+| `ReadQueryGatewayTest`      | Unit        | Query-ring correlation, cancel/orphan handling, codec round-trip |
+| `ReadServiceIntegrationTest`| Integration | Read-after-write over HTTP; reflects both sides of a transfer |
 
 Integration tests use an in-process Media Driver and are selected by the JUnit
 `integration` tag, run via the `integrationTest` Gradle task.
@@ -457,9 +509,13 @@ Integration tests use an in-process Media Driver and are selected by the JUnit
 
 # Micro-benchmarks (add -PquickBench for a fast smoke run)
 ./gradlew :adbe-core:jmh -PquickBench
+./gradlew :adbe-read:jmh -PquickBench
 
 # Run a single-node cluster
 ./gradlew :adbe-launcher:run
+
+# Run a read node (eventually-consistent HTTP query API, default port 8080)
+./gradlew :adbe-read:run
 ```
 
 Toolchain: JDK 21 LTS. Aeron 1.48, Agrona 2.2, SBE 1.35. The dependency chain

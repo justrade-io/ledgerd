@@ -1,16 +1,17 @@
 # Multi-stage, multi-target build.
 #
-#   * stage "build"  : produces the launcher and examples install distributions.
-#   * target "node"  : slim JRE that runs one cluster node (default).
+#   * stage "build"  : produces the launcher, read, and examples install distributions.
+#   * target "node"  : slim JRE that runs one cluster node (default, BalanceService).
+#   * target "read"  : slim JRE that runs one read-enabled node (ReadModelService + HTTP).
 #   * target "client": slim JRE that runs the remote client smoke test.
 #
 # The cluster topology is supplied at runtime via environment variables
-# (see docker-compose.yml).
+# (see docker-compose.yml and docker-compose.read.yml).
 
 FROM eclipse-temurin:21-jdk AS build
 WORKDIR /src
 COPY . .
-RUN ./gradlew --no-daemon :adbe-launcher:installDist :adbe-examples:installDist
+RUN ./gradlew --no-daemon :adbe-launcher:installDist :adbe-read:installDist :adbe-examples:installDist
 
 FROM eclipse-temurin:21-jre AS node
 LABEL org.opencontainers.image.title="adbe-launcher" \
@@ -30,6 +31,25 @@ RUN chmod +x /opt/adbe/entrypoint.sh /opt/adbe/bin/adbe-launcher \
 USER adbe
 WORKDIR /var/adbe
 ENTRYPOINT ["/opt/adbe/entrypoint.sh"]
+
+FROM eclipse-temurin:21-jre AS read
+LABEL org.opencontainers.image.title="adbe-read" \
+      org.opencontainers.image.description="ADBE read-enabled node (ReadModelService + HTTP query API)" \
+      org.opencontainers.image.licenses="MIT"
+
+# Run as a non-root user.
+RUN useradd --system --create-home --home-dir /home/adbe adbe \
+    && mkdir -p /var/adbe \
+    && chown -R adbe:adbe /var/adbe
+
+COPY --from=build /src/adbe-read/build/install/adbe-read /opt/adbe
+COPY docker/read-entrypoint.sh /opt/adbe/read-entrypoint.sh
+RUN chmod +x /opt/adbe/read-entrypoint.sh /opt/adbe/bin/adbe-read \
+    && chown -R adbe:adbe /opt/adbe
+
+USER adbe
+WORKDIR /var/adbe
+ENTRYPOINT ["/opt/adbe/read-entrypoint.sh"]
 
 FROM eclipse-temurin:21-jre AS client
 LABEL org.opencontainers.image.title="adbe-client-example" \

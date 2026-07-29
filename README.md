@@ -41,6 +41,10 @@ double-applied command or a nondeterministic replay is a correctness failure.
 - **Edge Client SDK**: `adbe-client` adds leader-change handling, idempotent
   retry, asynchronous result correlation, explicit backpressure signalling, and
   end-to-end HdrHistogram latency, consuming only the wire contract.
+- **CQRS Read Side**: `adbe-read` serves eventually-consistent balance, allowance,
+  and total-supply reads over HTTP (Netty). A follower applies the same committed
+  log through the same engine, so reads are complete and answered on the
+  single-writer thread without locks.
 - **Off-Heap Telemetry**: core counters are mirrored to a standalone off-heap
   `CountersManager` so operators can read them from another thread without
   perturbing the single-writer hot path.
@@ -267,6 +271,7 @@ flowchart TB
 | `adbe-core`     | Deterministic engine, handlers, dedup, snapshot, telemetry            |
 | `adbe-launcher` | Aeron bootstrap: Media Driver, Archive, Consensus Module, Container   |
 | `adbe-client`   | Edge-side SDK: leader-change handling, idempotent retry, correlation  |
+| `adbe-read`     | CQRS read side: follower read model, HTTP query API over Netty        |
 | `adbe-tests`    | Unit, property, and integration tests plus test-only fixtures         |
 
 Within `adbe-core`:

@@ -83,8 +83,8 @@ allocation-heavy on the hot path. It bans, among other things:
   the hot path.
 
 If your change legitimately needs one of these, it almost certainly belongs
-outside `adbe-core` (for example in `adbe-client`, `adbe-launcher`, or
-`adbe-examples`, which are not deterministic hot-path modules).
+outside `adbe-core` (for example in `adbe-client`, `adbe-launcher`, `adbe-read`,
+or `adbe-examples`, which are not deterministic hot-path modules).
 
 ## Coding conventions
 

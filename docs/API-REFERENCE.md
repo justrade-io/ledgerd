@@ -20,6 +20,7 @@ with a deterministic `StatusCode`. This document covers the complete client inte
 10. [Observability](#10-observability)
 11. [Direct Engine Usage (Headless)](#11-direct-engine-usage-headless)
 12. [Numeric Conventions](#12-numeric-conventions)
+13. [Read API (HTTP)](#13-read-api-http)
 
 For cluster deployment, snapshot management, and observability see [OPERATIONS.md](OPERATIONS.md).
 
@@ -654,3 +655,82 @@ engine.process(cmd, outcome);
 | Null sentinel           | Result fields use a wire-level `NULL_VAL` (-1 for status, specific sentinel per field). Always check `hasBalance` / `hasAllowance` rather than comparing raw values to null sentinels. |
 | Account IDs             | Arbitrary `long`; zero is valid but conventionally unused.                            |
 | Client / command IDs    | 128-bit composite (`commandIdHi` + `commandIdLo`). The low word is returned by `submit()` and is sufficient for single-client correlation. |
+
+---
+
+## 13. Read API (HTTP)
+
+The command path (sections 1 - 12) is write-only: every result is a deterministic `CommandResult`
+committed through Raft. Reads are served separately by the `adbe-read` module, a CQRS read side.
+A `ReadModelService` runs as a cluster follower, applies the identical committed log through the
+same `BalanceEngine`, and therefore holds a complete, byte-identical copy of engine state -
+including both sides of every `TRANSFER`, which the egress stream never carries. See
+[ADR 0005](decisions/0005-read-side-cqrs.md).
+
+**Consistency**: reads are eventually consistent with bounded staleness. A read reflects the
+follower's applied log position, which trails the leader by the replication and query round-trip
+latency. Do not use these endpoints where linearizable reads are required.
+
+**Threading**: queries are answered on the single service thread via
+`ClusteredService.doBackgroundWork`, reached over a lock-free ring buffer from the Netty HTTP
+boundary. Reads never touch the stores concurrently, so the single-writer discipline is preserved.
+
+### Running a read node
+
+```java
+import com.adbe.config.CoreConfig;
+import com.adbe.launcher.ClusterConfig;
+import com.adbe.read.ReadNode;
+import com.adbe.read.config.ReadServiceConfig;
+
+ClusterConfig clusterConfig = ClusterConfig.singleNodeLocalhost(0, baseDir);
+ReadServiceConfig readConfig = ReadServiceConfig.builder().httpPort(8080).build();
+
+try (ReadNode node = new ReadNode(clusterConfig, CoreConfig.defaults(), readConfig, true)) {
+    // Serves reads on http://localhost:8080 while following the cluster log.
+}
+```
+
+Or launch the standalone process (`com.adbe.read.ReadServiceLauncher`), configured by the
+`ADBE_NODE_ID`, `ADBE_CLUSTER_MEMBERS`, `ADBE_HOST`, `ADBE_BASE_DIR`, and `ADBE_HTTP_PORT`
+environment variables.
+
+### Endpoints
+
+| Method | Path                          | Description                          | Success body                                                        |
+|--------|-------------------------------|--------------------------------------|---------------------------------------------------------------------|
+| GET    | `/balance/{id}`               | One account balance                  | `{"account":100,"exists":true,"balance":350}`                       |
+| POST   | `/balances`                   | Batch balances (ids in request body) | `{"balances":[{"account":100,"exists":true,"balance":350}, ...]}`   |
+| GET    | `/allowance/{owner}/{delegate}` | Allowance for a pair               | `{"owner":1,"delegate":9,"allowance":200}`                          |
+| GET    | `/supply`                     | Engine-wide total supply             | `{"totalSupply":500}`                                               |
+| GET    | `/healthz`                    | Liveness probe                       | `{"status":"ok"}`                                                   |
+| GET    | `/metrics`                    | Gateway counters                     | `{"submitted":...,"completed":...,"pending":...}`                   |
+
+- A missing account returns HTTP 200 with `{"exists":false}` (not 404), so batch responses stay
+  uniform. The `balance` field is omitted when `exists` is false.
+- `POST /balances` accepts any JSON or text body containing the account ids; every signed decimal
+  integer in the body is treated as an id, up to `maxBatchSize` (default 512). Example body:
+  `{"ids":[100,200,999]}`.
+- An overloaded request ring returns HTTP 503 `{"error":"read service overloaded"}`; a read that is
+  not answered within `requestTimeoutMs` (default 5000) returns HTTP 504.
+
+### Examples
+
+```bash
+curl http://localhost:8080/balance/100
+# {"account":100,"exists":true,"balance":350}
+
+curl -X POST http://localhost:8080/balances -d '{"ids":[100,200,999]}'
+# {"balances":[{"account":100,"exists":true,"balance":350},
+#              {"account":200,"exists":true,"balance":150},
+#              {"account":999,"exists":false}]}
+
+curl http://localhost:8080/allowance/1/9
+# {"owner":1,"delegate":9,"allowance":200}
+
+curl http://localhost:8080/supply
+# {"totalSupply":500}
+```
+
+> **Authentication and rate limiting are out of scope** for the read module and must be added at the
+> Edge before any production exposure (see ADR 0005).

@@ -9,6 +9,7 @@ junit = "5.11.4"
 jqwik = "1.9.2"
 jmh = "1.37"
 checkstyle = "10.20.1"
+netty = "4.1.115.Final"
 
 # plugin versions
 spotless = "6.25.0"
@@ -24,6 +25,7 @@ sbe-tool = { group = "uk.co.real-logic", name = "sbe-tool", version.ref = "sbe" 
 disruptor = { group = "com.lmax", name = "disruptor", version.ref = "disruptor" }
 hdrhistogram = { group = "org.hdrhistogram", name = "HdrHistogram", version.ref = "hdrhistogram" }
 affinity = { group = "net.openhft", name = "affinity", version.ref = "affinity" }
+netty-codec-http = { group = "io.netty", name = "netty-codec-http", version.ref = "netty" }
 
 junit-jupiter = { group = "org.junit.jupiter", name = "junit-jupiter", version.ref = "junit" }
 junit-platform-launcher = { group = "org.junit.platform", name = "junit-platform-launcher", version = "1.11.4" }

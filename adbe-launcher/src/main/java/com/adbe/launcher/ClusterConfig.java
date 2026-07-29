@@ -117,6 +117,20 @@ public final class ClusterConfig {
     }
 
     /**
+     * Builds a node configuration from an explicit Aeron {@code clusterMembers}
+     * string, this node's {@code host}, and a directory {@code baseDir}. Useful
+     * for deployment where endpoints are supplied via environment rather than a
+     * properties file.
+     */
+    public static ClusterConfig fromMembers(
+            final int nodeId, final String host, final String members, final Path baseDir) {
+        if (members == null || members.isBlank()) {
+            throw new IllegalArgumentException("members string is required");
+        }
+        return build(nodeId, baseDir, host, members);
+    }
+
+    /**
      * Builds the client ingress endpoints string ({@code id=host:port,...}) for
      * an {@code nodeCount}-node localhost cluster, as consumed by an Aeron
      * cluster client.

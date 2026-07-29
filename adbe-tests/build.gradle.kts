@@ -10,6 +10,7 @@ dependencies {
     testImplementation(project(":adbe-core"))
     testImplementation(project(":adbe-launcher"))
     testImplementation(project(":adbe-client"))
+    testImplementation(project(":adbe-read"))
     testImplementation(libs.bundles.aeron)
 
     testFixturesApi(project(":adbe-protocol"))

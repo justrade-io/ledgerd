@@ -9,6 +9,7 @@ import io.aeron.archive.Archive;
 import io.aeron.archive.client.AeronArchive;
 import io.aeron.cluster.ClusteredMediaDriver;
 import io.aeron.cluster.ConsensusModule;
+import io.aeron.cluster.service.ClusteredService;
 import io.aeron.cluster.service.ClusteredServiceContainer;
 import io.aeron.driver.MediaDriver;
 import io.aeron.driver.ThreadingMode;
@@ -33,6 +34,16 @@ import org.agrona.concurrent.status.CountersManager;
  */
 public final class ClusterNode implements AutoCloseable {
 
+    /**
+     * Creates the {@link ClusteredService} hosted by this node, given the core
+     * configuration and the node's mirrored metrics. Allows alternative services
+     * (for example the read-side projection) to reuse this bootstrap.
+     */
+    @FunctionalInterface
+    public interface ClusteredServiceFactory {
+        ClusteredService create(CoreConfig config, CoreMetrics metrics);
+    }
+
     private final ClusteredMediaDriver clusteredMediaDriver;
     private final ClusteredServiceContainer container;
     private final CoreMetrics metrics;
@@ -51,6 +62,22 @@ public final class ClusterNode implements AutoCloseable {
      *     them so the node can recover its log and catch up after a restart.
      */
     public ClusterNode(final ClusterConfig config, final CoreConfig coreConfig, final boolean cleanStart) {
+        this(config, coreConfig, cleanStart, BalanceService::new);
+    }
+
+    /**
+     * Launches a node hosting the service produced by {@code serviceFactory}.
+     *
+     * @param cleanStart when {@code true}, deletes any prior archive and cluster
+     *     directories on start (fresh cluster). When {@code false}, preserves
+     *     them so the node can recover its log and catch up after a restart.
+     * @param serviceFactory builds the clustered service this node hosts.
+     */
+    public ClusterNode(
+            final ClusterConfig config,
+            final CoreConfig coreConfig,
+            final boolean cleanStart,
+            final ClusteredServiceFactory serviceFactory) {
         this.countersManager = newCountersManager();
         this.metrics = new CoreMetrics(
                 new AtomicCounterSink(allocateCounters(countersManager), allocateGauges(countersManager)));
@@ -91,7 +118,7 @@ public final class ClusterNode implements AutoCloseable {
                 .aeronDirectoryName(config.aeronDirectoryName())
                 .archiveContext(archiveClientContext.clone())
                 .clusterDir(config.clusterDir())
-                .clusteredService(new BalanceService(coreConfig, metrics));
+                .clusteredService(serviceFactory.create(coreConfig, metrics));
 
         this.clusteredMediaDriver =
                 ClusteredMediaDriver.launch(mediaDriverContext, archiveContext, consensusModuleContext);
