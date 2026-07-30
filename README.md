@@ -42,9 +42,9 @@ double-applied command or a nondeterministic replay is a correctness failure.
   retry, asynchronous result correlation, explicit backpressure signalling, and
   end-to-end HdrHistogram latency, consuming only the wire contract.
 - **CQRS Read Side**: `adbe-read` serves eventually-consistent balance, allowance,
-  and total-supply reads over HTTP (Netty). A follower applies the same committed
-  log through the same engine, so reads are complete and answered on the
-  single-writer thread without locks.
+  and total-supply reads over HTTP (Netty). Two modes: **standby** (default, no
+  quorum impact, external Archive replication with sub-second live log following)
+  and **cluster** (legacy, full Raft voting member). See ADR 0006.
 - **Off-Heap Telemetry**: core counters are mirrored to a standalone off-heap
   `CountersManager` so operators can read them from another thread without
   perturbing the single-writer hot path.

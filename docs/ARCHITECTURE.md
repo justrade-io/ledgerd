@@ -105,6 +105,11 @@ addendum/
 |       |-- projection/ReadModelService.java  Follower service, answers reads in doBackgroundWork
 |       |-- query/                            QueryCodec, ReadQueryGateway (lock-free rings)
 |       |-- http/QueryHttpServer.java         Netty HTTP boundary
+|       |-- config/
+|       |   |-- ReadServiceConfig.java        Immutable read config (HTTP port, ring capacities)
+|       |   +-- StandbyConfig.java            Standby node config (Archive, snapshot, live log)
+|       |-- StandbyReadNode.java              Standalone read node: embedded driver, snapshot load, live log
+|       |-- LiveLogSubscriber.java            Subscribes consensus recording, applies to engine in real time
 |       +-- ReadNode.java / ReadServiceLauncher.java   Compose follower + gateway + HTTP
 |
 |-- adbe-examples/                  Runnable examples (QuickStart, RemoteClient)
@@ -156,10 +161,26 @@ flowchart TB
         AR -->|" snapshot image "| BS
     end
 
+    subgraph READ["Standby Read Node (adbe-read, standby mode)"]
+        direction TB
+        MD2["Media Driver\n(embedded)"]
+        SB["StandbyReadNode"]
+        LLS["LiveLogSubscriber\n(stream 100)"]
+        BE2["BalanceEngine"]
+        QS["QueryHttpServer\n(HTTP :8080)"]
+        AR -.->|" service snapshot (stream 106) "| SB
+        AR -.->|" consensus log (stream 100) "| LLS
+        LLS -->|" engine.process() "| BE2
+        SB -->|" load snapshot "| BE2
+        BE2 --> QS
+    end
+
     CLIENT -->|" request "| GW
     GW -->|" CommandEnvelope (SBE) via Aeron ingress "| CM
     BS -->|" CommandResult (SBE) via Aeron egress "| GW
     GW -->|" response "| CLIENT
+
+    USER["HTTP User"] -->|" GET /balance/:id "| QS
 ```
 
 All communication between a node's components uses IPC, so they may run in one
@@ -246,24 +267,40 @@ HdrHistogram latency measurement on top of an Aeron cluster client.
 ### adbe-read - Read Side (CQRS Query)
 
 The read (query) bounded context. Unlike the deterministic core, it may use the
-system clock, Netty, and heap allocation at the HTTP boundary. `ReadModelService`
-runs as a cluster follower, composing the core `BalanceService` so it applies the
-identical committed log and holds a complete, byte-identical copy of engine state
-(it observes both sides of every `TRANSFER`, which the egress stream never
-carries). Reads are eventually consistent with bounded staleness and are answered
-on the single service thread via `ClusteredService.doBackgroundWork`, reached over
-a lock-free ring from the HTTP boundary, so the single-writer discipline holds.
-See [ADR 0005](decisions/0005-read-side-cqrs.md).
+system clock, Netty, and heap allocation at the HTTP boundary. Two deployment
+modes are supported:
+
+- **Standby mode** (`ADBE_MODE=standby`, default): `StandbyReadNode` runs as a
+  standalone process with its own embedded Media Driver. It connects to a
+  cluster member's Aeron Archive to download the latest service snapshot
+  (stream 106), loads it into the `BalanceEngine`, and serves reads over HTTP.
+  Optionally, after snapshot load, `LiveLogSubscriber` subscribes to the
+  consensus log recording (stream 100) and applies service messages in near
+  real-time, achieving sub-second write-to-read latency. Standby nodes are
+  NOT cluster members: they do not vote, do not affect quorum, and can be
+  added or removed independently. See ADR 0006.
+
+- **Cluster mode** (`ADBE_MODE=cluster`, legacy): `ReadModelService` runs as a
+  cluster follower, composing the core `BalanceService` so it applies the
+  identical committed log and holds a complete, byte-identical copy of engine
+  state (it observes both sides of every `TRANSFER`, which the egress stream
+  never carries). Reads are eventually consistent with bounded staleness and
+  are answered on the single service thread via
+  `ClusteredService.doBackgroundWork`, reached over a lock-free ring from the
+  HTTP boundary, so the single-writer discipline holds. See ADR 0005.
 
 | Component            | Purpose                                                                        |
 |----------------------|--------------------------------------------------------------------------------|
+| `StandbyReadNode`    | Standalone read node: embedded driver, snapshot load, live log follow, HTTP server |
+| `LiveLogSubscriber`  | Subscribes consensus recording (stream 100), parses framing, applies to engine |
+| `StandbyConfig`      | Immutable standby config: Archive channel, stream IDs, poll interval, live log |
 | `ReadModelService`   | Follower service: delegates cluster callbacks to `BalanceService`, answers reads in `doBackgroundWork` |
 | `ReadQueryGateway`   | Lock-free bridge: request `ManyToOneRingBuffer`, response `OneToOneRingBuffer`, correlation dispatcher |
 | `QueryCodec`         | Fixed little-endian request/response layout over the in-process rings           |
 | `QueryHttpServer`    | Netty HTTP boundary: routes REST reads to the gateway, completes them as JSON    |
 | `ReadNode`           | Composes a cluster follower, the gateway, and the HTTP server into one process   |
 | `ReadServiceConfig`  | Immutable read config (HTTP port, ring capacities, request timeout, batch size)  |
-| `ReadServiceLauncher`| Standalone entry point configured from environment variables                     |
+| `ReadServiceLauncher`| Entry point configured from environment variables; dispatches to standby or cluster mode |
 
 ```mermaid
 flowchart LR

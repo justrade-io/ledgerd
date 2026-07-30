@@ -58,6 +58,7 @@ public final class SnapshotManager {
     private DedupTable loadDedup;
     private long computedChecksum;
     private boolean footerSeen;
+    private long loadedLogPosition;
 
     /** Receives one encoded snapshot record. */
     @FunctionalInterface
@@ -162,6 +163,7 @@ public final class SnapshotManager {
         switch (templateId) {
             case SnapshotHeaderDecoder.TEMPLATE_ID -> {
                 snapshotHeaderDecoder.wrap(buffer, bodyOffset, blockLength, version);
+                loadedLogPosition = snapshotHeaderDecoder.logPosition();
                 loadBalances.totalSupply(snapshotHeaderDecoder.totalSupply());
             }
             case BalanceEntryDecoder.TEMPLATE_ID -> {
@@ -203,6 +205,11 @@ public final class SnapshotManager {
     /** Returns {@code true} once the terminating footer has been applied. */
     public boolean loadComplete() {
         return footerSeen;
+    }
+
+    /** The log position decoded from the snapshot header, or 0 if not yet loaded. */
+    public long loadedLogPosition() {
+        return loadedLogPosition;
     }
 
     /** Verifies that the restored balances reproduce the header's total supply. */
