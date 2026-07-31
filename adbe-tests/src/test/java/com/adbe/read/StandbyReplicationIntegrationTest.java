@@ -1,0 +1,152 @@
+package com.adbe.read;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import com.adbe.config.CoreConfig;
+import com.adbe.launcher.ClusterConfig;
+import com.adbe.launcher.ClusterNode;
+import com.adbe.protocol.CommandType;
+import com.adbe.protocol.StatusCode;
+import com.adbe.read.config.ReadServiceConfig;
+import com.adbe.read.config.StandbyConfig;
+import com.adbe.testkit.ClusterTestClient;
+import io.aeron.cluster.ClusterTool;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.file.Path;
+import java.time.Duration;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.io.TempDir;
+
+/**
+ * End-to-end replication test for the standby read node. Unlike the smoke
+ * tests, this drives real commands into the write cluster, forces a snapshot
+ * via {@link ClusterTool}, and asserts the standby downloads and serves that
+ * state over HTTP - then keeps writing and asserts the live log converges
+ * without another snapshot.
+ *
+ * <p>This exercises the code paths the smoke tests miss: snapshot load into the
+ * engine (previously a startup NPE when a snapshot already existed), concurrent
+ * query serving during replication (previously a data race), and repeated
+ * snapshot polling without leaking subscribers or clobbering live-log state.
+ */
+@Tag("integration")
+class StandbyReplicationIntegrationTest {
+
+    private static final long RESULT_TIMEOUT_MS = 15_000L;
+    private static final long HTTP_AWAIT_MS = 30_000L;
+    private static final String INGRESS_ENDPOINTS = "0=localhost:20100";
+
+    private ClusterNode clusterNode;
+    private ClusterConfig clusterConfig;
+    private StandbyReadNode standbyNode;
+    private HttpClient http;
+    private String baseUrl;
+
+    @AfterEach
+    void stop() {
+        if (standbyNode != null) {
+            standbyNode.close();
+        }
+        if (clusterNode != null) {
+            clusterNode.close();
+        }
+    }
+
+    private void startCluster(final Path tempDir) {
+        clusterConfig = ClusterConfig.singleNodeLocalhost(0, tempDir.resolve("write"));
+        clusterNode = new ClusterNode(clusterConfig, CoreConfig.defaults(), true);
+    }
+
+    private void startStandby() {
+        final StandbyConfig standbyConfig = StandbyConfig.builder()
+                .archiveControlChannel("aeron:udp?endpoint=localhost:20104")
+                .pollIntervalMs(250L)
+                .liveLogEnabled(true)
+                .build();
+        final ReadServiceConfig readConfig =
+                ReadServiceConfig.builder().httpPort(0).build();
+        standbyNode = new StandbyReadNode(standbyConfig, CoreConfig.defaults(), readConfig);
+        http = HttpClient.newHttpClient();
+        baseUrl = "http://localhost:" + standbyNode.httpPort();
+    }
+
+    @Test
+    @Timeout(120)
+    void standbyLoadsSnapshotAndServesReplicatedState(@TempDir final Path tempDir) throws Exception {
+        startCluster(tempDir);
+
+        try (ClusterTestClient client = new ClusterTestClient(clusterConfig.aeronDirectoryName(), INGRESS_ENDPOINTS)) {
+            client.send(1L, 0L, 0L, 1L, CommandType.CREDIT, 100L, 0L, 0L, 500L);
+            assertTrue(client.awaitResult(1L, RESULT_TIMEOUT_MS), "credit 100 result");
+            assertEquals(StatusCode.SUCCESS, client.lastStatus());
+
+            client.send(1L, 1L, 0L, 2L, CommandType.CREDIT, 200L, 0L, 0L, 300L);
+            assertTrue(client.awaitResult(2L, RESULT_TIMEOUT_MS), "credit 200 result");
+            assertEquals(StatusCode.SUCCESS, client.lastStatus());
+        }
+
+        // Force a snapshot so the standby has a recording to download.
+        assertTrue(ClusterTool.snapshot(clusterConfig.clusterDir(), System.out), "snapshot trigger accepted");
+
+        startStandby();
+
+        awaitHttp("/supply", "\"totalSupply\":800");
+        awaitHttp("/balance/100", "\"balance\":500");
+        awaitHttp("/balance/200", "\"balance\":300");
+        awaitHttp("/balance/999", "\"exists\":false");
+    }
+
+    @Test
+    @Timeout(120)
+    void standbyFollowsLiveLogBetweenSnapshots(@TempDir final Path tempDir) throws Exception {
+        startCluster(tempDir);
+
+        try (ClusterTestClient client = new ClusterTestClient(clusterConfig.aeronDirectoryName(), INGRESS_ENDPOINTS)) {
+            client.send(1L, 0L, 0L, 1L, CommandType.CREDIT, 100L, 0L, 0L, 500L);
+            assertTrue(client.awaitResult(1L, RESULT_TIMEOUT_MS), "credit result");
+            assertEquals(StatusCode.SUCCESS, client.lastStatus());
+        }
+
+        assertTrue(ClusterTool.snapshot(clusterConfig.clusterDir(), System.out), "snapshot trigger accepted");
+
+        startStandby();
+        awaitHttp("/supply", "\"totalSupply\":500");
+
+        // A new command committed AFTER the snapshot must reach the standby via
+        // the live log, with no further snapshot taken.
+        try (ClusterTestClient client = new ClusterTestClient(clusterConfig.aeronDirectoryName(), INGRESS_ENDPOINTS)) {
+            client.send(1L, 1L, 0L, 2L, CommandType.CREDIT, 100L, 0L, 0L, 250L);
+            assertTrue(client.awaitResult(2L, RESULT_TIMEOUT_MS), "post-snapshot credit result");
+            assertEquals(StatusCode.SUCCESS, client.lastStatus());
+        }
+
+        awaitHttp("/supply", "\"totalSupply\":750");
+        awaitHttp("/balance/100", "\"balance\":750");
+    }
+
+    private void awaitHttp(final String path, final String expectedFragment) throws Exception {
+        final HttpRequest request = HttpRequest.newBuilder(URI.create(baseUrl + path))
+                .timeout(Duration.ofSeconds(5))
+                .GET()
+                .build();
+        final long deadline = System.currentTimeMillis() + HTTP_AWAIT_MS;
+        String body = "";
+        while (System.currentTimeMillis() < deadline) {
+            final HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString());
+            body = response.body();
+            if (response.statusCode() == 200 && body.contains(expectedFragment)) {
+                return;
+            }
+            Thread.sleep(100L);
+        }
+        throw new AssertionError(
+                "timed out waiting for " + path + " to contain '" + expectedFragment + "', last: " + body);
+    }
+}

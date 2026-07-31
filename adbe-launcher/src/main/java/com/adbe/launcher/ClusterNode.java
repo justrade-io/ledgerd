@@ -122,7 +122,14 @@ public final class ClusterNode implements AutoCloseable {
 
         this.clusteredMediaDriver =
                 ClusteredMediaDriver.launch(mediaDriverContext, archiveContext, consensusModuleContext);
-        this.container = ClusteredServiceContainer.launch(serviceContext);
+        try {
+            this.container = ClusteredServiceContainer.launch(serviceContext);
+        } catch (final RuntimeException e) {
+            // Do not leak the media driver (and its non-daemon agent threads) if
+            // the service container fails to start.
+            clusteredMediaDriver.close();
+            throw e;
+        }
     }
 
     private static CountersManager newCountersManager() {

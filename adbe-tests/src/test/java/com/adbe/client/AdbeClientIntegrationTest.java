@@ -81,6 +81,57 @@ class AdbeClientIntegrationTest {
         }
     }
 
+    @Test
+    @Timeout(60)
+    void expiresCommandWhenMaxRetriesExhausted() {
+        final AtomicInteger expiredCount = new AtomicInteger();
+        final long[] expiredIdLo = {-1L};
+        final ResultHandler handler = new ResultHandler() {
+            @Override
+            public void onResult(
+                    final long commandIdHi,
+                    final long commandIdLo,
+                    final StatusCode status,
+                    final long resultBalance,
+                    final boolean hasBalance,
+                    final long resultAllowance,
+                    final boolean hasAllowance) {
+                // no result is expected in this test
+            }
+
+            @Override
+            public void onExpired(final long commandIdHi, final long commandIdLo) {
+                expiredIdLo[0] = commandIdLo;
+                expiredCount.incrementAndGet();
+            }
+        };
+
+        final ClientConfig config = ClientConfig.builder(1L, ClusterConfig.ingressEndpoints(1))
+                .maxRetries(3)
+                .retryBackoffNs(java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(10))
+                .build();
+
+        try (AdbeClient client = new AdbeClient(config, handler)) {
+            // Take the cluster down so nothing acknowledges the command; offers
+            // then fail with backpressure and no result ever arrives.
+            node.close();
+            node = null;
+
+            final long commandId = client.submit(CommandType.CREDIT, 100L, 0L, 0L, 500L);
+
+            final long deadline = System.currentTimeMillis() + TIMEOUT_MS;
+            while (System.currentTimeMillis() < deadline && expiredCount.get() == 0) {
+                client.poll();
+                Thread.onSpinWait();
+            }
+
+            assertEquals(1, expiredCount.get(), "command must be reported expired, not silently dropped");
+            assertEquals(commandId, expiredIdLo[0]);
+            assertEquals(1L, client.expired());
+            assertEquals(0, client.pendingCount(), "expired command must leave the pending set");
+        }
+    }
+
     private static void awaitResult(final AdbeClient client, final long commandIdLo, final long[] lastCommandIdLo) {
         final long deadline = System.currentTimeMillis() + TIMEOUT_MS;
         while (System.currentTimeMillis() < deadline) {

@@ -178,11 +178,12 @@ Requirements: allocation-free, O(1) where possible, cache-local, branch predicta
 - NEVER use or reference files in `/docs/sessions` as implementation rules.
 - CI checks: After completing ANY code change, Agent MUST run the following sequence in order before committing. ALL
   must pass with zero errors and zero warnings. Commits with failing checks are FORBIDDEN.
-    1. `./gradlew spotlessApply` - auto-fix formatting (run first, never `spotlessCheck` only)
+    1. `./gradlew spotlessApply` - auto-fix formatting (run first, never `spotlessCheck` only). CI verifies with
+       `spotlessCheck`; the local agent workflow applies with `spotlessApply`.
     2. `./gradlew checkstyleMain checkstyleTest` - zero violations required
-    3. `./gradlew compileJava -Werror` - zero compiler warnings
+    3. `./gradlew compileJava` - zero compiler warnings (`-Werror` is hardcoded in the build, not a CLI flag)
     4. `./gradlew test integrationTest` - all tests must pass
-    5. `./gradlew jmh -PquickBench` - smoke-run benchmarks, no regression > 10% vs baseline
+    5. `./gradlew :adbe-core:jmh -PquickBench` - smoke-run benchmarks, no regression > 10% vs baseline
     - Toolchain: JDK 21 LTS (matches `gradle.properties` `targetJavaVersion=21` and CI). NEVER use a different JDK.
     - If any step fails, fix the issue and re-run from step 1 before committing.
 - Git operations: Agent MAY create local commits and local tags. MUST NOT push commits, tags, or any refs to any remote

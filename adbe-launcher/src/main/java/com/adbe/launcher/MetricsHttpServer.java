@@ -28,8 +28,11 @@ public final class MetricsHttpServer implements AutoCloseable {
     private final HttpServer server;
 
     /**
-     * Starts the server bound to {@code port} on the loopback interface. A port
-     * of {@code 0} binds an ephemeral port, which is convenient for tests.
+     * Starts the server bound to {@code port} on all network interfaces
+     * ({@code 0.0.0.0}), so a Prometheus scraper on another host or the Docker
+     * host can reach it. A port of {@code 0} binds an ephemeral port, which is
+     * convenient for tests. The endpoint serves only read-only counters and a
+     * liveness probe.
      */
     public MetricsHttpServer(final CountersReader reader, final int port) {
         this.reader = reader;

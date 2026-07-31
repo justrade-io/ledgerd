@@ -11,7 +11,6 @@ import io.aeron.cluster.client.EgressListener;
 import io.aeron.driver.MediaDriver;
 import io.aeron.driver.ThreadingMode;
 import io.aeron.logbuffer.Header;
-import java.util.Iterator;
 import org.HdrHistogram.Histogram;
 import org.agrona.DirectBuffer;
 import org.agrona.collections.Long2ObjectHashMap;
@@ -34,6 +33,8 @@ import org.agrona.collections.Long2ObjectHashMap;
  */
 public final class AdbeClient implements EgressListener, AutoCloseable {
 
+    private static final float LOAD_FACTOR = 0.65f;
+
     private final ClientConfig config;
     private final ResultHandler handler;
     private final AeronCluster cluster;
@@ -44,7 +45,7 @@ public final class AdbeClient implements EgressListener, AutoCloseable {
     private final MessageHeaderDecoder headerDecoder = new MessageHeaderDecoder();
     private final CommandResultDecoder resultDecoder = new CommandResultDecoder();
 
-    private final Long2ObjectHashMap<PendingCommand> pending = new Long2ObjectHashMap<>();
+    private final Long2ObjectHashMap<PendingCommand> pending;
     private final PendingCommand[] pool;
     private final int[] freeStack;
     private int freeTop;
@@ -56,7 +57,7 @@ public final class AdbeClient implements EgressListener, AutoCloseable {
 
     private long submitted;
     private long completed;
-    private long retransmits;
+    private long expired;
     private long backpressureEvents;
     private int leaderChanges;
     private int leaderMemberId = -1;
@@ -65,6 +66,10 @@ public final class AdbeClient implements EgressListener, AutoCloseable {
     public AdbeClient(final ClientConfig config, final ResultHandler handler) {
         this.config = config;
         this.handler = handler;
+        // Size the pending map so it never rehashes while the in-flight window
+        // (bounded by maxInFlight) is populated: capacity * load factor must
+        // cover maxInFlight entries.
+        this.pending = new Long2ObjectHashMap<>(Math.max(16, config.maxInFlight() * 2), LOAD_FACTOR);
         this.pool = new PendingCommand[config.maxInFlight()];
         this.freeStack = new int[config.maxInFlight()];
         for (int i = 0; i < pool.length; i++) {
@@ -154,16 +159,20 @@ public final class AdbeClient implements EgressListener, AutoCloseable {
         int work = cluster.pollEgress();
         final long now = System.nanoTime();
 
-        final Iterator<PendingCommand> it = pending.values().iterator();
-        while (it.hasNext()) {
-            final PendingCommand pc = it.next();
+        // Scan the preallocated pool rather than the map's value iterator so a
+        // poll neither allocates nor risks concurrent modification when a result
+        // callback recycles an entry mid-scan.
+        for (int i = 0; i < pool.length; i++) {
+            final PendingCommand pc = pool[i];
+            if (!pc.inUse) {
+                continue;
+            }
             final boolean due = retransmitAll || (now - pc.deadlineNanos) >= 0;
             if (!due) {
                 continue;
             }
             if (config.maxRetries() > 0 && pc.retries >= config.maxRetries()) {
-                it.remove();
-                release(pc);
+                expire(pc);
                 continue;
             }
             offer(pc);
@@ -173,6 +182,13 @@ public final class AdbeClient implements EgressListener, AutoCloseable {
         }
         retransmitAll = false;
         return work;
+    }
+
+    private void expire(final PendingCommand pc) {
+        pending.remove(pc.commandIdLo);
+        handler.onExpired(pc.commandIdHi, pc.commandIdLo);
+        expired++;
+        release(pc);
     }
 
     private void offer(final PendingCommand pc) {
@@ -211,7 +227,10 @@ public final class AdbeClient implements EgressListener, AutoCloseable {
         final boolean hasAllowance = resultDecoder.resultAllowance() != CommandResultDecoder.resultAllowanceNullValue();
 
         if (pc != null) {
-            latencyHistogram.recordValue(System.nanoTime() - pc.submitNanos);
+            final long elapsedNs = System.nanoTime() - pc.submitNanos;
+            // Clamp so a result arriving after a long outage cannot throw out of
+            // the poll loop (Histogram rejects values above highestTrackableValue).
+            latencyHistogram.recordValue(Math.min(elapsedNs, latencyHistogram.getHighestTrackableValue()));
             release(pc);
             completed++;
         }
@@ -235,7 +254,6 @@ public final class AdbeClient implements EgressListener, AutoCloseable {
         this.leaderMemberId = leaderMemberId;
         this.leaderChanges++;
         this.retransmitAll = true;
-        this.retransmits++;
     }
 
     public int pendingCount() {
@@ -248,6 +266,11 @@ public final class AdbeClient implements EgressListener, AutoCloseable {
 
     public long completed() {
         return completed;
+    }
+
+    /** Commands abandoned after exhausting {@code maxRetries}; each was reported via {@link ResultHandler#onExpired}. */
+    public long expired() {
+        return expired;
     }
 
     public long backpressureEvents() {

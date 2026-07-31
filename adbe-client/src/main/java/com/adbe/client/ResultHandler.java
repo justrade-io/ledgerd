@@ -28,4 +28,15 @@ public interface ResultHandler {
             boolean hasBalance,
             long resultAllowance,
             boolean hasAllowance);
+
+    /**
+     * Invoked when a command is abandoned because it exhausted
+     * {@code ClientConfig.maxRetries()} without a result. Guarantees the caller
+     * is notified of every submitted command (never a silent drop). The default
+     * implementation does nothing.
+     *
+     * @param commandIdHi high 64 bits of the abandoned command id
+     * @param commandIdLo low 64 bits of the abandoned command id
+     */
+    default void onExpired(final long commandIdHi, final long commandIdLo) {}
 }

@@ -46,8 +46,14 @@
 
     <!-- Streams / lambdas capturing state are banned on the hot path. -->
     <module name="RegexpSingleline">
-        <property name="format" value="\.stream\s*\(\s*\)"/>
+        <property name="format" value="\.stream\s*\(\s*\)|\.parallelStream\s*\(\s*\)"/>
         <property name="message" value="Java streams are forbidden in core; use primitive iteration."/>
+    </module>
+
+    <!-- Blocking / locking primitives are banned on the single-writer hot path. -->
+    <module name="RegexpSingleline">
+        <property name="format" value="\bsynchronized\b"/>
+        <property name="message" value="synchronized is forbidden in core; the single-writer model uses no locks."/>
     </module>
 
     <module name="TreeWalker">
@@ -75,7 +81,11 @@
                 java.util.concurrent.ConcurrentHashMap,
                 java.util.concurrent.CompletableFuture,
                 java.util.concurrent.ExecutorService,
+                java.util.concurrent.BlockingQueue,
+                java.util.concurrent.LinkedBlockingQueue,
+                java.util.concurrent.ArrayBlockingQueue,
                 java.util.concurrent.locks.ReentrantLock,
+                java.lang.ThreadLocal,
                 java.util.Optional,
                 java.math.BigDecimal,
                 java.io.File,
@@ -83,7 +93,7 @@
                 java.time.LocalDateTime"/>
         </module>
         <module name="IllegalImport">
-            <property name="illegalPkgs" value="java.sql"/>
+            <property name="illegalPkgs" value="java.sql, java.util.stream"/>
         </module>
     </module>
 </module>

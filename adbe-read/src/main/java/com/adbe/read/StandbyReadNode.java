@@ -5,6 +5,8 @@ import com.adbe.collections.BalanceStore;
 import com.adbe.config.CoreConfig;
 import com.adbe.core.BalanceEngine;
 import com.adbe.persistence.SnapshotManager;
+import com.adbe.protocol.MessageHeaderDecoder;
+import com.adbe.protocol.SnapshotHeaderDecoder;
 import com.adbe.read.config.ReadServiceConfig;
 import com.adbe.read.config.StandbyConfig;
 import com.adbe.read.http.QueryHttpServer;
@@ -21,12 +23,13 @@ import io.aeron.archive.client.RecordingDescriptorConsumer;
 import io.aeron.driver.MediaDriver;
 import io.aeron.driver.ThreadingMode;
 import io.aeron.logbuffer.FragmentHandler;
-import io.aeron.logbuffer.Header;
-import java.util.concurrent.atomic.AtomicReference;
+import java.util.Arrays;
 import org.agrona.BitUtil;
 import org.agrona.BufferUtil;
 import org.agrona.DirectBuffer;
 import org.agrona.MutableDirectBuffer;
+import org.agrona.concurrent.BackoffIdleStrategy;
+import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.MessageHandler;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.agrona.concurrent.status.AtomicCounter;
@@ -35,14 +38,23 @@ import org.agrona.concurrent.status.CountersManager;
 /**
  * A read node that operates independently of the Raft consensus protocol. It
  * connects to a cluster member's Aeron Archive, periodically downloads the
- * latest service snapshot, loads it into a {@link BalanceEngine}, and serves
- * reads over HTTP. It is never listed in {@code clusterMembers} and does not
- * vote or affect quorum.
+ * latest service snapshot, loads it into a {@link BalanceEngine}, optionally
+ * follows the live consensus log between snapshots, and serves reads over HTTP.
+ * It is never listed in {@code clusterMembers} and does not vote or affect
+ * quorum.
  *
- * <p>Snapshot staleness is bounded by the poll interval; in steady state reads
- * reflect the most recent snapshot on the cluster Archive. Between snapshots
- * the standby state is frozen -- this is acceptable for the read use case
- * defined in ADR 0005.
+ * <p>Single-writer: a single agent thread owns the engine. That one thread
+ * drains HTTP queries from the {@link ReadQueryGateway}, polls the live log,
+ * and loads new snapshots - mirroring the cluster-mode {@code ReadModelService}
+ * which answers queries inside {@code doBackgroundWork} on the service thread.
+ * Because reads and writes to the engine's non-thread-safe stores always happen
+ * on this one thread, no concurrency control is needed and readers always see a
+ * consistent state.
+ *
+ * <p>Snapshot staleness is bounded by the poll interval; a snapshot is loaded
+ * only when a newer snapshot recording appears, so the engine is not clobbered
+ * on every poll and live-log progress is preserved between snapshots. See ADR
+ * 0005 and 0006.
  */
 public final class StandbyReadNode implements AutoCloseable {
 
@@ -58,14 +70,23 @@ public final class StandbyReadNode implements AutoCloseable {
     private final QueryHttpServer httpServer;
     private final StandbyConfig standbyConfig;
     private final SnapshotManager snapshotManager;
-    private final AtomicReference<Thread> pollThread;
-    private final AtomicReference<Thread> queryDrainer;
     private final UnsafeBuffer responseBuffer;
     private final MessageHandler queryHandler;
-    private final AtomicReference<LiveLogSubscriber> liveLog;
-    private volatile long snapshotLogPosition;
+    private final FragmentHandler snapshotFragmentHandler;
+    private final MessageHeaderDecoder validationHeader = new MessageHeaderDecoder();
+    private final long[] snapshotCandidates = new long[64];
 
+    private final Thread agentThread;
     private volatile boolean running = true;
+
+    // Agent-thread-owned state (never touched from any other thread).
+    private long currentSnapshotRecordingId = -1L;
+    private long snapshotLogPosition;
+    private long nextSnapshotPollMs;
+    private LiveLogSubscriber liveLog;
+    private int candidateCount;
+    private boolean snapshotLoadBegun;
+    private boolean snapshotRejected;
 
     public StandbyReadNode(
             final StandbyConfig standbyConfig, final CoreConfig coreConfig, final ReadServiceConfig readConfig) {
@@ -78,6 +99,24 @@ public final class StandbyReadNode implements AutoCloseable {
         this.metrics = newMetrics();
         this.engine = new BalanceEngine(coreConfig, metrics);
         this.gateway = new ReadQueryGateway(readConfig.requestRingCapacity(), readConfig.responseRingCapacity());
+
+        // Validates that the first record is an ADBE SnapshotHeader before the
+        // engine is cleared, so a consensus-module snapshot recording (which
+        // shares the snapshot stream but carries cluster-schema records) is
+        // rejected without disturbing the current state.
+        this.snapshotFragmentHandler =
+                (final DirectBuffer buffer, final int offset, final int length, final io.aeron.logbuffer.Header h) -> {
+                    if (!snapshotLoadBegun) {
+                        validationHeader.wrap(buffer, offset);
+                        if (validationHeader.templateId() != SnapshotHeaderDecoder.TEMPLATE_ID) {
+                            snapshotRejected = true;
+                            return;
+                        }
+                        engine.beginSnapshotLoad(snapshotManager);
+                        snapshotLoadBegun = true;
+                    }
+                    snapshotManager.onRecord(buffer, offset);
+                };
 
         final String aeronDir = "build/standby-read/driver";
         this.mediaDriver = MediaDriver.launch(new MediaDriver.Context()
@@ -93,15 +132,11 @@ public final class StandbyReadNode implements AutoCloseable {
                 .controlResponseChannel("aeron:udp?endpoint=localhost:0")
                 .controlRequestStreamId(standbyConfig.archiveControlStreamId()));
 
-        loadLatestSnapshot();
-
         this.httpServer = new QueryHttpServer(gateway, readConfig);
 
-        this.pollThread = new AtomicReference<>();
-        this.queryDrainer = new AtomicReference<>();
-        this.liveLog = new AtomicReference<>();
-        startPolling();
-        startQueryDrainer();
+        this.agentThread = new Thread(this::agentLoop, "adbe-standby-agent");
+        this.agentThread.setDaemon(true);
+        this.agentThread.start();
     }
 
     /** The bound HTTP port (useful when a port of 0 was requested in tests). */
@@ -113,24 +148,85 @@ public final class StandbyReadNode implements AutoCloseable {
         return gateway;
     }
 
-    private void loadLatestSnapshot() {
-        final long recordingId = findLatestSnapshotRecording();
-        if (recordingId < 0) {
-            return;
-        }
-        replaySnapshot(recordingId);
-        snapshotLogPosition = snapshotManager.loadedLogPosition();
+    // --- Single-writer agent loop ----------------------------------------
 
-        if (standbyConfig.liveLogEnabled() && snapshotLogPosition > 0) {
-            final LiveLogSubscriber subscriber = new LiveLogSubscriber(archive, engine, snapshotLogPosition);
-            liveLog.set(subscriber);
-            subscriber.start();
+    private void agentLoop() {
+        final IdleStrategy idleStrategy = new BackoffIdleStrategy();
+        while (running) {
+            int work = 0;
+            work += gateway.readRequests(queryHandler, REQUEST_DRAIN_LIMIT);
+            work += pollLiveLog();
+            if (System.currentTimeMillis() >= nextSnapshotPollMs) {
+                try {
+                    work += pollForNewSnapshot();
+                } catch (final Exception e) {
+                    // A failed replay must not kill query serving; retry on the next poll.
+                    System.err.println("Standby snapshot poll failed: " + e.getMessage());
+                }
+                nextSnapshotPollMs = System.currentTimeMillis() + standbyConfig.pollIntervalMs();
+            }
+            idleStrategy.idle(work);
         }
     }
 
-    private long findLatestSnapshotRecording() {
-        final long[] latest = {-1L, -1L}; // recordingId, stopTimestamp
+    private int pollLiveLog() {
+        if (liveLog == null) {
+            return 0;
+        }
+        return liveLog.poll(FRAGMENT_LIMIT);
+    }
 
+    private int pollForNewSnapshot() {
+        final int count = collectSnapshotCandidates();
+        // Candidates are sorted ascending by recording id; try newest first.
+        for (int i = count - 1; i >= 0; i--) {
+            final long recordingId = snapshotCandidates[i];
+            if (recordingId == currentSnapshotRecordingId) {
+                continue;
+            }
+            if (tryLoadSnapshot(recordingId)) {
+                currentSnapshotRecordingId = recordingId;
+                snapshotLogPosition = snapshotManager.loadedLogPosition();
+                restartLiveLog();
+                return 1;
+            }
+        }
+        return 0;
+    }
+
+    private boolean tryLoadSnapshot(final long recordingId) {
+        try {
+            replaySnapshot(recordingId);
+            return true;
+        } catch (final RuntimeException e) {
+            // Not a loadable service snapshot (e.g. the consensus-module snapshot
+            // recording) or a transient replay failure; leave current state intact.
+            return false;
+        }
+    }
+
+    private void restartLiveLog() {
+        if (liveLog != null) {
+            liveLog.close();
+            liveLog = null;
+        }
+        if (standbyConfig.liveLogEnabled() && snapshotLogPosition > 0) {
+            final LiveLogSubscriber subscriber = new LiveLogSubscriber(archive, engine, snapshotLogPosition);
+            if (subscriber.connect()) {
+                liveLog = subscriber;
+            } else {
+                subscriber.close();
+            }
+        }
+    }
+
+    private int collectSnapshotCandidates() {
+        candidateCount = 0;
+
+        // A snapshot trigger produces two recordings on the snapshot stream: the
+        // consensus-module snapshot (cluster-schema records) and the service
+        // snapshot (ADBE snapshot records). Collect them all and let the caller
+        // validate which one is a loadable service snapshot.
         final RecordingDescriptorConsumer consumer =
                 (controlSessionId,
                         correlationId,
@@ -148,38 +244,47 @@ public final class StandbyReadNode implements AutoCloseable {
                         strippedChannel,
                         originalChannel,
                         sourceIdentity) -> {
-                    if (streamId == standbyConfig.snapshotStreamId() && stopTimestamp > latest[1]) {
-                        latest[0] = recordingId;
-                        latest[1] = stopTimestamp;
+                    if (streamId == standbyConfig.snapshotStreamId() && candidateCount < snapshotCandidates.length) {
+                        snapshotCandidates[candidateCount++] = recordingId;
                     }
                 };
 
         archive.listRecordings(0L, 200, consumer);
-        return latest[0];
+        Arrays.sort(snapshotCandidates, 0, candidateCount);
+        return candidateCount;
     }
 
     private void replaySnapshot(final long recordingId) {
-        final String replayChannel = "aeron:ipc?term-length=256k";
         final int replayStreamId = 42;
-        final long replaySessionId =
-                archive.startReplay(recordingId, 0, AeronArchive.NULL_LENGTH, replayChannel, replayStreamId);
 
-        final Subscription subscription = aeron.addSubscription(replayChannel, replayStreamId);
+        // The standby runs its own media driver, so the replay must travel over
+        // UDP (IPC is scoped to a single driver). Bind a subscription on an
+        // ephemeral port, resolve the actual port, then tell the archive to
+        // replay to that concrete endpoint.
+        snapshotLoadBegun = false;
+        snapshotRejected = false;
 
-        engine.beginSnapshotLoad(snapshotManager);
+        final Subscription subscription = aeron.addSubscription("aeron:udp?endpoint=localhost:0", replayStreamId);
+        try {
+            final String replayChannel = "aeron:udp?endpoint=" + awaitResolvedEndpoint(subscription);
+            archive.startReplay(recordingId, 0, AeronArchive.NULL_LENGTH, replayChannel, replayStreamId);
 
-        final long deadline = System.currentTimeMillis() + standbyConfig.replayTimeoutMs();
-        while (!snapshotManager.loadComplete() && System.currentTimeMillis() < deadline) {
-            final int fragments = subscription.poll(fragmentHandler(), FRAGMENT_LIMIT);
-            if (fragments == 0) {
-                Thread.onSpinWait();
+            final long deadline = System.currentTimeMillis() + standbyConfig.replayTimeoutMs();
+            while (!snapshotRejected && !snapshotManager.loadComplete() && System.currentTimeMillis() < deadline) {
+                final int fragments = subscription.poll(snapshotFragmentHandler, FRAGMENT_LIMIT);
+                if (fragments == 0) {
+                    Thread.onSpinWait();
+                }
             }
-        }
 
-        subscription.close();
-
-        if (!snapshotManager.loadComplete()) {
-            throw new IllegalStateException("Snapshot replay timed out for recording " + recordingId);
+            if (snapshotRejected) {
+                throw new IllegalStateException("Recording " + recordingId + " is not a service snapshot");
+            }
+            if (!snapshotManager.loadComplete()) {
+                throw new IllegalStateException("Snapshot replay timed out for recording " + recordingId);
+            }
+        } finally {
+            subscription.close();
         }
 
         engine.publishSizeGauges();
@@ -188,9 +293,16 @@ public final class StandbyReadNode implements AutoCloseable {
                 recordingId, engine.balances().size());
     }
 
-    private FragmentHandler fragmentHandler() {
-        return (final DirectBuffer buffer, final int offset, final int length, final Header header) ->
-                snapshotManager.onRecord(buffer, offset);
+    private String awaitResolvedEndpoint(final Subscription subscription) {
+        final long deadline = System.currentTimeMillis() + standbyConfig.replayTimeoutMs();
+        while (System.currentTimeMillis() < deadline) {
+            final String endpoint = subscription.resolvedEndpoint();
+            if (endpoint != null) {
+                return endpoint;
+            }
+            Thread.onSpinWait();
+        }
+        throw new IllegalStateException("Timed out resolving replay subscription endpoint");
     }
 
     private static CoreMetrics newMetrics() {
@@ -211,46 +323,6 @@ public final class StandbyReadNode implements AutoCloseable {
             gauges[i] = cm.newCounter("adbe.standby.gauge." + i, CounterSink.TYPE_GAUGE);
         }
         return new CoreMetrics(new AtomicCounterSink(counters, gauges));
-    }
-
-    private void startPolling() {
-        final Thread thread = new Thread(
-                () -> {
-                    while (running) {
-                        try {
-                            Thread.sleep(standbyConfig.pollIntervalMs());
-                        } catch (final InterruptedException e) {
-                            Thread.currentThread().interrupt();
-                            break;
-                        }
-                        if (!running) {
-                            break;
-                        }
-                        try {
-                            loadLatestSnapshot();
-                        } catch (final Exception e) {
-                            System.err.println("Standby snapshot poll failed: " + e.getMessage());
-                        }
-                    }
-                },
-                "adbe-standby-poll");
-        thread.setDaemon(true);
-        pollThread.set(thread);
-        thread.start();
-    }
-
-    private void startQueryDrainer() {
-        final Thread thread = new Thread(
-                () -> {
-                    while (running) {
-                        gateway.readRequests(queryHandler, REQUEST_DRAIN_LIMIT);
-                        Thread.onSpinWait();
-                    }
-                },
-                "adbe-standby-query");
-        thread.setDaemon(true);
-        queryDrainer.set(thread);
-        thread.start();
     }
 
     // --- Query handling (same logic as ReadModelService) -----------------
@@ -299,31 +371,17 @@ public final class StandbyReadNode implements AutoCloseable {
     @Override
     public void close() {
         running = false;
-
-        final LiveLogSubscriber sub = liveLog.getAndSet(null);
-        if (sub != null) {
-            sub.close();
+        try {
+            agentThread.join(2_000L);
+        } catch (final InterruptedException ignored) {
+            Thread.currentThread().interrupt();
         }
 
-        final Thread qThread = queryDrainer.getAndSet(null);
-        if (qThread != null) {
-            qThread.interrupt();
-            try {
-                qThread.join(1000L);
-            } catch (final InterruptedException ignored) {
-                Thread.currentThread().interrupt();
-            }
+        if (liveLog != null) {
+            liveLog.close();
+            liveLog = null;
         }
 
-        final Thread thread = pollThread.getAndSet(null);
-        if (thread != null) {
-            thread.interrupt();
-            try {
-                thread.join(1000L);
-            } catch (final InterruptedException ignored) {
-                Thread.currentThread().interrupt();
-            }
-        }
         httpServer.close();
         archive.close();
         aeron.close();
