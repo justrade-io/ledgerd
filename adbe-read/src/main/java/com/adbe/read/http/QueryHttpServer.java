@@ -29,6 +29,7 @@ import io.netty.handler.codec.http.HttpUtil;
 import io.netty.handler.codec.http.HttpVersion;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Netty HTTP boundary for the read service. It translates REST requests into
@@ -92,8 +93,10 @@ public final class QueryHttpServer implements AutoCloseable {
     @Override
     public void close() {
         serverChannel.close().syncUninterruptibly();
-        workerGroup.shutdownGracefully();
-        bossGroup.shutdownGracefully();
+        // Await event-loop termination so in-flight requests and their scheduled
+        // timeout tasks are not dropped mid-shutdown.
+        workerGroup.shutdownGracefully(0, 5, TimeUnit.SECONDS).syncUninterruptibly();
+        bossGroup.shutdownGracefully(0, 5, TimeUnit.SECONDS).syncUninterruptibly();
     }
 
     /** Per-channel request handler that bridges HTTP to the query ring. */
@@ -237,6 +240,9 @@ public final class QueryHttpServer implements AutoCloseable {
 
         @Override
         public void exceptionCaught(final ChannelHandlerContext ctx, final Throwable cause) {
+            // Edge boundary: surface codec/aggregator/write failures instead of
+            // dropping them silently, then close the offending connection.
+            System.err.println("read HTTP error on " + ctx.channel().remoteAddress() + ": " + cause);
             ctx.close();
         }
     }

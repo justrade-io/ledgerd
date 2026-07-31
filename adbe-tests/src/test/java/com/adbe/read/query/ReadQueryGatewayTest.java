@@ -86,6 +86,27 @@ class ReadQueryGatewayTest {
     }
 
     @Test
+    @Timeout(10)
+    void rejectsWhenRequestRingFull() {
+        // A small request ring with no service thread draining it fills quickly.
+        try (ReadQueryGateway gateway = new ReadQueryGateway(1024, 1 << 16)) {
+            boolean rejected = false;
+            int accepted = 0;
+            for (int i = 0; i < 100_000; i++) {
+                final long id = gateway.submit(QueryType.BALANCE, new long[] {1L}, 1, (buffer, offset, len) -> {});
+                if (id == ReadQueryGateway.NO_CAPACITY) {
+                    rejected = true;
+                    break;
+                }
+                accepted++;
+            }
+            assertTrue(rejected, "request ring must reject once full");
+            assertTrue(accepted > 0, "some requests accepted before the ring filled");
+            assertTrue(gateway.overloads() >= 1, "overload counter incremented on rejection");
+        }
+    }
+
+    @Test
     void roundTripsQueryCodec() {
         final UnsafeBuffer buffer = new UnsafeBuffer(new byte[QueryCodec.maxMessageLength()]);
         final long[] operands = {1L, 2L, 3L};

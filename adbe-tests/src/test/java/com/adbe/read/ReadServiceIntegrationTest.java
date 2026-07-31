@@ -89,6 +89,35 @@ class ReadServiceIntegrationTest {
         }
     }
 
+    @Test
+    @Timeout(60)
+    void rejectsMalformedRequestsWithoutCrashing() {
+        assertEquals(404, statusOf("GET", "/nope", null), "unknown GET route");
+        assertEquals(404, statusOf("POST", "/nope", "{}"), "unknown POST route");
+        assertEquals(400, statusOf("GET", "/balance/not-a-number", null), "non-numeric balance id");
+        assertEquals(400, statusOf("GET", "/allowance/1", null), "allowance missing delegate");
+        assertEquals(400, statusOf("GET", "/allowance/1/", null), "allowance empty delegate");
+        assertEquals(400, statusOf("GET", "/allowance/x/y", null), "allowance non-numeric");
+        assertEquals(400, statusOf("POST", "/balances", "   "), "batch with no ids");
+    }
+
+    private int statusOf(final String method, final String path, final String body) {
+        try {
+            final HttpRequest.Builder builder =
+                    HttpRequest.newBuilder(URI.create(baseUrl + path)).timeout(Duration.ofSeconds(5));
+            if ("POST".equals(method)) {
+                builder.header("Content-Type", "application/json")
+                        .POST(HttpRequest.BodyPublishers.ofString(body == null ? "" : body));
+            } else {
+                builder.GET();
+            }
+            return http.send(builder.build(), HttpResponse.BodyHandlers.ofString())
+                    .statusCode();
+        } catch (final Exception e) {
+            throw new IllegalStateException("HTTP " + method + " " + path + " failed", e);
+        }
+    }
+
     private void awaitWrite(final AdbeClient client, final long commandIdLo, final long[] lastCommandIdLo) {
         final long deadline = System.currentTimeMillis() + WRITE_TIMEOUT_MS;
         while (System.currentTimeMillis() < deadline) {

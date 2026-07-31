@@ -124,7 +124,7 @@ The `adbe-core` module is checked by a dedicated determinism ruleset (`adbe-core
 | Integration tests | `integrationTest` | `integration` | In-process single-node cluster with IPC Media Driver |
 | Cluster tests | `clusterTest` | `cluster` | Multi-node: leader election, catch-up replay, determinism |
 | Fault tests | `faultTest` | `fault` | Kill leader mid-flight, verify exactly-once failover |
-| Soak tests | `soakTest` | `soak` | Sustained load within tail-latency budget, zero-GC assertion |
+| Soak tests | `soakTest` | `soak` | Sustained load within tail-latency budget, bounded-GC assertion (core zero-alloc is asserted by JMH `-prof gc`) |
 | Property tests | `test` | (none) | jqwik: overflow matches `Math.addExact`, sequence arithmetic |
 | JMH benchmarks | `jmh` | (none) | Hot-path micro-benchmarks with GC profiler |
 

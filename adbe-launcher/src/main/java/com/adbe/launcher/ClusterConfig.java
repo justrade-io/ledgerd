@@ -34,7 +34,6 @@ public final class ClusterConfig {
     private final File archiveDir;
     private final File clusterDir;
     private final String archiveControlChannel;
-    private final String archiveControlResponseChannel;
     private final String ingressChannel;
     private final String replicationChannel;
 
@@ -45,7 +44,6 @@ public final class ClusterConfig {
             final File archiveDir,
             final File clusterDir,
             final String archiveControlChannel,
-            final String archiveControlResponseChannel,
             final String ingressChannel,
             final String replicationChannel) {
         this.nodeId = nodeId;
@@ -54,7 +52,6 @@ public final class ClusterConfig {
         this.archiveDir = archiveDir;
         this.clusterDir = clusterDir;
         this.archiveControlChannel = archiveControlChannel;
-        this.archiveControlResponseChannel = archiveControlResponseChannel;
         this.ingressChannel = ingressChannel;
         this.replicationChannel = replicationChannel;
     }
@@ -167,7 +164,6 @@ public final class ClusterConfig {
                 baseDir.resolve("archive").toFile(),
                 baseDir.resolve("cluster").toFile(),
                 "aeron:udp?endpoint=" + host + ":" + archivePort,
-                "aeron:udp?endpoint=" + host + ":0",
                 "aeron:udp?term-length=64k",
                 "aeron:udp?endpoint=" + host + ":0");
     }
@@ -194,10 +190,6 @@ public final class ClusterConfig {
 
     public String archiveControlChannel() {
         return archiveControlChannel;
-    }
-
-    public String archiveControlResponseChannel() {
-        return archiveControlResponseChannel;
     }
 
     public String ingressChannel() {

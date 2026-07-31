@@ -38,6 +38,15 @@ class ChaosSoakTest {
     private static final int STEADY = 200_000;
     private static final long P99_9_BUDGET_NS = TimeUnit.MILLISECONDS.toNanos(50);
 
+    /**
+     * Upper bound on GC collections during the steady window. The deterministic
+     * core hot path is allocation-free (asserted by JMH {@code -prof gc}); this
+     * full client/cluster path does allocate at the edge, so the soak asserts GC
+     * stays bounded rather than literally zero - a gross breach signals an
+     * allocation leak.
+     */
+    private static final long MAX_GC_COLLECTIONS = 1_000L;
+
     @Test
     @Timeout(600)
     void sustainedLoadCompletesWithinTailLatencyBudget(@TempDir final Path baseDir) {
@@ -55,12 +64,12 @@ class ChaosSoakTest {
                 // Warm up the JIT and the transport before measuring.
                 drive(client, WARMUP);
 
-                final long gcBefore = youngGcCount();
+                final long gcBefore = gcCollectionCount();
                 client.latencyHistogram().reset();
 
                 drive(client, STEADY);
 
-                final long gcDelta = youngGcCount() - gcBefore;
+                final long gcDelta = gcCollectionCount() - gcBefore;
                 final Histogram histogram = client.latencyHistogram();
 
                 assertEquals((long) (WARMUP + STEADY), client.completed(), "every submitted command must complete");
@@ -80,6 +89,10 @@ class ChaosSoakTest {
                 assertTrue(
                         p999 <= P99_9_BUDGET_NS,
                         "p99.9 latency " + TimeUnit.NANOSECONDS.toMicros(p999) + "us exceeded budget");
+                assertTrue(
+                        gcDelta <= MAX_GC_COLLECTIONS,
+                        "GC collections " + gcDelta + " exceeded bound " + MAX_GC_COLLECTIONS
+                                + " (possible allocation leak)");
             }
         }
     }
@@ -107,7 +120,8 @@ class ChaosSoakTest {
         }
     }
 
-    private static long youngGcCount() {
+    /** Total GC collections across all collectors (young and old) since JVM start. */
+    private static long gcCollectionCount() {
         long total = 0L;
         for (final GarbageCollectorMXBean bean : ManagementFactory.getGarbageCollectorMXBeans()) {
             final long count = bean.getCollectionCount();

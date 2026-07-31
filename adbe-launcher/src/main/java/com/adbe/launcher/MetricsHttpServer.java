@@ -8,6 +8,7 @@ import java.io.OutputStream;
 import java.io.UncheckedIOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import org.agrona.concurrent.status.CountersReader;
 
@@ -26,6 +27,7 @@ public final class MetricsHttpServer implements AutoCloseable {
 
     private final CountersReader reader;
     private final HttpServer server;
+    private final ExecutorService executor;
 
     /**
      * Starts the server bound to {@code port} on all network interfaces
@@ -43,11 +45,12 @@ public final class MetricsHttpServer implements AutoCloseable {
         }
         server.createContext("/metrics", this::handleMetrics);
         server.createContext("/healthz", this::handleHealth);
-        server.setExecutor(Executors.newSingleThreadExecutor(runnable -> {
+        this.executor = Executors.newSingleThreadExecutor(runnable -> {
             final Thread thread = new Thread(runnable, "adbe-metrics-http");
             thread.setDaemon(true);
             return thread;
-        }));
+        });
+        server.setExecutor(executor);
         server.start();
     }
 
@@ -109,5 +112,7 @@ public final class MetricsHttpServer implements AutoCloseable {
     @Override
     public void close() {
         server.stop(0);
+        // HttpServer.stop does not shut down a user-supplied executor.
+        executor.shutdown();
     }
 }
