@@ -271,8 +271,9 @@ flowchart TB
 | `adbe-core`     | Deterministic engine, handlers, dedup, snapshot, telemetry            |
 | `adbe-launcher` | Aeron bootstrap: Media Driver, Archive, Consensus Module, Container   |
 | `adbe-client`   | Edge-side SDK: leader-change handling, idempotent retry, correlation  |
-| `adbe-read`     | CQRS read side: follower read model, HTTP query API over Netty        |
-| `adbe-tests`    | Unit, property, and integration tests plus test-only fixtures         |
+| `adbe-read`     | CQRS read side: standby or cluster follower, HTTP query API (Netty)   |
+| `adbe-tests`    | Unit, property, integration, cluster, fault, soak tests and fixtures  |
+| `adbe-examples` | Runnable examples (QuickStart, RemoteClient)                          |
 
 Within `adbe-core`:
 
@@ -359,8 +360,14 @@ principles. Key architectural decisions include:
 | `SnapshotRoundTripTest`  | Unit        | Byte-identical round trip and supply invariant        |
 | `ReplayDeterminismTest`  | Unit        | Two engines, same log, identical snapshots            |
 | `AmountsPropertyTest`    | Property    | Overflow matches `Math.addExact` (jqwik)              |
+| `ReadQueryGatewayTest`   | Unit        | Query-ring correlation, cancel/orphan handling, codec |
+| `MetricsHttpServerTest`  | Unit        | Prometheus metrics and healthz HTTP endpoint          |
 | `ClusterIntegrationTest` | Integration | End-to-end over a real cluster, idempotency verified  |
 | `AdbeClientIntegrationTest` | Integration | Client SDK submit/poll, command-id correlation     |
+| `ReadServiceIntegrationTest` | Integration | Read-after-write over HTTP; both sides of transfer |
+| `StandbyReplicationIntegrationTest` | Integration | Standby snapshot replication end-to-end    |
+| `StandbyLiveLogIntegrationTest` | Integration | Standby live log following, sub-second staleness |
+| `StandbyReadNodeSmokeTest` | Integration | Standby read node startup and basic query           |
 | `MultiNodeClusterTest`   | Cluster     | Three-node leader election and committed results      |
 | `CatchUpReplayTest`      | Cluster     | Restarted node recovers its log and rejoins consensus |
 | `ClusterReplayDeterminismTest` | Cluster | Identical command streams yield identical balances  |

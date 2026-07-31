@@ -20,7 +20,7 @@ Please include:
 - a description of the issue and its impact;
 - steps to reproduce (a minimal test case is ideal);
 - affected component (`adbe-protocol`, `adbe-core`, `adbe-launcher`,
-  `adbe-client`) and commit or version;
+  `adbe-client`, `adbe-read`, `adbe-examples`) and commit or version;
 - your environment: JDK version, Aeron/Agrona version, and OS.
 
 ## What to expect

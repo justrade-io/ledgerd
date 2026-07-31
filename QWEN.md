@@ -25,8 +25,10 @@
 | Build system | Gradle (Kotlin DSL) with version catalog |
 | Testing | JUnit 5.11.4, jqwik 1.9.2 (property-based) |
 | Benchmarks | JMH 1.37 |
+| Latency measurement | HdrHistogram 2.2.2 |
+| Thread affinity | Affinity 3.23.3 (OpenHFT) |
 | Linting / formatting | Checkstyle 10.20.1, Spotless (Palantir Java Format) |
-| Read-side HTTP | Netty 4.1.115 |
+| Read-side HTTP | Netty 4.1.136.Final |
 | Containerisation | Docker (multi-stage `Dockerfile` + `docker-compose.yml`) |
 | CI | GitHub Actions (`.github/workflows/ci.yml`) |
 
@@ -37,7 +39,7 @@ adbe-protocol/     SBE schema + generated flyweight codecs (zero-dependency wire
 adbe-core/         Deterministic state machine: engine, handlers, stores, dedup, snapshot, telemetry
 adbe-launcher/     Aeron bootstrap: Media Driver, Archive, Consensus Module, service container, optional Prometheus endpoint
 adbe-client/       Edge-side SDK: leader-change handling, idempotent retry, async correlation, backpressure (depends only on adbe-protocol)
-adbe-read/         CQRS read side: follower applies committed log, answers balance/allowance/supply queries over HTTP (Netty)
+adbe-read/         CQRS read side: standby (default) or cluster follower, answers balance/allowance/supply queries over HTTP (Netty)
 adbe-tests/        Unit, property, integration, cluster, fault, and soak tests + testFixtures toolkit
 adbe-examples/     Runnable examples (QuickStart, RemoteClient)
 ```

@@ -662,20 +662,50 @@ engine.process(cmd, outcome);
 
 The command path (sections 1 - 12) is write-only: every result is a deterministic `CommandResult`
 committed through Raft. Reads are served separately by the `adbe-read` module, a CQRS read side.
-A `ReadModelService` runs as a cluster follower, applies the identical committed log through the
-same `BalanceEngine`, and therefore holds a complete, byte-identical copy of engine state -
-including both sides of every `TRANSFER`, which the egress stream never carries. See
-[ADR 0005](decisions/0005-read-side-cqrs.md).
+Two deployment modes are supported:
 
-**Consistency**: reads are eventually consistent with bounded staleness. A read reflects the
-follower's applied log position, which trails the leader by the replication and query round-trip
-latency. Do not use these endpoints where linearizable reads are required.
+- **Standby mode** (`ADBE_MODE=standby`, default): `StandbyReadNode` runs as a
+  standalone process with its own embedded Media Driver. It connects to a cluster
+  member's Aeron Archive, downloads the latest service snapshot, and optionally
+  follows the consensus log recording for sub-second staleness. Standby nodes are
+  NOT cluster members: they do not vote, do not affect quorum, and can be added
+  or removed independently. See [ADR 0006](decisions/0006-standby-snapshot-read-nodes.md).
 
-**Threading**: queries are answered on the single service thread via
-`ClusteredService.doBackgroundWork`, reached over a lock-free ring buffer from the Netty HTTP
-boundary. Reads never touch the stores concurrently, so the single-writer discipline is preserved.
+- **Cluster mode** (`ADBE_MODE=cluster`, legacy): `ReadModelService` runs as a
+  cluster follower, applies the identical committed log through the same
+  `BalanceEngine`, and therefore holds a complete, byte-identical copy of engine
+  state - including both sides of every `TRANSFER`, which the egress stream never
+  carries. See [ADR 0005](decisions/0005-read-side-cqrs.md).
+
+**Consistency**: reads are eventually consistent with bounded staleness. In
+standby mode with live log following, staleness is the live log replay delay
+(milliseconds); without it, staleness is bounded by the snapshot poll interval.
+In cluster mode, a read reflects the follower's applied log position, which
+trails the leader by the replication and query round-trip latency. Do not use
+these endpoints where linearizable reads are required.
+
+**Threading**: in cluster mode, queries are answered on the single service thread
+via `ClusteredService.doBackgroundWork`, reached over a lock-free ring buffer from
+the Netty HTTP boundary. In standby mode, a dedicated query drainer thread reads
+from the engine. Reads never touch the stores concurrently, so the single-writer
+discipline is preserved.
 
 ### Running a read node
+
+**Standby mode (default, recommended)**:
+
+```bash
+# Gradle (development): standalone standby, connects to localhost:20104 archive.
+ADBE_ARCHIVE_CHANNEL=aeron:udp?endpoint=localhost:20104 ./gradlew :adbe-read:run
+```
+
+Configured by environment variables: `ADBE_MODE` (default `standby`),
+`ADBE_ARCHIVE_CHANNEL`, `ADBE_HTTP_PORT` (default `8080`),
+`ADBE_SNAPSHOT_POLL_MS` (default `5000`), `ADBE_LIVE_LOG` (default `true`).
+See [OPERATIONS.md - Read Service](OPERATIONS.md#8-read-service-http-query-api)
+for the full reference.
+
+**Cluster mode (legacy)**:
 
 ```java
 import com.adbe.config.CoreConfig;
@@ -691,9 +721,9 @@ try (ReadNode node = new ReadNode(clusterConfig, CoreConfig.defaults(), readConf
 }
 ```
 
-Or launch the standalone process (`com.adbe.read.ReadServiceLauncher`), configured by the
-`ADBE_NODE_ID`, `ADBE_CLUSTER_MEMBERS`, `ADBE_HOST`, `ADBE_BASE_DIR`, and `ADBE_HTTP_PORT`
-environment variables.
+Or launch via `com.adbe.read.ReadServiceLauncher` with `ADBE_MODE=cluster`,
+configured by the `ADBE_NODE_ID`, `ADBE_CLUSTER_MEMBERS`, `ADBE_HOST`,
+`ADBE_BASE_DIR`, and `ADBE_HTTP_PORT` environment variables.
 
 ### Endpoints
 

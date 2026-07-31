@@ -85,7 +85,10 @@ addendum/
 |       |   |-- CommandOutcome.java          Reusable result holder (no per-command allocation)
 |       |   +-- handlers/                    Credit, Debit, Transfer, Approve, DelegatedTransfer
 |       |-- persistence/SnapshotManager.java Streaming SBE snapshot write/load
-|       +-- telemetry/CoreMetrics.java       Single-writer counters
+|       +-- telemetry/
+|           |-- CoreMetrics.java             Single-writer counters
+|           |-- CounterSink.java             Allocation-free counter sink interface (NOOP default)
+|           +-- AtomicCounterSink.java       Off-heap AtomicCounter-backed sink for cross-thread reads
 |   +-- src/jmh/java/com/adbe/bench/         BalanceEngineBenchmark (decode, lookup, dispatch)
 |
 |-- adbe-launcher/                  Aeron component bootstrap
@@ -103,7 +106,7 @@ addendum/
 |-- adbe-read/                      Read side (CQRS query, HTTP over Netty)
 |   +-- src/main/java/com/adbe/read/
 |       |-- projection/ReadModelService.java  Follower service, answers reads in doBackgroundWork
-|       |-- query/                            QueryCodec, ReadQueryGateway (lock-free rings)
+|       |-- query/                            QueryCodec, QueryType, ReadCallback, ReadQueryGateway
 |       |-- http/QueryHttpServer.java         Netty HTTP boundary
 |       |-- config/
 |       |   |-- ReadServiceConfig.java        Immutable read config (HTTP port, ring capacities)
@@ -234,6 +237,8 @@ free of Aeron so it can run in tests; `BalanceService` adapts it to the cluster.
 | `DedupRing`         | Power-of-two ring, O(1) lookup via `seq & (capacity - 1)`               |
 | `SnapshotManager`   | Streaming SBE snapshot writer/loader with deterministic key ordering    |
 | `CoreMetrics`       | Single-writer counters (ops, duplicates, backpressure, snapshot timing) |
+| `CounterSink`       | Allocation-free sink interface; NOOP default for tests, off-heap in cluster |
+| `AtomicCounterSink` | Off-heap `AtomicCounter`-backed sink so external threads can read counters |
 
 ### adbe-launcher - Cluster Bootstrap
 
@@ -297,6 +302,8 @@ modes are supported:
 | `ReadModelService`   | Follower service: delegates cluster callbacks to `BalanceService`, answers reads in `doBackgroundWork` |
 | `ReadQueryGateway`   | Lock-free bridge: request `ManyToOneRingBuffer`, response `OneToOneRingBuffer`, correlation dispatcher |
 | `QueryCodec`         | Fixed little-endian request/response layout over the in-process rings           |
+| `QueryType`          | Enum of read kinds (BALANCE, BATCH_BALANCE, ALLOWANCE, TOTAL_SUPPLY)            |
+| `ReadCallback`       | Functional interface invoked on the dispatcher thread when a response correlates |
 | `QueryHttpServer`    | Netty HTTP boundary: routes REST reads to the gateway, completes them as JSON    |
 | `ReadNode`           | Composes a cluster follower, the gateway, and the HTTP server into one process   |
 | `ReadServiceConfig`  | Immutable read config (HTTP port, ring capacities, request timeout, batch size)  |
@@ -316,8 +323,8 @@ flowchart LR
 
 ### adbe-tests - Verification and Fixtures
 
-Unit, property, and integration tests plus a `testFixtures` toolkit. The cluster
-client here is a test harness only, never the shipped Edge SDK.
+Unit, property, integration, cluster, fault, and soak tests plus a `testFixtures`
+toolkit. The cluster client here is a test harness only, never the shipped Edge SDK.
 
 | Fixture             | Purpose                                                         |
 |---------------------|-----------------------------------------------------------------|
@@ -526,12 +533,24 @@ JVM must run with `--add-opens java.base/jdk.internal.misc=ALL-UNNAMED` and
 | `SnapshotRoundTripTest`     | Unit        | Write then load reproduces byte-identical state and invariant |
 | `ReplayDeterminismTest`     | Unit        | Two engines replaying the same log produce identical snapshots |
 | `AmountsPropertyTest`       | Property    | Overflow detection matches `Math.addExact` (jqwik)         |
-| `ClusterIntegrationTest`    | Integration | End-to-end over a real single-node cluster, idempotency verified |
 | `ReadQueryGatewayTest`      | Unit        | Query-ring correlation, cancel/orphan handling, codec round-trip |
+| `MetricsHttpServerTest`     | Unit        | Prometheus metrics and healthz HTTP endpoint               |
+| `ClusterIntegrationTest`    | Integration | End-to-end over a real single-node cluster, idempotency verified |
+| `AdbeClientIntegrationTest` | Integration | Client SDK submit/poll, command-id correlation             |
 | `ReadServiceIntegrationTest`| Integration | Read-after-write over HTTP; reflects both sides of a transfer |
+| `StandbyReplicationIntegrationTest` | Integration | Standby snapshot replication end-to-end            |
+| `StandbyLiveLogIntegrationTest` | Integration | Standby live log following, sub-second staleness       |
+| `StandbyReadNodeSmokeTest`  | Integration | Standby read node startup and basic query                  |
+| `MultiNodeClusterTest`      | Cluster     | Three-node leader election and committed results           |
+| `CatchUpReplayTest`         | Cluster     | Restarted node recovers its log and rejoins consensus      |
+| `ClusterReplayDeterminismTest` | Cluster  | Identical command streams yield identical balances         |
+| `FaultInjectionTest`        | Fault       | Leader killed mid-flight; retry applies exactly once       |
+| `ChaosSoakTest`             | Soak        | Sustained load within the tail-latency budget              |
 
-Integration tests use an in-process Media Driver and are selected by the JUnit
-`integration` tag, run via the `integrationTest` Gradle task.
+Test suites are grouped by JUnit tag and Gradle task: `test` (unit, no tag),
+`integrationTest` (tag `integration`), `clusterTest` (tag `cluster`), `faultTest`
+(tag `fault`), and `soakTest` (tag `soak`). Only `test` and `integrationTest`
+run in the default `check` gate.
 
 ---
 
