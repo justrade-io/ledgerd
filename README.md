@@ -220,8 +220,8 @@ single-writer hot path.
 
 ## Running a Cluster with Docker
 
-A `docker-compose.yml` brings up a local three-node Raft cluster, each node in
-its own container on a shared bridge network:
+A `docker-compose.yml` brings up a local three-node Raft write cluster plus one
+standby read node, each in its own container on a shared bridge network:
 
 ```bash
 docker compose up --build
@@ -229,10 +229,20 @@ docker compose up --build
 
 Node 0 publishes its ingress port (`20100/udp`) to the host so an external client
 can connect, and each node exposes its Prometheus endpoint (`9100`, `9101`,
-`9102` on the host). The topology is supplied entirely through environment
-variables in the compose file (member id, advertised host, and the Aeron member
-string), so the image itself stays generic. On a fresh start the three members
-elect a leader and replicate committed commands.
+`9102` on the host). The standby read node (`adbe-read-0`) connects to node 0's
+Aeron Archive, follows the consensus log, and serves eventually-consistent reads
+over HTTP on host port `8080`. It is not a Raft member: it does not vote, does
+not affect quorum, and can be restarted independently (see ADR 0006 and 0007).
+
+```bash
+curl http://localhost:8080/balance/100
+curl http://localhost:8080/supply
+```
+
+The topology is supplied entirely through environment variables in the compose
+file (member id, advertised host, and the Aeron member string), so the image
+itself stays generic. On a fresh start the three members elect a leader and
+replicate committed commands.
 
 An end-to-end smoke test connects a client to all three members over the internal
 network, submits a credit and a transfer, and exits non-zero if the expected
@@ -240,6 +250,14 @@ results do not arrive:
 
 ```bash
 docker compose run --rm client
+```
+
+An operational verification script exercises the full topology end to end - cold
+start, read-after-write over the live log, malformed-request handling, read-node
+restart and re-sync, write-node restart, and read decoupling from quorum:
+
+```bash
+bash docker/verify-read.sh
 ```
 
 ## Architecture
@@ -271,7 +289,7 @@ flowchart TB
 | `adbe-core`     | Deterministic engine, handlers, dedup, snapshot, telemetry            |
 | `adbe-launcher` | Aeron bootstrap: Media Driver, Archive, Consensus Module, Container   |
 | `adbe-client`   | Edge-side SDK: leader-change handling, idempotent retry, correlation  |
-| `adbe-read`     | CQRS read side: standby or cluster follower, HTTP query API (Netty)   |
+| `adbe-read`     | CQRS read side: standby read node (Archive replication), HTTP query API (Netty) |
 | `adbe-tests`    | Unit, property, integration, cluster, fault, soak tests and fixtures  |
 | `adbe-examples` | Runnable examples (QuickStart, RemoteClient)                          |
 
@@ -364,7 +382,7 @@ principles. Key architectural decisions include:
 | `MetricsHttpServerTest`  | Unit        | Prometheus metrics and healthz HTTP endpoint          |
 | `ClusterIntegrationTest` | Integration | End-to-end over a real cluster, idempotency verified  |
 | `AdbeClientIntegrationTest` | Integration | Client SDK submit/poll, command-id correlation     |
-| `ReadServiceIntegrationTest` | Integration | Read-after-write over HTTP; both sides of transfer |
+| `StandbyReadQueryIntegrationTest` | Integration | Read-after-write over HTTP via standby; both sides of transfer, malformed requests |
 | `StandbyReplicationIntegrationTest` | Integration | Standby snapshot replication end-to-end    |
 | `StandbyLiveLogIntegrationTest` | Integration | Standby live log following, sub-second staleness |
 | `StandbyReadNodeSmokeTest` | Integration | Standby read node startup and basic query           |

@@ -317,18 +317,13 @@ scrape_configs:
 ## 8. Read Service (HTTP Query API)
 
 The read service (`adbe-read`) serves eventually-consistent balance, allowance,
-and total-supply reads over HTTP. Two deployment modes are supported:
-
-- **Standby mode** (`ADBE_MODE=standby`, default): `StandbyReadNode` runs as a
-  standalone process, independent of the Raft cluster. It connects to the
-  write cluster's Aeron Archive, periodically downloads the latest service
-  snapshot, and serves reads from the loaded state. Optionally, with live log
-  following enabled (`ADBE_LIVE_LOG=true`, default), it subscribes to the
-  consensus log recording for sub-second staleness. See ADR 0006.
-
-- **Cluster mode** (`ADBE_MODE=cluster`, legacy): `ReadModelService` runs as a
-  full Raft voting member, applying the identical committed log. All members
-  in the cluster must host the identical service. See ADR 0005.
+and total-supply reads over HTTP via a standby read node. `StandbyReadNode` runs
+as a standalone process, independent of the Raft cluster: it connects to a write
+cluster member's Aeron Archive, follows the consensus log recording (from the
+last loaded snapshot position, or from position 0 when no snapshot has loaded
+yet), loads service snapshots as they appear, and serves reads from the engine.
+It is NOT a cluster member: it does not vote, does not affect quorum, and can be
+added, removed, or restarted independently. See ADR 0006 and 0007.
 
 ### Running a standby read node
 
@@ -343,66 +338,52 @@ java \
     -cp 'adbe-read/build/libs/*' com.adbe.read.ReadServiceLauncher
 ```
 
-Recognised environment variables (standby mode):
+Recognised environment variables:
 
 | Variable                 | Required | Default                               | Description                                           |
 |--------------------------|:--------:|---------------------------------------|-------------------------------------------------------|
-| `ADBE_MODE`              | no       | `standby`                             | `standby` or `cluster`.                               |
 | `ADBE_ARCHIVE_CHANNEL`   | yes      | `aeron:udp?endpoint=localhost:20104`  | Cluster member's Archive control channel.             |
+| `ADBE_LOCAL_HOST`        | no       | `localhost`                           | Routable host for Archive call-backs (control response + replays). Set to the container address in Docker. |
 | `ADBE_HTTP_PORT`         | no       | `8080`                                | Port for the HTTP query API.                          |
 | `ADBE_SNAPSHOT_POLL_MS`  | no       | `5000`                                | Interval (ms) between snapshot polls on the Archive.  |
-| `ADBE_LIVE_LOG`          | no       | `true`                                | Enable live log following for sub-second staleness.   |
-
-Recognised environment variables (cluster mode):
-
-| Variable               | Required | Default                 | Description                                        |
-|------------------------|:--------:|-------------------------|----------------------------------------------------|
-| `ADBE_MODE`            | no       | `standby`               | Set to `cluster` for legacy mode.                  |
-| `ADBE_NODE_ID`         | yes      | `0`                     | This member's cluster id.                          |
-| `ADBE_CLUSTER_MEMBERS` | yes      | single-node localhost   | Aeron member string (see Section 3).               |
-| `ADBE_HOST`            | yes      | `localhost`             | This node's advertised host.                       |
-| `ADBE_BASE_DIR`        | no       | `build/adbe-read-node`  | Root directory for archive and cluster state.      |
-| `ADBE_HTTP_PORT`       | no       | `8080`                  | Port for the HTTP query API.                        |
-| `ADBE_CLEAN_START`     | no       | `true`                  | Wipe prior archive and cluster state on start.     |
+| `ADBE_LIVE_LOG`          | no       | `true`                                | Follow the consensus log for sub-second staleness.    |
 
 ### Consistency and health
 
-- **Standby mode**: Reads are eventually consistent. Without live log following,
-  staleness is bounded by `snapshotInterval + pollInterval`. With live log
-  following, staleness is the live log replay delay (milliseconds).
-- **Cluster mode**: Reads reflect the follower's applied log position, trailing
-  the leader by replication latency.
+- Reads are eventually consistent. With live log following (the default),
+  staleness is the live log replay delay (milliseconds). Because the standby
+  follows the log from position 0 when no snapshot exists, it serves real state
+  on a fresh cluster without any externally triggered snapshot; a snapshot, when
+  present, bounds the replay.
 - Liveness probe: `GET /healthz` returns `{"status":"ok"}`.
 - Gateway counters: `GET /metrics` returns `submitted`, `completed`, `pending`,
   `overloads`, and `orphanResponses` as JSON.
 
-### Deployment models
+### Deployment
 
-**Recommended: Standby nodes alongside write cluster**
+`docker-compose.yml` brings up the 3-node write cluster plus one standby read
+node (`adbe-read-0`) on a shared network:
 
 ```bash
-# Terminal 1: start the write cluster (3 voting members).
 docker compose up --build
 
-# Terminal 2: start 3 standby read nodes connecting to the write cluster.
-docker compose -f docker-compose.read.yml up --build
-
 # Write via AdbeClient to localhost:20100.
-# Read from any standby:
+# Read from the standby node:
 curl http://localhost:8080/balance/100
-curl http://localhost:8081/supply
-curl http://localhost:8082/healthz
+curl http://localhost:8080/supply
+curl http://localhost:8080/healthz
 ```
 
-Standby nodes are NOT cluster members: they do not vote, do not affect quorum,
-and can be added, removed, or restarted independently.
+The read node connects to node 0's Archive (`ADBE_ARCHIVE_CHANNEL`) and
+advertises its own container address for Archive call-backs (`ADBE_LOCAL_HOST`,
+derived automatically by the entrypoint). Standby nodes are NOT cluster members:
+they do not vote, do not affect quorum, and can be added, removed, or restarted
+independently.
 
-**Legacy: Homogeneous read cluster**
+An operational verification script exercises the full topology end to end (cold
+start, read-after-write over the live log, malformed-request handling, read-node
+restart and re-sync, write-node restart, and read decoupling from quorum):
 
 ```bash
-# All 3 nodes host ReadModelService (voting members, affects quorum).
-ADBE_MODE=cluster docker compose -f docker-compose.read.yml up --build
+bash docker/verify-read.sh
 ```
-
-Note: when `ADBE_MODE=cluster`, the docker-compose.read.yml uses the legacy
-topology. Override `ADBE_CLUSTER_MEMBERS` as needed.

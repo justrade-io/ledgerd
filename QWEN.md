@@ -39,7 +39,7 @@ adbe-protocol/     SBE schema + generated flyweight codecs (zero-dependency wire
 adbe-core/         Deterministic state machine: engine, handlers, stores, dedup, snapshot, telemetry
 adbe-launcher/     Aeron bootstrap: Media Driver, Archive, Consensus Module, service container, optional Prometheus endpoint
 adbe-client/       Edge-side SDK: leader-change handling, idempotent retry, async correlation, backpressure (depends only on adbe-protocol)
-adbe-read/         CQRS read side: standby (default) or cluster follower, answers balance/allowance/supply queries over HTTP (Netty)
+adbe-read/         CQRS read side: standby read node (Aeron Archive replication), answers balance/allowance/supply queries over HTTP (Netty)
 adbe-tests/        Unit, property, integration, cluster, fault, and soak tests + testFixtures toolkit
 adbe-examples/     Runnable examples (QuickStart, RemoteClient)
 ```
@@ -159,7 +159,7 @@ Priority order: **Correctness > Determinism > Tail Latency > Mean Latency > Thro
 ## Docker
 
 ```bash
-docker compose up --build          # 3-node Raft cluster
+docker compose up --build          # 3-node Raft write cluster + 1 standby read node
 docker compose run --rm client     # end-to-end smoke test
-docker compose -f docker-compose.read.yml up --build  # read-side service
+bash docker/verify-read.sh         # operational verification (read side, failover, decoupling)
 ```

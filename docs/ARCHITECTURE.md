@@ -105,7 +105,6 @@ addendum/
 |
 |-- adbe-read/                      Read side (CQRS query, HTTP over Netty)
 |   +-- src/main/java/com/adbe/read/
-|       |-- projection/ReadModelService.java  Follower service, answers reads in doBackgroundWork
 |       |-- query/                            QueryCodec, QueryType, ReadCallback, ReadQueryGateway
 |       |-- http/QueryHttpServer.java         Netty HTTP boundary
 |       |-- config/
@@ -113,7 +112,7 @@ addendum/
 |       |   +-- StandbyConfig.java            Standby node config (Archive, snapshot, live log)
 |       |-- StandbyReadNode.java              Standalone read node: embedded driver, snapshot load, live log
 |       |-- LiveLogSubscriber.java            Subscribes consensus recording, applies to engine in real time
-|       +-- ReadNode.java / ReadServiceLauncher.java   Compose follower + gateway + HTTP
+|       +-- ReadServiceLauncher.java          Entry point: resolve env config, run the standby node
 |
 |-- adbe-examples/                  Runnable examples (QuickStart, RemoteClient)
 |
@@ -272,49 +271,41 @@ HdrHistogram latency measurement on top of an Aeron cluster client.
 ### adbe-read - Read Side (CQRS Query)
 
 The read (query) bounded context. Unlike the deterministic core, it may use the
-system clock, Netty, and heap allocation at the HTTP boundary. Two deployment
-modes are supported:
+system clock, Netty, and heap allocation at the HTTP boundary. Reads are served
+by a standby read node:
 
-- **Standby mode** (`ADBE_MODE=standby`, default): `StandbyReadNode` runs as a
-  standalone process with its own embedded Media Driver. It connects to a
-  cluster member's Aeron Archive to download the latest service snapshot
-  (stream 106), loads it into the `BalanceEngine`, and serves reads over HTTP.
-  Optionally, after snapshot load, `LiveLogSubscriber` subscribes to the
-  consensus log recording (stream 100) and applies service messages in near
-  real-time, achieving sub-second write-to-read latency. Standby nodes are
-  NOT cluster members: they do not vote, do not affect quorum, and can be
-  added or removed independently. See ADR 0006.
-
-- **Cluster mode** (`ADBE_MODE=cluster`, legacy): `ReadModelService` runs as a
-  cluster follower, composing the core `BalanceService` so it applies the
-  identical committed log and holds a complete, byte-identical copy of engine
-  state (it observes both sides of every `TRANSFER`, which the egress stream
-  never carries). Reads are eventually consistent with bounded staleness and
-  are answered on the single service thread via
-  `ClusteredService.doBackgroundWork`, reached over a lock-free ring from the
-  HTTP boundary, so the single-writer discipline holds. See ADR 0005.
+- **Standby mode** (the only mode): `StandbyReadNode` runs as a standalone
+  process with its own embedded Media Driver, driven by an Agrona `Agent` /
+  `AgentRunner`. It connects to a cluster member's Aeron Archive and follows the
+  consensus log recording (stream 100) from the last loaded snapshot position -
+  or from position 0 when no snapshot has loaded yet, so it builds state
+  immediately on a fresh cluster. It also loads service snapshots (stream 106)
+  as they appear, restarting the live log from the snapshot position. Reads are
+  eventually consistent with bounded staleness and are answered on the single
+  agent thread, reached over a lock-free ring from the HTTP boundary, so the
+  single-writer discipline holds. Standby nodes are NOT cluster members: they do
+  not vote, do not affect quorum, and can be added, removed, or restarted
+  independently. See ADR 0006 and 0007.
 
 | Component            | Purpose                                                                        |
 |----------------------|--------------------------------------------------------------------------------|
-| `StandbyReadNode`    | Standalone read node: embedded driver, snapshot load, live log follow, HTTP server |
+| `StandbyReadNode`    | Standalone read node: embedded driver, Agent loop, snapshot load, live log follow, HTTP server |
 | `LiveLogSubscriber`  | Subscribes consensus recording (stream 100), parses framing, applies to engine |
-| `StandbyConfig`      | Immutable standby config: Archive channel, stream IDs, poll interval, live log |
-| `ReadModelService`   | Follower service: delegates cluster callbacks to `BalanceService`, answers reads in `doBackgroundWork` |
+| `StandbyConfig`      | Immutable standby config: Archive channel, local host, stream IDs, poll interval, live log |
 | `ReadQueryGateway`   | Lock-free bridge: request `ManyToOneRingBuffer`, response `OneToOneRingBuffer`, correlation dispatcher |
 | `QueryCodec`         | Fixed little-endian request/response layout over the in-process rings           |
 | `QueryType`          | Enum of read kinds (BALANCE, BATCH_BALANCE, ALLOWANCE, TOTAL_SUPPLY)            |
 | `ReadCallback`       | Functional interface invoked on the dispatcher thread when a response correlates |
 | `QueryHttpServer`    | Netty HTTP boundary: routes REST reads to the gateway, completes them as JSON    |
-| `ReadNode`           | Composes a cluster follower, the gateway, and the HTTP server into one process   |
 | `ReadServiceConfig`  | Immutable read config (HTTP port, ring capacities, request timeout, batch size)  |
-| `ReadServiceLauncher`| Entry point configured from environment variables; dispatches to standby or cluster mode |
+| `ReadServiceLauncher`| Entry point configured from environment variables; runs the standby node        |
 
 ```mermaid
 flowchart LR
     USER["User"] -->|" HTTP GET/POST "| NETTY["QueryHttpServer (Netty)"]
     NETTY -->|" request + correlationId "| REQ["request ring\n(ManyToOne)"]
-    REQ --> SVC["ReadModelService\n(service thread)"]
-    LOG["committed log\n(follower replication)"] -->|" apply via BalanceEngine "| SVC
+    REQ --> SVC["StandbyReadNode\n(agent thread)"]
+    LOG["consensus log + snapshots\n(Archive replication)"] -->|" apply via BalanceEngine "| SVC
     SVC -->|" lookup, answer "| RESP["response ring\n(OneToOne)"]
     RESP --> DISP["dispatcher thread"]
     DISP -->|" complete by correlationId, JSON "| NETTY
@@ -537,7 +528,7 @@ JVM must run with `--add-opens java.base/jdk.internal.misc=ALL-UNNAMED` and
 | `MetricsHttpServerTest`     | Unit        | Prometheus metrics and healthz HTTP endpoint               |
 | `ClusterIntegrationTest`    | Integration | End-to-end over a real single-node cluster, idempotency verified |
 | `AdbeClientIntegrationTest` | Integration | Client SDK submit/poll, command-id correlation             |
-| `ReadServiceIntegrationTest`| Integration | Read-after-write over HTTP; reflects both sides of a transfer |
+| `StandbyReadQueryIntegrationTest`| Integration | Read-after-write over HTTP via standby; both sides of a transfer, malformed requests |
 | `StandbyReplicationIntegrationTest` | Integration | Standby snapshot replication end-to-end            |
 | `StandbyLiveLogIntegrationTest` | Integration | Standby live log following, sub-second staleness       |
 | `StandbyReadNodeSmokeTest`  | Integration | Standby read node startup and basic query                  |

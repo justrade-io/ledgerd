@@ -4,13 +4,14 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
-import com.adbe.client.AdbeClient;
-import com.adbe.client.ResultHandler;
-import com.adbe.client.config.ClientConfig;
 import com.adbe.config.CoreConfig;
 import com.adbe.launcher.ClusterConfig;
+import com.adbe.launcher.ClusterNode;
 import com.adbe.protocol.CommandType;
+import com.adbe.protocol.StatusCode;
 import com.adbe.read.config.ReadServiceConfig;
+import com.adbe.read.config.StandbyConfig;
+import com.adbe.testkit.ClusterTestClient;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -25,68 +26,87 @@ import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * End-to-end read-side test: writes via the Edge {@link AdbeClient} against a
- * single-node cluster hosting the {@link ReadModelService}, then reads back over
- * HTTP. Proves the read model is complete - it reflects both sides of a transfer,
- * unlike the egress stream which only carries the sender's balance.
+ * End-to-end read-side test over the standby path: writes via a
+ * {@link ClusterTestClient} against a single-node write cluster, then reads back
+ * over HTTP from a {@link StandbyReadNode}. The standby follows the consensus
+ * log from position 0 (no snapshot required), so the read model is complete - it
+ * reflects both sides of a transfer, unlike the egress stream which only carries
+ * the sender's balance. Also covers the HTTP boundary's rejection of malformed
+ * requests, previously covered by the removed cluster-mode integration test.
  */
 @Tag("integration")
-class ReadServiceIntegrationTest {
+class StandbyReadQueryIntegrationTest {
 
-    private static final long WRITE_TIMEOUT_MS = 15_000L;
-    private static final long READ_TIMEOUT_MS = 15_000L;
+    private static final long RESULT_TIMEOUT_MS = 15_000L;
+    private static final long READ_TIMEOUT_MS = 30_000L;
+    private static final String INGRESS_ENDPOINTS = "0=localhost:20100";
 
-    private ReadNode readNode;
+    private ClusterNode clusterNode;
+    private ClusterConfig clusterConfig;
+    private StandbyReadNode standbyNode;
     private HttpClient http;
     private String baseUrl;
 
     @BeforeEach
-    void startNode(@TempDir final Path baseDir) {
-        final ClusterConfig clusterConfig = ClusterConfig.singleNodeLocalhost(0, baseDir);
+    void start(@TempDir final Path tempDir) {
+        clusterConfig = ClusterConfig.singleNodeLocalhost(0, tempDir.resolve("write"));
+        clusterNode = new ClusterNode(clusterConfig, CoreConfig.defaults(), true);
+
+        // Live log following from position 0 means reads converge without any
+        // snapshot; a long poll interval keeps snapshot loading out of the test.
+        final StandbyConfig standbyConfig = StandbyConfig.builder()
+                .archiveControlChannel("aeron:udp?endpoint=localhost:20104")
+                .liveLogEnabled(true)
+                .pollIntervalMs(60_000L)
+                .build();
         final ReadServiceConfig readConfig =
                 ReadServiceConfig.builder().httpPort(0).build();
-        readNode = new ReadNode(clusterConfig, CoreConfig.defaults(), readConfig, true);
+        standbyNode = new StandbyReadNode(standbyConfig, CoreConfig.defaults(), readConfig);
         http = HttpClient.newHttpClient();
-        baseUrl = "http://localhost:" + readNode.httpPort();
+        baseUrl = "http://localhost:" + standbyNode.httpPort();
     }
 
     @AfterEach
-    void stopNode() {
-        if (readNode != null) {
-            readNode.close();
+    void stop() {
+        if (standbyNode != null) {
+            standbyNode.close();
+        }
+        if (clusterNode != null) {
+            clusterNode.close();
         }
     }
 
     @Test
     @Timeout(90)
-    void readsReflectBothSidesOfATransfer() {
-        final long[] lastCommandIdLo = {-1L};
-        final ResultHandler handler =
-                (idHi, idLo, status, balance, hasBalance, allowance, hasAllowance) -> lastCommandIdLo[0] = idLo;
+    void readsReflectCommittedWrites() {
+        try (ClusterTestClient client = new ClusterTestClient(clusterConfig.aeronDirectoryName(), INGRESS_ENDPOINTS)) {
+            client.send(1L, 0L, 0L, 1L, CommandType.CREDIT, 100L, 0L, 0L, 500L);
+            assertTrue(client.awaitResult(1L, RESULT_TIMEOUT_MS), "credit result");
+            assertEquals(StatusCode.SUCCESS, client.lastStatus());
 
-        final ClientConfig config =
-                ClientConfig.builder(1L, ClusterConfig.ingressEndpoints(1)).build();
+            client.send(1L, 1L, 0L, 2L, CommandType.TRANSFER, 100L, 200L, 0L, 150L);
+            assertTrue(client.awaitResult(2L, RESULT_TIMEOUT_MS), "transfer result");
+            assertEquals(StatusCode.SUCCESS, client.lastStatus());
 
-        try (AdbeClient client = new AdbeClient(config, handler)) {
-            awaitWrite(client, client.submit(CommandType.CREDIT, 100L, 0L, 0L, 500L), lastCommandIdLo);
-            awaitWrite(client, client.submit(CommandType.TRANSFER, 100L, 200L, 0L, 150L), lastCommandIdLo);
-            awaitWrite(client, client.submit(CommandType.APPROVE, 1L, 9L, 0L, 200L), lastCommandIdLo);
-
-            // Sender lost 150 (500 -> 350); this side is visible on egress.
-            awaitBody("/balance/100", "\"balance\":350");
-            // Recipient gained 150 (0 -> 150); this side is NOT on egress, only the read model has it.
-            awaitBody("/balance/200", "\"balance\":150");
-            // Total supply is conserved by the transfer.
-            awaitBody("/supply", "\"totalSupply\":500");
-            // Allowance set by APPROVE.
-            awaitBody("/allowance/1/9", "\"allowance\":200");
-
-            // Batch: two known accounts plus one that does not exist.
-            final String batch = awaitBody("POST", "/balances", "{\"ids\":[100,200,999]}", "\"account\":999");
-            assertTrue(batch.contains("\"account\":100,\"exists\":true,\"balance\":350"), batch);
-            assertTrue(batch.contains("\"account\":200,\"exists\":true,\"balance\":150"), batch);
-            assertTrue(batch.contains("\"account\":999,\"exists\":false"), batch);
+            client.send(1L, 2L, 0L, 3L, CommandType.APPROVE, 1L, 9L, 0L, 200L);
+            assertTrue(client.awaitResult(3L, RESULT_TIMEOUT_MS), "approve result");
+            assertEquals(StatusCode.SUCCESS, client.lastStatus());
         }
+
+        // Sender lost 150 (500 -> 350); this side is visible on egress.
+        awaitBody("/balance/100", "\"balance\":350");
+        // Recipient gained 150 (0 -> 150); only the read model has this side.
+        awaitBody("/balance/200", "\"balance\":150");
+        // Total supply is conserved by the transfer.
+        awaitBody("/supply", "\"totalSupply\":500");
+        // Allowance set by APPROVE.
+        awaitBody("/allowance/1/9", "\"allowance\":200");
+
+        // Batch: two known accounts plus one that does not exist.
+        final String batch = awaitBody("POST", "/balances", "{\"ids\":[100,200,999]}", "\"account\":999");
+        assertTrue(batch.contains("\"account\":100,\"exists\":true,\"balance\":350"), batch);
+        assertTrue(batch.contains("\"account\":200,\"exists\":true,\"balance\":150"), batch);
+        assertTrue(batch.contains("\"account\":999,\"exists\":false"), batch);
     }
 
     @Test
@@ -99,6 +119,9 @@ class ReadServiceIntegrationTest {
         assertEquals(400, statusOf("GET", "/allowance/1/", null), "allowance empty delegate");
         assertEquals(400, statusOf("GET", "/allowance/x/y", null), "allowance non-numeric");
         assertEquals(400, statusOf("POST", "/balances", "   "), "batch with no ids");
+
+        // The node still serves valid queries after rejecting the malformed ones.
+        assertEquals(200, statusOf("GET", "/healthz", null), "healthz after malformed requests");
     }
 
     private int statusOf(final String method, final String path, final String body) {
@@ -116,18 +139,6 @@ class ReadServiceIntegrationTest {
         } catch (final Exception e) {
             throw new IllegalStateException("HTTP " + method + " " + path + " failed", e);
         }
-    }
-
-    private void awaitWrite(final AdbeClient client, final long commandIdLo, final long[] lastCommandIdLo) {
-        final long deadline = System.currentTimeMillis() + WRITE_TIMEOUT_MS;
-        while (System.currentTimeMillis() < deadline) {
-            client.poll();
-            if (lastCommandIdLo[0] == commandIdLo) {
-                return;
-            }
-            Thread.onSpinWait();
-        }
-        fail("write not acknowledged for commandIdLo=" + commandIdLo);
     }
 
     private String awaitBody(final String path, final String mustContain) {

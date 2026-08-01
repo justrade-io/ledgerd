@@ -23,10 +23,10 @@ import org.agrona.DirectBuffer;
  * the raw service message to the engine.
  *
  * <p>Single-writer: this class owns no thread. The standby node's single agent
- * thread calls {@link #connect()} once and then drives {@link #poll(int)} from
- * its event loop, so {@link BalanceEngine#process} is only ever invoked from
- * that one thread - the same thread that serves queries. No concurrency control
- * is required.
+ * thread calls {@link #connect()} (reconnecting after each snapshot load) and
+ * then drives {@link #poll(int)} from its event loop, so
+ * {@link BalanceEngine#process} is only ever invoked from that one thread - the
+ * same thread that serves queries. No concurrency control is required.
  */
 final class LiveLogSubscriber implements AutoCloseable {
 
@@ -37,6 +37,7 @@ final class LiveLogSubscriber implements AutoCloseable {
     private final AeronArchive archive;
     private final BalanceEngine engine;
     private final long startPosition;
+    private final String localHost;
     private final io.aeron.cluster.codecs.MessageHeaderDecoder consensusHeader =
             new io.aeron.cluster.codecs.MessageHeaderDecoder();
     private final com.adbe.protocol.MessageHeaderDecoder adbeHeader = new com.adbe.protocol.MessageHeaderDecoder();
@@ -49,13 +50,18 @@ final class LiveLogSubscriber implements AutoCloseable {
     /**
      * @param archive       connected AeronArchive client for the cluster
      * @param engine        the balance engine to apply messages to
-     * @param startPosition log position to start replaying from (typically the
-     *                      position of the last loaded snapshot)
+     * @param startPosition log position to start replaying from: the position of
+     *                      the last loaded snapshot, or {@code 0} to follow from
+     *                      the start of the log when no snapshot has loaded yet
+     * @param localHost     routable host the replay subscription binds on, so the
+     *                      Archive can connect back (localhost for same-host runs)
      */
-    LiveLogSubscriber(final AeronArchive archive, final BalanceEngine engine, final long startPosition) {
+    LiveLogSubscriber(
+            final AeronArchive archive, final BalanceEngine engine, final long startPosition, final String localHost) {
         this.archive = archive;
         this.engine = engine;
         this.startPosition = startPosition;
+        this.localHost = localHost;
     }
 
     /** Returns the consensus framing overhead in bytes. */
@@ -75,7 +81,9 @@ final class LiveLogSubscriber implements AutoCloseable {
     boolean connect() {
         final long recordingId = findConsensusRecording();
         if (recordingId < 0) {
-            System.err.println("LiveLogSubscriber: no consensus recording found, live log following disabled");
+            // No consensus recording yet (e.g. the cluster has not committed). The
+            // standby retries connect() on its agent loop, so this is a normal
+            // transient state rather than an error; stay silent to avoid log spam.
             return false;
         }
 
@@ -84,7 +92,7 @@ final class LiveLogSubscriber implements AutoCloseable {
         // The standby runs its own media driver, so the replay travels over UDP.
         // Bind an ephemeral-port subscription, resolve the port, then replay to it.
         final Subscription sub =
-                archive.context().aeron().addSubscription("aeron:udp?endpoint=localhost:0", replayStreamId);
+                archive.context().aeron().addSubscription("aeron:udp?endpoint=" + localHost + ":0", replayStreamId);
         final String endpoint = awaitResolvedEndpoint(sub);
         if (endpoint == null) {
             sub.close();

@@ -2,11 +2,11 @@
 #
 #   * stage "build"  : produces the launcher, read, and examples install distributions.
 #   * target "node"  : slim JRE that runs one cluster node (default, BalanceService).
-#   * target "read"  : slim JRE that runs one read-enabled node (ReadModelService + HTTP).
+#   * target "read"  : slim JRE that runs one standby read node (StandbyReadNode + HTTP).
 #   * target "client": slim JRE that runs the remote client smoke test.
 #
 # The cluster topology is supplied at runtime via environment variables
-# (see docker-compose.yml and docker-compose.read.yml).
+# (see docker-compose.yml).
 
 FROM eclipse-temurin:21-jdk AS build
 WORKDIR /src
@@ -34,7 +34,7 @@ ENTRYPOINT ["/opt/adbe/entrypoint.sh"]
 
 FROM eclipse-temurin:21-jre AS read
 LABEL org.opencontainers.image.title="adbe-read" \
-      org.opencontainers.image.description="ADBE read-enabled node (ReadModelService + HTTP query API)" \
+      org.opencontainers.image.description="ADBE standby read node (StandbyReadNode + HTTP query API)" \
       org.opencontainers.image.licenses="MIT"
 
 # Run as a non-root user.

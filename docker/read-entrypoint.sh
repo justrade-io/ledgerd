@@ -1,27 +1,26 @@
 #!/usr/bin/env sh
-# Starts one ADBE read node. Supports two modes via ADBE_MODE:
+# Starts one ADBE standby read node. It runs standalone (not a Raft member):
+# connects to the write cluster's Aeron Archive, follows the consensus log
+# (loading snapshots as they appear), and serves reads over HTTP.
 #
-#   standby (default): Runs standalone; connects to the cluster's Aeron Archive,
-#       downloads the latest snapshot, and serves reads over HTTP. Does not
-#       participate in Raft consensus. Requires ADBE_ARCHIVE_CHANNEL.
-#
-#   cluster: Runs as a full Raft voting member hosting ReadModelService.
-#       Requires ADBE_NODE_ID, ADBE_HOST, and ADBE_CLUSTER_MEMBERS.
+# Recognised environment variables (see ReadServiceLauncher):
+#   ADBE_ARCHIVE_CHANNEL   Archive control channel (required),
+#                          e.g. aeron:udp?endpoint=write-node:20104
+#   ADBE_LOCAL_HOST        routable host for Archive call-backs (control response
+#                          + replays). Defaults to this container's own IP so the
+#                          Archive on another container can connect back.
+#   ADBE_HTTP_PORT         HTTP query port (default 8080)
+#   ADBE_SNAPSHOT_POLL_MS  interval between snapshot polls (default 5000)
+#   ADBE_LIVE_LOG          follow the consensus log (default true)
 set -eu
 
-MODE="${ADBE_MODE:-standby}"
+: "${ADBE_ARCHIVE_CHANNEL:?ADBE_ARCHIVE_CHANNEL is required (e.g. aeron:udp?endpoint=write-node:20104)}"
 
-if [ "${MODE}" = "standby" ]; then
-    : "${ADBE_ARCHIVE_CHANNEL:?ADBE_ARCHIVE_CHANNEL is required in standby mode (e.g. aeron:udp?endpoint=write-node:20104)}"
-else
-    : "${ADBE_NODE_ID:?ADBE_NODE_ID is required (0-based member id)}"
-    : "${ADBE_HOST:?ADBE_HOST is required (this node's advertised hostname)}"
-    : "${ADBE_CLUSTER_MEMBERS:?ADBE_CLUSTER_MEMBERS is required (Aeron member string)}"
-fi
+# The Archive connects back to this node's control-response subscription and
+# replays, so advertise an address routable from the Archive: this container's
+# own IP on the docker network (an ephemeral port is chosen with :0).
+CONTAINER_IP="$(hostname -i | awk '{print $1}')"
+export ADBE_LOCAL_HOST="${ADBE_LOCAL_HOST:-${CONTAINER_IP}}"
 
-ADBE_BASE_DIR="${ADBE_BASE_DIR:-/var/adbe}"
-export ADBE_BASE_DIR
-mkdir -p "${ADBE_BASE_DIR}"
-
-echo "Starting ADBE read node (mode=${MODE}, http=${ADBE_HTTP_PORT:-8080}, baseDir=${ADBE_BASE_DIR})"
+echo "Starting ADBE standby read node (http=${ADBE_HTTP_PORT:-8080}, archive=${ADBE_ARCHIVE_CHANNEL}, localHost=${ADBE_LOCAL_HOST})"
 exec /opt/adbe/bin/adbe-read

@@ -12,6 +12,7 @@ package com.adbe.read.config;
 public final class StandbyConfig {
 
     private final String archiveControlChannel;
+    private final String localHost;
     private final int archiveControlStreamId;
     private final int snapshotStreamId;
     private final int logStreamId;
@@ -21,6 +22,7 @@ public final class StandbyConfig {
 
     private StandbyConfig(final Builder builder) {
         this.archiveControlChannel = builder.archiveControlChannel;
+        this.localHost = builder.localHost;
         this.archiveControlStreamId = builder.archiveControlStreamId;
         this.snapshotStreamId = builder.snapshotStreamId;
         this.logStreamId = builder.logStreamId;
@@ -40,6 +42,18 @@ public final class StandbyConfig {
     /** Aeron Archive control channel endpoint (e.g. {@code aeron:udp?endpoint=host:20104}). */
     public String archiveControlChannel() {
         return archiveControlChannel;
+    }
+
+    /**
+     * The routable host the standby binds its archive-facing subscriptions on
+     * (the Archive control response channel and snapshot / log replays). The
+     * Archive connects back to this host, so it must be reachable from the
+     * Archive: {@code localhost} for same-host runs, or the container's network
+     * address when the standby and the cluster run on different hosts (e.g.
+     * Docker). Default {@code localhost}.
+     */
+    public String localHost() {
+        return localHost;
     }
 
     /** Stream id for the Archive control protocol (default 10). */
@@ -75,6 +89,7 @@ public final class StandbyConfig {
     /** Fluent builder for {@link StandbyConfig}. */
     public static final class Builder {
         private String archiveControlChannel = "aeron:udp?endpoint=localhost:20104";
+        private String localHost = "localhost";
         private int archiveControlStreamId = 10;
         private int snapshotStreamId = 106;
         private int logStreamId = 100;
@@ -86,6 +101,11 @@ public final class StandbyConfig {
 
         public Builder archiveControlChannel(final String value) {
             this.archiveControlChannel = value;
+            return this;
+        }
+
+        public Builder localHost(final String value) {
+            this.localHost = value;
             return this;
         }
 

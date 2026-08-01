@@ -3,6 +3,7 @@
 Status: Accepted
 Date: 2026-07-30
 Updated: 2026-07-30 (Phase 2: live log following)
+Updated: 2026-08-01 (ADR 0007: cluster mode removed; live log follows from position 0; routable Archive call-back host)
 
 ## Context
 

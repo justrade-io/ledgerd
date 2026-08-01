@@ -1,11 +1,25 @@
-# Local 3-node ADBE cluster. Each service is one Raft member on a shared bridge
-# network, so containers reach each other by service name on any port (only
-# ingress is published to the host for an external client).
+# Local ADBE deployment: a 3-node Raft write cluster plus one standby read node.
 #
 #   docker compose up --build
 #
-# Then point a client at localhost:20100 (node 0 ingress). On a fresh start the
-# three members elect a leader and replicate committed commands.
+# The three write services are Raft members on a shared bridge network, so
+# containers reach each other by service name on any port (only ingress is
+# published to the host for an external client). On a fresh start the members
+# elect a leader and replicate committed commands.
+#
+# The read service (adbe-read-0) is a standby read node: it is NOT a cluster
+# member, does not vote, and does not affect quorum. It connects to node 0's
+# Aeron Archive, follows the consensus log (loading snapshots as they appear),
+# and serves eventually-consistent reads over HTTP on host port 8080. It can be
+# added, removed, or restarted independently without impacting write
+# availability. See ADR 0006 and 0007.
+#
+# Write via an AdbeClient against any member ingress (localhost:20100). Read:
+#   curl http://localhost:8080/balance/100
+#   curl http://localhost:8080/supply
+#
+# A remote client smoke test is available on demand (not started by default):
+#   docker compose run --rm client
 #
 # Note: Aeron uses UDP unicast between members plus ephemeral replication ports.
 # Containers on this user-defined bridge network can reach each other on all
@@ -65,6 +79,31 @@ services:
       ADBE_METRICS_PORT: "9100"
     ports:
       - "9102:9100/tcp"
+
+  # Standby read node. Connects to node 0's Archive and serves reads over HTTP.
+  # Not a Raft member: no vote, no quorum impact, independent lifecycle.
+  adbe-read-0:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: read
+    image: adbe-read:local
+    hostname: adbe-read-0
+    networks:
+      - adbe
+    shm_size: "512m"
+    restart: unless-stopped
+    depends_on:
+      - adbe-node-0
+      - adbe-node-1
+      - adbe-node-2
+    environment:
+      ADBE_ARCHIVE_CHANNEL: "aeron:udp?endpoint=adbe-node-0:20104"
+      ADBE_HTTP_PORT: "8080"
+      ADBE_SNAPSHOT_POLL_MS: "5000"
+      ADBE_LIVE_LOG: "true"
+    ports:
+      - "8080:8080/tcp" # HTTP query API
 
   # Remote client smoke test. Not started by default; run on demand with:
   #   docker compose run --rm client

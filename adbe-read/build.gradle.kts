@@ -1,11 +1,12 @@
-// adbe-read: the CQRS read-side. Hosts a ReadModelService (a ClusteredService
-// that composes the core BalanceService) on a cluster follower and serves
-// eventually-consistent balance / allowance / total-supply reads over HTTP.
+// adbe-read: the CQRS read-side. Runs a standby read node that replicates
+// cluster state via Aeron Archive (snapshot load + consensus log following),
+// independent of the Raft consensus protocol, and serves eventually-consistent
+// balance / allowance / total-supply reads over HTTP.
 //
 // Unlike the deterministic core (adbe-core), this module is an Edge / read
 // bounded context: it may use the system clock, Netty, and heap allocation at
-// the HTTP boundary. It must never perturb the single-writer service thread; it
-// answers queries on that same thread via ClusteredService.doBackgroundWork.
+// the HTTP boundary. It must never perturb the single-writer engine thread; it
+// answers queries on that same agent thread.
 
 plugins {
     application
@@ -22,7 +23,6 @@ application {
 
 dependencies {
     implementation(project(":adbe-core"))
-    implementation(project(":adbe-launcher"))
     implementation(libs.bundles.aeron)
     implementation(libs.netty.codec.http)
 }
