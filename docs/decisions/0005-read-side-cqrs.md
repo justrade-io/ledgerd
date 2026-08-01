@@ -6,7 +6,7 @@ Updated: 2026-08-01 (cluster-follower realization superseded by ADR 0007)
 
 > Note: the cluster-follower realization described below (`ReadModelService`
 > joining as a voting member) was removed by ADR 0007, which standardizes on the
-> standby read node of ADR 0006. The rest of this ADR - the read bounded context,
+> read replica node of ADR 0006. The rest of this ADR - the read bounded context,
 > the HTTP query surface, the lock-free query gateway, and the
 > eventually-consistent contract - remains in force.
 

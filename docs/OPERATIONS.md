@@ -317,7 +317,7 @@ scrape_configs:
 ## 8. Read Service (HTTP Query API)
 
 The read service (`adbe-read`) serves eventually-consistent balance, allowance,
-and total-supply reads over HTTP via a standby read node. `StandbyReadNode` runs
+and total-supply reads over HTTP via a read replica node. `ReadReplicaNode` runs
 as a standalone process, independent of the Raft cluster: it connects to a write
 cluster member's Aeron Archive, follows the consensus log recording (from the
 last loaded snapshot position, or from position 0 when no snapshot has loaded
@@ -325,10 +325,10 @@ yet), loads service snapshots as they appear, and serves reads from the engine.
 It is NOT a cluster member: it does not vote, does not affect quorum, and can be
 added, removed, or restarted independently. See ADR 0006 and 0007.
 
-### Running a standby read node
+### Running a read replica node
 
 ```bash
-# Gradle (development): standalone standby, connects to localhost:20104 archive.
+# Gradle (development): standalone read replica, connects to localhost:20104 archive.
 ADBE_ARCHIVE_CHANNEL=aeron:udp?endpoint=localhost:20104 ./gradlew :adbe-read:run
 
 # Standalone process with live log following.
@@ -351,7 +351,7 @@ Recognised environment variables:
 ### Consistency and health
 
 - Reads are eventually consistent. With live log following (the default),
-  staleness is the live log replay delay (milliseconds). Because the standby
+  staleness is the live log replay delay (milliseconds). Because the read replica
   follows the log from position 0 when no snapshot exists, it serves real state
   on a fresh cluster without any externally triggered snapshot; a snapshot, when
   present, bounds the replay.
@@ -361,14 +361,14 @@ Recognised environment variables:
 
 ### Deployment
 
-`docker-compose.yml` brings up the 3-node write cluster plus one standby read
+`docker-compose.yml` brings up the 3-node write cluster plus one read replica read
 node (`adbe-read-0`) on a shared network:
 
 ```bash
 docker compose up --build
 
 # Write via AdbeClient to localhost:20100.
-# Read from the standby node:
+# Read from the read replica node:
 curl http://localhost:8080/balance/100
 curl http://localhost:8080/supply
 curl http://localhost:8080/healthz
@@ -376,7 +376,7 @@ curl http://localhost:8080/healthz
 
 The read node connects to node 0's Archive (`ADBE_ARCHIVE_CHANNEL`) and
 advertises its own container address for Archive call-backs (`ADBE_LOCAL_HOST`,
-derived automatically by the entrypoint). Standby nodes are NOT cluster members:
+derived automatically by the entrypoint). Read replica nodes are NOT cluster members:
 they do not vote, do not affect quorum, and can be added, removed, or restarted
 independently.
 

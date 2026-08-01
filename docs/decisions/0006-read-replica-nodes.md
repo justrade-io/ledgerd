@@ -1,9 +1,10 @@
-# 0006 - Standby Snapshot Read Nodes: External Replication via Aeron Archive
+# 0006 - Read Replica Nodes: External Replication via Aeron Archive
 
 Status: Accepted
 Date: 2026-07-30
 Updated: 2026-07-30 (Phase 2: live log following)
 Updated: 2026-08-01 (ADR 0007: cluster mode removed; live log follows from position 0; routable Archive call-back host)
+Updated: 2026-08-01 (terminology: renamed "read replica" to "read replica" - the node is a read-only replica, not a failover read replica)
 
 ## Context
 
@@ -28,13 +29,13 @@ Read nodes will be **standalone processes** that replicate state through the
 Aeron Archive instead of participating in the Raft consensus protocol.
 Specifically:
 
-1. **Snapshot-based replication (Phase 1)**: Each standby read node connects to a
+1. **Snapshot-based replication (Phase 1)**: Each read replica node connects to a
    cluster member's Aeron Archive as a client (not a cluster member). It
    periodically polls the Archive for the latest service snapshot recording,
    replays the snapshot through the same deterministic `BalanceEngine`, and
    serves reads from the loaded state.
 
-2. **Live log following (Phase 2)**: After loading a snapshot, the standby node
+2. **Live log following (Phase 2)**: After loading a snapshot, the read replica node
    subscribes to the consensus module's log recording (stream 100) on the
    Archive, starting from the snapshot's log position. It parses the consensus
    framing (32 bytes: cluster MessageHeader + SessionMessageHeader) to extract
@@ -42,7 +43,7 @@ Specifically:
    This reduces write-to-read latency from the snapshot interval to the live
    log replay delay (milliseconds).
 
-3. **No consensus participation**: Standby nodes are not listed in
+3. **No consensus participation**: Read replica nodes are not listed in
    `clusterMembers`. They run no `ConsensusModule`, no `ClusteredService`,
    no Raft state machine. They are purely external consumers of the Archive's
    recording catalog.
@@ -56,7 +57,7 @@ Specifically:
    read latency is the live log replay delay (microseconds to low
    milliseconds), comparable to a cluster follower.
 
-6. **New launcher mode**: `ReadServiceLauncher` gains an `ADBE_MODE=standby`
+6. **New launcher mode**: `ReadServiceLauncher` gains an `ADBE_MODE=read-replica`
    mode (the default for read deployments). The legacy `ADBE_MODE=cluster` mode
    is preserved for homogeneous read clusters when that topology is preferred.
 
@@ -74,11 +75,11 @@ flowchart LR
         CM -->|" consensus log (stream 100) "| AR
     end
 
-    subgraph STANDBY["Standby Read Node"]
+    subgraph READ_REPLICA["Read Replica Node"]
         direction TB
         MD["MediaDriver\n(embedded)"]
         ARC["AeronArchive\nclient"]
-        SB["StandbyReadNode"]
+        SB["ReadReplicaNode"]
         LLS["LiveLogSubscriber"]
         BE["BalanceEngine"]
         QD["Query drainer\nthread"]
@@ -103,7 +104,7 @@ flowchart LR
 ```mermaid
 sequenceDiagram
     participant AR as Archive (cluster)
-    participant SB as StandbyReadNode
+    participant SB as ReadReplicaNode
     participant SM as SnapshotManager
     participant BE as BalanceEngine
     participant QS as QueryHttpServer
@@ -134,7 +135,7 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     participant AR as Archive (cluster)
-    participant SB as StandbyReadNode
+    participant SB as ReadReplicaNode
     participant LLS as LiveLogSubscriber
     participant BE as BalanceEngine
     participant QS as QueryHttpServer
@@ -183,20 +184,20 @@ sequenceDiagram
   and snapshot logic is reused unmodified.
 - **Positive**: With live log following (Phase 2), read latency is comparable to
   a cluster follower (milliseconds), not bounded by the snapshot interval.
-- **Positive**: Zero new dependencies. `StandbyReadNode` uses only Aeron Archive
+- **Positive**: Zero new dependencies. `ReadReplicaNode` uses only Aeron Archive
   client APIs and Aeron Cluster codecs already present in the project.
 - **Negative**: Reads are eventually consistent with bounded staleness
   (live log replay delay in Phase 2, snapshot interval in Phase 1 only), not
   linearizable. This is acceptable per ADR 0005.
-- **Negative**: Each standby node runs its own embedded Media Driver, consuming
+- **Negative**: Each read replica node runs its own embedded Media Driver, consuming
   additional memory and CPU compared to a cluster member sharing the driver.
 - **Negative**: `LiveLogSubscriber` relies on the cluster Archive keeping the
-  consensus recording available. If the recording is pruned before the standby
-  catches up, the standby must fall back to a fresh snapshot load.
+  consensus recording available. If the recording is pruned before the read replica
+  catches up, the read replica must fall back to a fresh snapshot load.
 
 ## Out of scope
 
-- Automatic snapshot triggering from the standby side.
-- Multi-archive failover (standby currently connects to a single archive
+- Automatic snapshot triggering from the read replica side.
+- Multi-archive failover (read replica currently connects to a single archive
   endpoint; retry across members is deferred).
 - Authentication or encryption on the Archive connection.

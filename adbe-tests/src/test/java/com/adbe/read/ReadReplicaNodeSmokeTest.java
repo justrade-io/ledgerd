@@ -7,8 +7,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.adbe.config.CoreConfig;
 import com.adbe.launcher.ClusterConfig;
 import com.adbe.launcher.ClusterNode;
+import com.adbe.read.config.ReadReplicaConfig;
 import com.adbe.read.config.ReadServiceConfig;
-import com.adbe.read.config.StandbyConfig;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -24,15 +24,15 @@ import org.junit.jupiter.api.io.TempDir;
 
 /**
  * Integration test: starts a single-node write cluster (BalanceService),
- * then starts a standby read node that connects to the cluster's Archive.
- * Verifies the standby HTTP server responds correctly even when no snapshot
+ * then starts a read replica node that connects to the cluster's Archive.
+ * Verifies the read replica HTTP server responds correctly even when no snapshot
  * has been taken yet (empty engine).
  */
 @Tag("integration")
-class StandbyReadNodeSmokeTest {
+class ReadReplicaNodeSmokeTest {
 
     private ClusterNode clusterNode;
-    private StandbyReadNode standbyNode;
+    private ReadReplicaNode replicaNode;
     private HttpClient http;
     private String baseUrl;
 
@@ -40,26 +40,26 @@ class StandbyReadNodeSmokeTest {
     void start(@TempDir final Path tempDir) {
         // Start a single-node write cluster with BalanceService. The
         // ClusterNode brings up an embedded Media Driver + Archive that
-        // the standby node connects to for snapshot polling.
+        // the read replica node connects to for snapshot polling.
         final ClusterConfig clusterConfig = ClusterConfig.singleNodeLocalhost(0, tempDir.resolve("write"));
         clusterNode = new ClusterNode(clusterConfig, CoreConfig.defaults(), true);
 
-        final StandbyConfig standbyConfig = StandbyConfig.builder()
+        final ReadReplicaConfig replicaConfig = ReadReplicaConfig.builder()
                 .archiveControlChannel("aeron:udp?endpoint=localhost:20104")
                 .pollIntervalMs(60_000L)
                 .build();
         final ReadServiceConfig readConfig =
                 ReadServiceConfig.builder().httpPort(0).build();
 
-        standbyNode = new StandbyReadNode(standbyConfig, CoreConfig.defaults(), readConfig);
+        replicaNode = new ReadReplicaNode(replicaConfig, CoreConfig.defaults(), readConfig);
         http = HttpClient.newHttpClient();
-        baseUrl = "http://localhost:" + standbyNode.httpPort();
+        baseUrl = "http://localhost:" + replicaNode.httpPort();
     }
 
     @AfterEach
     void stop() {
-        if (standbyNode != null) {
-            standbyNode.close();
+        if (replicaNode != null) {
+            replicaNode.close();
         }
         if (clusterNode != null) {
             clusterNode.close();
@@ -106,7 +106,7 @@ class StandbyReadNodeSmokeTest {
     @Test
     @Timeout(30)
     void gatewayIsAccessible() {
-        assertNotNull(standbyNode.gateway());
-        assertTrue(standbyNode.httpPort() > 0);
+        assertNotNull(replicaNode.gateway());
+        assertTrue(replicaNode.httpPort() > 0);
     }
 }

@@ -109,10 +109,10 @@ addendum/
 |       |-- http/QueryHttpServer.java         Netty HTTP boundary
 |       |-- config/
 |       |   |-- ReadServiceConfig.java        Immutable read config (HTTP port, ring capacities)
-|       |   +-- StandbyConfig.java            Standby node config (Archive, snapshot, live log)
-|       |-- StandbyReadNode.java              Standalone read node: embedded driver, snapshot load, live log
+|       |   +-- ReadReplicaConfig.java            Read replica node config (Archive, snapshot, live log)
+|       |-- ReadReplicaNode.java              Standalone read node: embedded driver, snapshot load, live log
 |       |-- LiveLogSubscriber.java            Subscribes consensus recording, applies to engine in real time
-|       +-- ReadServiceLauncher.java          Entry point: resolve env config, run the standby node
+|       +-- ReadServiceLauncher.java          Entry point: resolve env config, run the read replica node
 |
 |-- adbe-examples/                  Runnable examples (QuickStart, RemoteClient)
 |
@@ -163,10 +163,10 @@ flowchart TB
         AR -->|" snapshot image "| BS
     end
 
-    subgraph READ["Standby Read Node (adbe-read, standby mode)"]
+    subgraph READ["Read Replica Node (adbe-read, read replica mode)"]
         direction TB
         MD2["Media Driver\n(embedded)"]
-        SB["StandbyReadNode"]
+        SB["ReadReplicaNode"]
         LLS["LiveLogSubscriber\n(stream 100)"]
         BE2["BalanceEngine"]
         QS["QueryHttpServer\n(HTTP :8080)"]
@@ -272,9 +272,9 @@ HdrHistogram latency measurement on top of an Aeron cluster client.
 
 The read (query) bounded context. Unlike the deterministic core, it may use the
 system clock, Netty, and heap allocation at the HTTP boundary. Reads are served
-by a standby read node:
+by a read replica node:
 
-- **Standby mode** (the only mode): `StandbyReadNode` runs as a standalone
+- **Read replica mode** (the only mode): `ReadReplicaNode` runs as a standalone
   process with its own embedded Media Driver, driven by an Agrona `Agent` /
   `AgentRunner`. It connects to a cluster member's Aeron Archive and follows the
   consensus log recording (stream 100) from the last loaded snapshot position -
@@ -283,28 +283,28 @@ by a standby read node:
   as they appear, restarting the live log from the snapshot position. Reads are
   eventually consistent with bounded staleness and are answered on the single
   agent thread, reached over a lock-free ring from the HTTP boundary, so the
-  single-writer discipline holds. Standby nodes are NOT cluster members: they do
+  single-writer discipline holds. Read replica nodes are NOT cluster members: they do
   not vote, do not affect quorum, and can be added, removed, or restarted
   independently. See ADR 0006 and 0007.
 
 | Component            | Purpose                                                                        |
 |----------------------|--------------------------------------------------------------------------------|
-| `StandbyReadNode`    | Standalone read node: embedded driver, Agent loop, snapshot load, live log follow, HTTP server |
+| `ReadReplicaNode`    | Standalone read node: embedded driver, Agent loop, snapshot load, live log follow, HTTP server |
 | `LiveLogSubscriber`  | Subscribes consensus recording (stream 100), parses framing, applies to engine |
-| `StandbyConfig`      | Immutable standby config: Archive channel, local host, stream IDs, poll interval, live log |
+| `ReadReplicaConfig`      | Immutable read replica config: Archive channel, local host, stream IDs, poll interval, live log |
 | `ReadQueryGateway`   | Lock-free bridge: request `ManyToOneRingBuffer`, response `OneToOneRingBuffer`, correlation dispatcher |
 | `QueryCodec`         | Fixed little-endian request/response layout over the in-process rings           |
 | `QueryType`          | Enum of read kinds (BALANCE, BATCH_BALANCE, ALLOWANCE, TOTAL_SUPPLY)            |
 | `ReadCallback`       | Functional interface invoked on the dispatcher thread when a response correlates |
 | `QueryHttpServer`    | Netty HTTP boundary: routes REST reads to the gateway, completes them as JSON    |
 | `ReadServiceConfig`  | Immutable read config (HTTP port, ring capacities, request timeout, batch size)  |
-| `ReadServiceLauncher`| Entry point configured from environment variables; runs the standby node        |
+| `ReadServiceLauncher`| Entry point configured from environment variables; runs the read replica node        |
 
 ```mermaid
 flowchart LR
     USER["User"] -->|" HTTP GET/POST "| NETTY["QueryHttpServer (Netty)"]
     NETTY -->|" request + correlationId "| REQ["request ring\n(ManyToOne)"]
-    REQ --> SVC["StandbyReadNode\n(agent thread)"]
+    REQ --> SVC["ReadReplicaNode\n(agent thread)"]
     LOG["consensus log + snapshots\n(Archive replication)"] -->|" apply via BalanceEngine "| SVC
     SVC -->|" lookup, answer "| RESP["response ring\n(OneToOne)"]
     RESP --> DISP["dispatcher thread"]
@@ -528,10 +528,10 @@ JVM must run with `--add-opens java.base/jdk.internal.misc=ALL-UNNAMED` and
 | `MetricsHttpServerTest`     | Unit        | Prometheus metrics and healthz HTTP endpoint               |
 | `ClusterIntegrationTest`    | Integration | End-to-end over a real single-node cluster, idempotency verified |
 | `AdbeClientIntegrationTest` | Integration | Client SDK submit/poll, command-id correlation             |
-| `StandbyReadQueryIntegrationTest`| Integration | Read-after-write over HTTP via standby; both sides of a transfer, malformed requests |
-| `StandbyReplicationIntegrationTest` | Integration | Standby snapshot replication end-to-end            |
-| `StandbyLiveLogIntegrationTest` | Integration | Standby live log following, sub-second staleness       |
-| `StandbyReadNodeSmokeTest`  | Integration | Standby read node startup and basic query                  |
+| `ReadReplicaQueryIntegrationTest`| Integration | Read-after-write over HTTP via read replica; both sides of a transfer, malformed requests |
+| `ReadReplicaReplicationIntegrationTest` | Integration | Read replica snapshot replication end-to-end            |
+| `ReadReplicaLiveLogIntegrationTest` | Integration | Read replica live log following, sub-second staleness       |
+| `ReadReplicaNodeSmokeTest`  | Integration | Read replica node startup and basic query                  |
 | `MultiNodeClusterTest`      | Cluster     | Three-node leader election and committed results           |
 | `CatchUpReplayTest`         | Cluster     | Restarted node recovers its log and rejoins consensus      |
 | `ClusterReplayDeterminismTest` | Cluster  | Identical command streams yield identical balances         |

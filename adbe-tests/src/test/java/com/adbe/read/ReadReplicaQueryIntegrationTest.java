@@ -9,8 +9,8 @@ import com.adbe.launcher.ClusterConfig;
 import com.adbe.launcher.ClusterNode;
 import com.adbe.protocol.CommandType;
 import com.adbe.protocol.StatusCode;
+import com.adbe.read.config.ReadReplicaConfig;
 import com.adbe.read.config.ReadServiceConfig;
-import com.adbe.read.config.StandbyConfig;
 import com.adbe.testkit.ClusterTestClient;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -26,16 +26,16 @@ import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * End-to-end read-side test over the standby path: writes via a
+ * End-to-end read-side test over the read replica path: writes via a
  * {@link ClusterTestClient} against a single-node write cluster, then reads back
- * over HTTP from a {@link StandbyReadNode}. The standby follows the consensus
+ * over HTTP from a {@link ReadReplicaNode}. The read replica follows the consensus
  * log from position 0 (no snapshot required), so the read model is complete - it
  * reflects both sides of a transfer, unlike the egress stream which only carries
  * the sender's balance. Also covers the HTTP boundary's rejection of malformed
  * requests, previously covered by the removed cluster-mode integration test.
  */
 @Tag("integration")
-class StandbyReadQueryIntegrationTest {
+class ReadReplicaQueryIntegrationTest {
 
     private static final long RESULT_TIMEOUT_MS = 15_000L;
     private static final long READ_TIMEOUT_MS = 30_000L;
@@ -43,7 +43,7 @@ class StandbyReadQueryIntegrationTest {
 
     private ClusterNode clusterNode;
     private ClusterConfig clusterConfig;
-    private StandbyReadNode standbyNode;
+    private ReadReplicaNode replicaNode;
     private HttpClient http;
     private String baseUrl;
 
@@ -54,22 +54,22 @@ class StandbyReadQueryIntegrationTest {
 
         // Live log following from position 0 means reads converge without any
         // snapshot; a long poll interval keeps snapshot loading out of the test.
-        final StandbyConfig standbyConfig = StandbyConfig.builder()
+        final ReadReplicaConfig replicaConfig = ReadReplicaConfig.builder()
                 .archiveControlChannel("aeron:udp?endpoint=localhost:20104")
                 .liveLogEnabled(true)
                 .pollIntervalMs(60_000L)
                 .build();
         final ReadServiceConfig readConfig =
                 ReadServiceConfig.builder().httpPort(0).build();
-        standbyNode = new StandbyReadNode(standbyConfig, CoreConfig.defaults(), readConfig);
+        replicaNode = new ReadReplicaNode(replicaConfig, CoreConfig.defaults(), readConfig);
         http = HttpClient.newHttpClient();
-        baseUrl = "http://localhost:" + standbyNode.httpPort();
+        baseUrl = "http://localhost:" + replicaNode.httpPort();
     }
 
     @AfterEach
     void stop() {
-        if (standbyNode != null) {
-            standbyNode.close();
+        if (replicaNode != null) {
+            replicaNode.close();
         }
         if (clusterNode != null) {
             clusterNode.close();

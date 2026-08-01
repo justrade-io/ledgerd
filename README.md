@@ -42,7 +42,7 @@ double-applied command or a nondeterministic replay is a correctness failure.
   retry, asynchronous result correlation, explicit backpressure signalling, and
   end-to-end HdrHistogram latency, consuming only the wire contract.
 - **CQRS Read Side**: `adbe-read` serves eventually-consistent balance, allowance,
-  and total-supply reads over HTTP (Netty). Two modes: **standby** (default, no
+  and total-supply reads over HTTP (Netty). Two modes: **read replica** (default, no
   quorum impact, external Archive replication with sub-second live log following)
   and **cluster** (legacy, full Raft voting member). See ADR 0006.
 - **Off-Heap Telemetry**: core counters are mirrored to a standalone off-heap
@@ -221,7 +221,7 @@ single-writer hot path.
 ## Running a Cluster with Docker
 
 A `docker-compose.yml` brings up a local three-node Raft write cluster plus one
-standby read node, each in its own container on a shared bridge network:
+read replica node, each in its own container on a shared bridge network:
 
 ```bash
 docker compose up --build
@@ -229,7 +229,7 @@ docker compose up --build
 
 Node 0 publishes its ingress port (`20100/udp`) to the host so an external client
 can connect, and each node exposes its Prometheus endpoint (`9100`, `9101`,
-`9102` on the host). The standby read node (`adbe-read-0`) connects to node 0's
+`9102` on the host). The read replica node (`adbe-read-0`) connects to node 0's
 Aeron Archive, follows the consensus log, and serves eventually-consistent reads
 over HTTP on host port `8080`. It is not a Raft member: it does not vote, does
 not affect quorum, and can be restarted independently (see ADR 0006 and 0007).
@@ -289,7 +289,7 @@ flowchart TB
 | `adbe-core`     | Deterministic engine, handlers, dedup, snapshot, telemetry            |
 | `adbe-launcher` | Aeron bootstrap: Media Driver, Archive, Consensus Module, Container   |
 | `adbe-client`   | Edge-side SDK: leader-change handling, idempotent retry, correlation  |
-| `adbe-read`     | CQRS read side: standby read node (Archive replication), HTTP query API (Netty) |
+| `adbe-read`     | CQRS read side: read replica node (Archive replication), HTTP query API (Netty) |
 | `adbe-tests`    | Unit, property, integration, cluster, fault, soak tests and fixtures  |
 | `adbe-examples` | Runnable examples (QuickStart, RemoteClient)                          |
 
@@ -382,10 +382,10 @@ principles. Key architectural decisions include:
 | `MetricsHttpServerTest`  | Unit        | Prometheus metrics and healthz HTTP endpoint          |
 | `ClusterIntegrationTest` | Integration | End-to-end over a real cluster, idempotency verified  |
 | `AdbeClientIntegrationTest` | Integration | Client SDK submit/poll, command-id correlation     |
-| `StandbyReadQueryIntegrationTest` | Integration | Read-after-write over HTTP via standby; both sides of transfer, malformed requests |
-| `StandbyReplicationIntegrationTest` | Integration | Standby snapshot replication end-to-end    |
-| `StandbyLiveLogIntegrationTest` | Integration | Standby live log following, sub-second staleness |
-| `StandbyReadNodeSmokeTest` | Integration | Standby read node startup and basic query           |
+| `ReadReplicaQueryIntegrationTest` | Integration | Read-after-write over HTTP via read replica; both sides of transfer, malformed requests |
+| `ReadReplicaReplicationIntegrationTest` | Integration | Read replica snapshot replication end-to-end    |
+| `ReadReplicaLiveLogIntegrationTest` | Integration | Read replica live log following, sub-second staleness |
+| `ReadReplicaNodeSmokeTest` | Integration | Read replica node startup and basic query           |
 | `MultiNodeClusterTest`   | Cluster     | Three-node leader election and committed results      |
 | `CatchUpReplayTest`      | Cluster     | Restarted node recovers its log and rejoins consensus |
 | `ClusterReplayDeterminismTest` | Cluster | Identical command streams yield identical balances  |

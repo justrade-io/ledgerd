@@ -1,15 +1,15 @@
 package com.adbe.read.config;
 
 /**
- * Immutable configuration for a standby read node that replicates cluster state
+ * Immutable configuration for a read replica node that replicates cluster state
  * via Aeron Archive snapshot replay, independent of the Raft consensus protocol.
  *
- * <p>The standby node connects to a cluster member's Archive, periodically
+ * <p>The read replica node connects to a cluster member's Archive, periodically
  * downloads the latest service snapshot, loads it into the balance engine, and
  * serves eventually-consistent reads over HTTP. It does NOT appear in the
  * cluster's {@code clusterMembers} string and does not affect quorum.
  */
-public final class StandbyConfig {
+public final class ReadReplicaConfig {
 
     private final String archiveControlChannel;
     private final String localHost;
@@ -20,7 +20,7 @@ public final class StandbyConfig {
     private final long replayTimeoutMs;
     private final boolean liveLogEnabled;
 
-    private StandbyConfig(final Builder builder) {
+    private ReadReplicaConfig(final Builder builder) {
         this.archiveControlChannel = builder.archiveControlChannel;
         this.localHost = builder.localHost;
         this.archiveControlStreamId = builder.archiveControlStreamId;
@@ -35,7 +35,7 @@ public final class StandbyConfig {
         return new Builder();
     }
 
-    public static StandbyConfig defaults() {
+    public static ReadReplicaConfig defaults() {
         return builder().build();
     }
 
@@ -45,11 +45,11 @@ public final class StandbyConfig {
     }
 
     /**
-     * The routable host the standby binds its archive-facing subscriptions on
+     * The routable host the read replica binds its archive-facing subscriptions on
      * (the Archive control response channel and snapshot / log replays). The
      * Archive connects back to this host, so it must be reachable from the
      * Archive: {@code localhost} for same-host runs, or the container's network
-     * address when the standby and the cluster run on different hosts (e.g.
+     * address when the read replica and the cluster run on different hosts (e.g.
      * Docker). Default {@code localhost}.
      */
     public String localHost() {
@@ -86,7 +86,7 @@ public final class StandbyConfig {
         return liveLogEnabled;
     }
 
-    /** Fluent builder for {@link StandbyConfig}. */
+    /** Fluent builder for {@link ReadReplicaConfig}. */
     public static final class Builder {
         private String archiveControlChannel = "aeron:udp?endpoint=localhost:20104";
         private String localHost = "localhost";
@@ -139,11 +139,11 @@ public final class StandbyConfig {
             return this;
         }
 
-        public StandbyConfig build() {
+        public ReadReplicaConfig build() {
             if (archiveControlChannel == null || archiveControlChannel.isBlank()) {
                 throw new IllegalArgumentException("archiveControlChannel is required");
             }
-            return new StandbyConfig(this);
+            return new ReadReplicaConfig(this);
         }
     }
 }

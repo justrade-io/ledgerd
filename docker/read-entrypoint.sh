@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# Starts one ADBE standby read node. It runs standalone (not a Raft member):
+# Starts one ADBE read replica node. It runs standalone (not a Raft member):
 # connects to the write cluster's Aeron Archive, follows the consensus log
 # (loading snapshots as they appear), and serves reads over HTTP.
 #
@@ -22,5 +22,5 @@ set -eu
 CONTAINER_IP="$(hostname -i | awk '{print $1}')"
 export ADBE_LOCAL_HOST="${ADBE_LOCAL_HOST:-${CONTAINER_IP}}"
 
-echo "Starting ADBE standby read node (http=${ADBE_HTTP_PORT:-8080}, archive=${ADBE_ARCHIVE_CHANNEL}, localHost=${ADBE_LOCAL_HOST})"
+echo "Starting ADBE read replica node (http=${ADBE_HTTP_PORT:-8080}, archive=${ADBE_ARCHIVE_CHANNEL}, localHost=${ADBE_LOCAL_HOST})"
 exec /opt/adbe/bin/adbe-read

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
-# Operational verification for the ADBE write cluster + standby read node,
+# Operational verification for the ADBE write cluster + read replica node,
 # driven entirely through docker compose. It builds the images, brings up the
-# full topology (3 write members + 1 standby read node), and exercises the
+# full topology (3 write members + 1 read replica node), and exercises the
 # cases that occur in operation:
 #
 #   1. Cold start: all write nodes and the read node become healthy.
@@ -115,7 +115,7 @@ cleanup() {
 trap cleanup EXIT
 
 # =============================================================================
-log "Step 0: clean slate + build + up (3 write members + 1 standby read node)"
+log "Step 0: clean slate + build + up (3 write members + 1 read replica node)"
 ${COMPOSE} down --remove-orphans >/dev/null 2>&1 || true
 ${COMPOSE} up -d --build
 pass "stack started"

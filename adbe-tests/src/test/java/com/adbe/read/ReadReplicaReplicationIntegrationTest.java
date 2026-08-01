@@ -8,8 +8,8 @@ import com.adbe.launcher.ClusterConfig;
 import com.adbe.launcher.ClusterNode;
 import com.adbe.protocol.CommandType;
 import com.adbe.protocol.StatusCode;
+import com.adbe.read.config.ReadReplicaConfig;
 import com.adbe.read.config.ReadServiceConfig;
-import com.adbe.read.config.StandbyConfig;
 import com.adbe.testkit.ClusterTestClient;
 import io.aeron.cluster.ClusterTool;
 import java.net.URI;
@@ -25,9 +25,9 @@ import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * End-to-end replication test for the standby read node. Unlike the smoke
+ * End-to-end replication test for the read replica node. Unlike the smoke
  * tests, this drives real commands into the write cluster, forces a snapshot
- * via {@link ClusterTool}, and asserts the standby downloads and serves that
+ * via {@link ClusterTool}, and asserts the read replica downloads and serves that
  * state over HTTP - then keeps writing and asserts the live log converges
  * without another snapshot.
  *
@@ -37,7 +37,7 @@ import org.junit.jupiter.api.io.TempDir;
  * snapshot polling without leaking subscribers or clobbering live-log state.
  */
 @Tag("integration")
-class StandbyReplicationIntegrationTest {
+class ReadReplicaReplicationIntegrationTest {
 
     private static final long RESULT_TIMEOUT_MS = 15_000L;
     private static final long HTTP_AWAIT_MS = 30_000L;
@@ -45,14 +45,14 @@ class StandbyReplicationIntegrationTest {
 
     private ClusterNode clusterNode;
     private ClusterConfig clusterConfig;
-    private StandbyReadNode standbyNode;
+    private ReadReplicaNode replicaNode;
     private HttpClient http;
     private String baseUrl;
 
     @AfterEach
     void stop() {
-        if (standbyNode != null) {
-            standbyNode.close();
+        if (replicaNode != null) {
+            replicaNode.close();
         }
         if (clusterNode != null) {
             clusterNode.close();
@@ -64,22 +64,22 @@ class StandbyReplicationIntegrationTest {
         clusterNode = new ClusterNode(clusterConfig, CoreConfig.defaults(), true);
     }
 
-    private void startStandby() {
-        final StandbyConfig standbyConfig = StandbyConfig.builder()
+    private void startReplica() {
+        final ReadReplicaConfig replicaConfig = ReadReplicaConfig.builder()
                 .archiveControlChannel("aeron:udp?endpoint=localhost:20104")
                 .pollIntervalMs(250L)
                 .liveLogEnabled(true)
                 .build();
         final ReadServiceConfig readConfig =
                 ReadServiceConfig.builder().httpPort(0).build();
-        standbyNode = new StandbyReadNode(standbyConfig, CoreConfig.defaults(), readConfig);
+        replicaNode = new ReadReplicaNode(replicaConfig, CoreConfig.defaults(), readConfig);
         http = HttpClient.newHttpClient();
-        baseUrl = "http://localhost:" + standbyNode.httpPort();
+        baseUrl = "http://localhost:" + replicaNode.httpPort();
     }
 
     @Test
     @Timeout(120)
-    void standbyLoadsSnapshotAndServesReplicatedState(@TempDir final Path tempDir) throws Exception {
+    void readReplicaLoadsSnapshotAndServesReplicatedState(@TempDir final Path tempDir) throws Exception {
         startCluster(tempDir);
 
         try (ClusterTestClient client = new ClusterTestClient(clusterConfig.aeronDirectoryName(), INGRESS_ENDPOINTS)) {
@@ -92,10 +92,10 @@ class StandbyReplicationIntegrationTest {
             assertEquals(StatusCode.SUCCESS, client.lastStatus());
         }
 
-        // Force a snapshot so the standby has a recording to download.
+        // Force a snapshot so the read replica has a recording to download.
         assertTrue(ClusterTool.snapshot(clusterConfig.clusterDir(), System.out), "snapshot trigger accepted");
 
-        startStandby();
+        startReplica();
 
         awaitHttp("/supply", "\"totalSupply\":800");
         awaitHttp("/balance/100", "\"balance\":500");
@@ -105,7 +105,7 @@ class StandbyReplicationIntegrationTest {
 
     @Test
     @Timeout(120)
-    void standbyFollowsLiveLogBetweenSnapshots(@TempDir final Path tempDir) throws Exception {
+    void readReplicaFollowsLiveLogBetweenSnapshots(@TempDir final Path tempDir) throws Exception {
         startCluster(tempDir);
 
         try (ClusterTestClient client = new ClusterTestClient(clusterConfig.aeronDirectoryName(), INGRESS_ENDPOINTS)) {
@@ -116,10 +116,10 @@ class StandbyReplicationIntegrationTest {
 
         assertTrue(ClusterTool.snapshot(clusterConfig.clusterDir(), System.out), "snapshot trigger accepted");
 
-        startStandby();
+        startReplica();
         awaitHttp("/supply", "\"totalSupply\":500");
 
-        // A new command committed AFTER the snapshot must reach the standby via
+        // A new command committed AFTER the snapshot must reach the read replica via
         // the live log, with no further snapshot taken.
         try (ClusterTestClient client = new ClusterTestClient(clusterConfig.aeronDirectoryName(), INGRESS_ENDPOINTS)) {
             client.send(1L, 1L, 0L, 2L, CommandType.CREDIT, 100L, 0L, 0L, 250L);

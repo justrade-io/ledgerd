@@ -20,7 +20,7 @@ import org.openjdk.jmh.annotations.State;
 /**
  * Measures the per-query work performed on the read service thread: decode a
  * request off the ring, look up the balance store, and encode the response. This
- * mirrors {@code StandbyReadNode.answerBalances} exactly and must be
+ * mirrors {@code ReadReplicaNode.answerBalances} exactly and must be
  * allocation-free (verify with {@code -prof gc}).
  */
 @State(Scope.Thread)

@@ -1,4 +1,4 @@
-// adbe-read: the CQRS read-side. Runs a standby read node that replicates
+// adbe-read: the CQRS read-side. Runs a read replica node that replicates
 // cluster state via Aeron Archive (snapshot load + consensus log following),
 // independent of the Raft consensus protocol, and serves eventually-consistent
 // balance / allowance / total-supply reads over HTTP.

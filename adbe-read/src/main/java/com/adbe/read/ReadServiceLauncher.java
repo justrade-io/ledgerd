@@ -1,15 +1,15 @@
 package com.adbe.read;
 
 import com.adbe.config.CoreConfig;
+import com.adbe.read.config.ReadReplicaConfig;
 import com.adbe.read.config.ReadServiceConfig;
-import com.adbe.read.config.StandbyConfig;
 import java.util.concurrent.CountDownLatch;
 
 /**
- * Entry point for a read-service process. Runs a standby read node: it connects
+ * Entry point for a read-service process. Runs a read replica node: it connects
  * to the write cluster's Aeron Archive, follows the consensus log (from the
  * latest snapshot when one exists, otherwise from the start of the log), loads
- * snapshots as they appear, and serves reads over HTTP. The standby node does
+ * snapshots as they appear, and serves reads over HTTP. The read replica node does
  * NOT appear in {@code clusterMembers} and does not vote or affect quorum. See
  * ADR 0006 and 0007.
  *
@@ -32,18 +32,18 @@ public final class ReadServiceLauncher {
         final int httpPort = Integer.parseInt(envOrDefault("ADBE_HTTP_PORT", "8080"));
         final ReadServiceConfig readConfig =
                 ReadServiceConfig.builder().httpPort(httpPort).build();
-        final StandbyConfig standbyConfig = resolveStandbyConfig();
+        final ReadReplicaConfig replicaConfig = resolveReadReplicaConfig();
 
-        try (StandbyReadNode node = new StandbyReadNode(standbyConfig, CoreConfig.defaults(), readConfig)) {
+        try (ReadReplicaNode node = new ReadReplicaNode(replicaConfig, CoreConfig.defaults(), readConfig)) {
             System.out.printf(
-                    "ADBE standby read service started: httpPort=%d archiveChannel=%s liveLog=%s%n",
-                    node.httpPort(), standbyConfig.archiveControlChannel(), standbyConfig.liveLogEnabled());
-            parkUntilShutdown("adbe-standby-shutdown");
+                    "ADBE read replica service started: httpPort=%d archiveChannel=%s liveLog=%s%n",
+                    node.httpPort(), replicaConfig.archiveControlChannel(), replicaConfig.liveLogEnabled());
+            parkUntilShutdown("adbe-read-replica-shutdown");
         }
     }
 
-    private static StandbyConfig resolveStandbyConfig() {
-        final StandbyConfig.Builder builder = StandbyConfig.builder();
+    private static ReadReplicaConfig resolveReadReplicaConfig() {
+        final ReadReplicaConfig.Builder builder = ReadReplicaConfig.builder();
 
         final String archiveChannel = System.getenv("ADBE_ARCHIVE_CHANNEL");
         if (archiveChannel != null && !archiveChannel.isBlank()) {

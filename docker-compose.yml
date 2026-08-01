@@ -1,4 +1,4 @@
-# Local ADBE deployment: a 3-node Raft write cluster plus one standby read node.
+# Local ADBE deployment: a 3-node Raft write cluster plus one read replica node.
 #
 #   docker compose up --build
 #
@@ -7,7 +7,7 @@
 # published to the host for an external client). On a fresh start the members
 # elect a leader and replicate committed commands.
 #
-# The read service (adbe-read-0) is a standby read node: it is NOT a cluster
+# The read service (adbe-read-0) is a read replica node: it is NOT a cluster
 # member, does not vote, and does not affect quorum. It connects to node 0's
 # Aeron Archive, follows the consensus log (loading snapshots as they appear),
 # and serves eventually-consistent reads over HTTP on host port 8080. It can be
@@ -80,7 +80,7 @@ services:
     ports:
       - "9102:9100/tcp"
 
-  # Standby read node. Connects to node 0's Archive and serves reads over HTTP.
+  # Read replica node. Connects to node 0's Archive and serves reads over HTTP.
   # Not a Raft member: no vote, no quorum impact, independent lifecycle.
   adbe-read-0:
     build:

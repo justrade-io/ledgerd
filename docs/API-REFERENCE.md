@@ -662,20 +662,20 @@ engine.process(cmd, outcome);
 
 The command path (sections 1 - 12) is write-only: every result is a deterministic `CommandResult`
 committed through Raft. Reads are served separately by the `adbe-read` module, a CQRS read side.
-Reads are served by a standby read node:
+Reads are served by a read replica node:
 
-- **Standby mode** (the only mode): `StandbyReadNode` runs as a standalone
+- **Read replica mode** (the only mode): `ReadReplicaNode` runs as a standalone
   process with its own embedded Media Driver. It connects to a cluster member's
   Aeron Archive and follows the consensus log recording from the last loaded
   snapshot position - or from position 0 when no snapshot has loaded yet, so it
   builds state immediately on a fresh cluster - and loads service snapshots as
   they appear. It applies the committed log through the same `BalanceEngine`, so
   it holds a complete copy of engine state, including both sides of every
-  `TRANSFER`, which the egress stream never carries. Standby nodes are NOT
+  `TRANSFER`, which the egress stream never carries. Read replica nodes are NOT
   cluster members: they do not vote, do not affect quorum, and can be added,
   removed, or restarted independently. See
-  [ADR 0006](decisions/0006-standby-snapshot-read-nodes.md) and
-  [ADR 0007](decisions/0007-standby-only-read-side.md).
+  [ADR 0006](decisions/0006-read replica-snapshot-read-nodes.md) and
+  [ADR 0007](decisions/0007-read replica-only-read-side.md).
 
 **Consistency**: reads are eventually consistent with bounded staleness. With
 live log following (the default), staleness is the live log replay delay
@@ -690,22 +690,22 @@ single-writer discipline is preserved.
 ### Running a read node
 
 ```bash
-# Gradle (development): standalone standby, connects to localhost:20104 archive.
+# Gradle (development): standalone read replica, connects to localhost:20104 archive.
 ADBE_ARCHIVE_CHANNEL=aeron:udp?endpoint=localhost:20104 ./gradlew :adbe-read:run
 ```
 
 ```java
 import com.adbe.config.CoreConfig;
-import com.adbe.read.StandbyReadNode;
+import com.adbe.read.ReadReplicaNode;
 import com.adbe.read.config.ReadServiceConfig;
-import com.adbe.read.config.StandbyConfig;
+import com.adbe.read.config.ReadReplicaConfig;
 
-StandbyConfig standbyConfig = StandbyConfig.builder()
+ReadReplicaConfig read replicaConfig = ReadReplicaConfig.builder()
         .archiveControlChannel("aeron:udp?endpoint=localhost:20104")
         .build();
 ReadServiceConfig readConfig = ReadServiceConfig.builder().httpPort(8080).build();
 
-try (StandbyReadNode node = new StandbyReadNode(standbyConfig, CoreConfig.defaults(), readConfig)) {
+try (ReadReplicaNode node = new ReadReplicaNode(read replicaConfig, CoreConfig.defaults(), readConfig)) {
     // Serves reads on http://localhost:8080 while following the cluster log.
 }
 ```

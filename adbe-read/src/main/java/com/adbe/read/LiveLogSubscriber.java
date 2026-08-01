@@ -22,7 +22,7 @@ import org.agrona.DirectBuffer;
  * wrapped service message. The subscriber skips the consensus framing and feeds
  * the raw service message to the engine.
  *
- * <p>Single-writer: this class owns no thread. The standby node's single agent
+ * <p>Single-writer: this class owns no thread. The read replica node's single agent
  * thread calls {@link #connect()} (reconnecting after each snapshot load) and
  * then drives {@link #poll(int)} from its event loop, so
  * {@link BalanceEngine#process} is only ever invoked from that one thread - the
@@ -82,14 +82,14 @@ final class LiveLogSubscriber implements AutoCloseable {
         final long recordingId = findConsensusRecording();
         if (recordingId < 0) {
             // No consensus recording yet (e.g. the cluster has not committed). The
-            // standby retries connect() on its agent loop, so this is a normal
+            // read replica retries connect() on its agent loop, so this is a normal
             // transient state rather than an error; stay silent to avoid log spam.
             return false;
         }
 
         final int replayStreamId = 43;
 
-        // The standby runs its own media driver, so the replay travels over UDP.
+        // The read replica runs its own media driver, so the replay travels over UDP.
         // Bind an ephemeral-port subscription, resolve the port, then replay to it.
         final Subscription sub =
                 archive.context().aeron().addSubscription("aeron:udp?endpoint=" + localHost + ":0", replayStreamId);
