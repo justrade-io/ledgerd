@@ -131,6 +131,44 @@ class ReadReplicaReplicationIntegrationTest {
         awaitHttp("/balance/100", "\"balance\":750");
     }
 
+    @Test
+    @Timeout(120)
+    void readReplicaLoadsLargeSnapshotWithLiveLogDisabled(@TempDir final Path tempDir) throws Exception {
+        startCluster(tempDir);
+
+        // Credit 100 accounts so the service snapshot (header + 100 balances + 100
+        // dedup entries + footer, plus cluster-schema framing) exceeds the read
+        // node's 64-fragment poll batch. Live log is DISABLED, so the replica can
+        // only serve state loaded from the snapshot. A loader that mishandles the
+        // cluster-schema framing prefix loads only the first batch and never
+        // completes; a correct loader skips the framing and loads the whole
+        // snapshot, converging on the full supply.
+        final int accounts = 100;
+        try (ClusterTestClient client = new ClusterTestClient(clusterConfig.aeronDirectoryName(), INGRESS_ENDPOINTS)) {
+            for (int i = 0; i < accounts; i++) {
+                client.send(1L, i, 0L, i + 1L, CommandType.CREDIT, i + 1L, 0L, 0L, 1L);
+            }
+            assertTrue(client.awaitResult(accounts, RESULT_TIMEOUT_MS), "last credit result");
+            assertEquals(StatusCode.SUCCESS, client.lastStatus());
+        }
+
+        assertTrue(ClusterTool.snapshot(clusterConfig.clusterDir(), System.out), "snapshot trigger accepted");
+
+        final ReadReplicaConfig replicaConfig = ReadReplicaConfig.builder()
+                .archiveControlChannel("aeron:udp?endpoint=localhost:20104")
+                .pollIntervalMs(250L)
+                .liveLogEnabled(false)
+                .build();
+        final ReadServiceConfig readConfig =
+                ReadServiceConfig.builder().httpPort(0).build();
+        replicaNode = new ReadReplicaNode(replicaConfig, CoreConfig.defaults(), readConfig);
+        http = HttpClient.newHttpClient();
+        baseUrl = "http://localhost:" + replicaNode.httpPort();
+
+        awaitHttp("/supply", "\"totalSupply\":100");
+        awaitHttp("/balance/100", "\"balance\":1");
+    }
+
     private void awaitHttp(final String path, final String expectedFragment) throws Exception {
         final HttpRequest request = HttpRequest.newBuilder(URI.create(baseUrl + path))
                 .timeout(Duration.ofSeconds(5))

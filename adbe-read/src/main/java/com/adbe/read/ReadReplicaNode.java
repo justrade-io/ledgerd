@@ -86,7 +86,6 @@ public final class ReadReplicaNode implements AutoCloseable {
     private LiveLogSubscriber liveLog;
     private int candidateCount;
     private boolean snapshotLoadBegun;
-    private boolean snapshotRejected;
 
     public ReadReplicaNode(
             final ReadReplicaConfig replicaConfig, final CoreConfig coreConfig, final ReadServiceConfig readConfig) {
@@ -100,17 +99,18 @@ public final class ReadReplicaNode implements AutoCloseable {
         this.engine = new BalanceEngine(coreConfig, metrics);
         this.gateway = new ReadQueryGateway(readConfig.requestRingCapacity(), readConfig.responseRingCapacity());
 
-        // Validates that the first record is an ADBE SnapshotHeader before the
-        // engine is cleared, so a consensus-module snapshot recording (which
-        // shares the snapshot stream but carries cluster-schema records) is
-        // rejected without disturbing the current state.
+        // The service snapshot recording is prefixed with cluster-schema framing
+        // records (schema 111); the ADBE SnapshotHeader (ADBE schema, template 10)
+        // follows them. Skip the framing and begin the load only once the
+        // SnapshotHeader arrives, so the engine is never cleared for a recording
+        // that holds no service snapshot.
         this.snapshotFragmentHandler =
                 (final DirectBuffer buffer, final int offset, final int length, final io.aeron.logbuffer.Header h) -> {
                     if (!snapshotLoadBegun) {
                         validationHeader.wrap(buffer, offset);
-                        if (validationHeader.templateId() != SnapshotHeaderDecoder.TEMPLATE_ID) {
-                            snapshotRejected = true;
-                            return;
+                        if (validationHeader.schemaId() != MessageHeaderDecoder.SCHEMA_ID
+                                || validationHeader.templateId() != SnapshotHeaderDecoder.TEMPLATE_ID) {
+                            return; // cluster-schema framing; keep scanning
                         }
                         engine.beginSnapshotLoad(snapshotManager);
                         snapshotLoadBegun = true;
@@ -248,10 +248,11 @@ public final class ReadReplicaNode implements AutoCloseable {
     private int collectSnapshotCandidates() {
         candidateCount = 0;
 
-        // A snapshot trigger produces two recordings on the snapshot stream: the
-        // consensus-module snapshot (cluster-schema records) and the service
-        // snapshot (ADBE snapshot records). Collect them all and let the caller
-        // validate which one is a loadable service snapshot.
+        // Collect the snapshot-stream recordings, newest first. The service
+        // snapshot recording is prefixed with cluster-schema framing, which the
+        // replay handler skips to reach the ADBE SnapshotHeader; the separate
+        // consensus-module snapshot lives on a different stream and is not listed
+        // here.
         final RecordingDescriptorConsumer consumer =
                 (controlSessionId,
                         correlationId,
@@ -287,7 +288,6 @@ public final class ReadReplicaNode implements AutoCloseable {
         // ephemeral port, resolve the actual port, then tell the archive to
         // replay to that concrete endpoint.
         snapshotLoadBegun = false;
-        snapshotRejected = false;
 
         final Subscription subscription =
                 aeron.addSubscription("aeron:udp?endpoint=" + replicaConfig.localHost() + ":0", replayStreamId);
@@ -296,16 +296,13 @@ public final class ReadReplicaNode implements AutoCloseable {
             archive.startReplay(recordingId, 0, AeronArchive.NULL_LENGTH, replayChannel, replayStreamId);
 
             final long deadline = System.currentTimeMillis() + replicaConfig.replayTimeoutMs();
-            while (!snapshotRejected && !snapshotManager.loadComplete() && System.currentTimeMillis() < deadline) {
+            while (!snapshotManager.loadComplete() && System.currentTimeMillis() < deadline) {
                 final int fragments = subscription.poll(snapshotFragmentHandler, FRAGMENT_LIMIT);
                 if (fragments == 0) {
                     Thread.onSpinWait();
                 }
             }
 
-            if (snapshotRejected) {
-                throw new IllegalStateException("Recording " + recordingId + " is not a service snapshot");
-            }
             if (!snapshotManager.loadComplete()) {
                 throw new IllegalStateException("Snapshot replay timed out for recording " + recordingId);
             }
