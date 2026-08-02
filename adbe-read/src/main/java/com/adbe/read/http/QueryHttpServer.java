@@ -1,5 +1,6 @@
 package com.adbe.read.http;
 
+import com.adbe.read.ReplicationHealth;
 import com.adbe.read.config.ReadServiceConfig;
 import com.adbe.read.query.QueryCodec;
 import com.adbe.read.query.QueryType;
@@ -54,13 +55,16 @@ public final class QueryHttpServer implements AutoCloseable {
 
     private final ReadQueryGateway gateway;
     private final ReadServiceConfig config;
+    private final ReplicationHealth health;
     private final EventLoopGroup bossGroup;
     private final EventLoopGroup workerGroup;
     private final Channel serverChannel;
 
-    public QueryHttpServer(final ReadQueryGateway gateway, final ReadServiceConfig config) {
+    public QueryHttpServer(
+            final ReadQueryGateway gateway, final ReadServiceConfig config, final ReplicationHealth health) {
         this.gateway = gateway;
         this.config = config;
+        this.health = health;
         this.bossGroup = new NioEventLoopGroup(1);
         this.workerGroup = new NioEventLoopGroup();
 
@@ -75,7 +79,7 @@ public final class QueryHttpServer implements AutoCloseable {
                         channel.pipeline()
                                 .addLast(new HttpServerCodec())
                                 .addLast(new HttpObjectAggregator(MAX_CONTENT_LENGTH))
-                                .addLast(new QueryHttpHandler(gateway, config));
+                                .addLast(new QueryHttpHandler(gateway, config, health));
                     }
                 });
 
@@ -104,10 +108,13 @@ public final class QueryHttpServer implements AutoCloseable {
 
         private final ReadQueryGateway gateway;
         private final ReadServiceConfig config;
+        private final ReplicationHealth health;
 
-        QueryHttpHandler(final ReadQueryGateway gateway, final ReadServiceConfig config) {
+        QueryHttpHandler(
+                final ReadQueryGateway gateway, final ReadServiceConfig config, final ReplicationHealth health) {
             this.gateway = gateway;
             this.config = config;
+            this.health = health;
         }
 
         @Override
@@ -131,7 +138,11 @@ public final class QueryHttpServer implements AutoCloseable {
 
         private void handleGet(final ChannelHandlerContext ctx, final boolean keepAlive, final String path) {
             if ("/healthz".equals(path)) {
-                writeJson(ctx, keepAlive, HttpResponseStatus.OK, "{\"status\":\"ok\"}");
+                final boolean ok = health.isHealthy();
+                final String json = "{\"status\":\"" + (ok ? "ok" : "stale") + "\",\"appliedPosition\":"
+                        + health.appliedPosition() + ",\"endpoint\":\"" + health.activeEndpoint() + "\",\"failovers\":"
+                        + health.failovers() + "}";
+                writeJson(ctx, keepAlive, ok ? HttpResponseStatus.OK : HttpResponseStatus.SERVICE_UNAVAILABLE, json);
             } else if ("/metrics".equals(path)) {
                 writeJson(ctx, keepAlive, HttpResponseStatus.OK, metricsJson());
             } else if ("/supply".equals(path)) {
@@ -235,7 +246,8 @@ public final class QueryHttpServer implements AutoCloseable {
         private String metricsJson() {
             return "{\"submitted\":" + gateway.submitted() + ",\"completed\":" + gateway.completed()
                     + ",\"pending\":" + gateway.pendingCount() + ",\"overloads\":" + gateway.overloads()
-                    + ",\"orphanResponses\":" + gateway.orphanResponses() + "}";
+                    + ",\"orphanResponses\":" + gateway.orphanResponses() + ",\"failovers\":" + health.failovers()
+                    + "}";
         }
 
         @Override

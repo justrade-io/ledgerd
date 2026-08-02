@@ -46,6 +46,8 @@ final class LiveLogSubscriber implements AutoCloseable {
     private final FragmentHandler fragmentHandler = this::onFragment;
 
     private Subscription subscription;
+    private long lastPosition;
+    private boolean hadImage;
 
     /**
      * @param archive       connected AeronArchive client for the cluster
@@ -104,6 +106,7 @@ final class LiveLogSubscriber implements AutoCloseable {
         final long sessionId = archive.startReplay(
                 recordingId, startPosition, AeronArchive.NULL_LENGTH, replayChannel, replayStreamId);
         this.subscription = sub;
+        this.lastPosition = startPosition;
 
         System.out.printf(
                 "LiveLogSubscriber: following recording=%d from position=%d session=%d%n",
@@ -121,7 +124,33 @@ final class LiveLogSubscriber implements AutoCloseable {
         if (subscription == null) {
             return 0;
         }
+        if (subscription.imageCount() > 0) {
+            hadImage = true;
+        }
         return subscription.poll(fragmentHandler, fragmentLimit);
+    }
+
+    /**
+     * Whether the bounded replay has run to the end of the recording and its image
+     * has closed. An Archive replay of an active recording follows the live tail
+     * only while data keeps arriving; once it catches up to an idle recording the
+     * replay session ends (the image closes). The read replica observes this and
+     * re-points a fresh replay from the last consumed position, so commits that
+     * land after the replay ended are still picked up. Returns {@code false} while
+     * the replay image is still establishing (never yet seen).
+     */
+    boolean isReplayEnded() {
+        return subscription != null && hadImage && subscription.imageCount() == 0;
+    }
+
+    /**
+     * The consensus log position consumed up to (the position of the last polled
+     * fragment), or the start position before any fragment arrives. Shares the
+     * cluster-global log-position coordinate space with a snapshot's
+     * {@code logPosition}, so the two are comparable across Archives.
+     */
+    long lastPosition() {
+        return lastPosition;
     }
 
     @Override
@@ -134,6 +163,7 @@ final class LiveLogSubscriber implements AutoCloseable {
 
     private void onFragment(
             final DirectBuffer buffer, final int offset, final int length, final io.aeron.logbuffer.Header header) {
+        lastPosition = header.position();
         if (length < CONSENSUS_FRAMING_LENGTH) {
             return; // fragment too short to carry a service message
         }

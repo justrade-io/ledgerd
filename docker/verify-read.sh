@@ -20,6 +20,13 @@
 #   8. Read decoupling: with the read node stopped, writes still commit (the
 #      read node is not a Raft member and does not affect quorum); on restart it
 #      catches up.
+#   9. Snapshot load: a cluster snapshot is triggered, then the read node is
+#      restarted; starting fresh it discovers and loads the service snapshot from
+#      the archive (advance-only, skipping cluster framing) and serves correct
+#      data, proving the snapshot load path end to end.
+#   10. Archive failover (ADR 0008): kill the write member whose Archive the read
+#      node follows (node 0); the cluster keeps committing (quorum 2 of 3) and
+#      the read node fails over to a surviving member's Archive and converges.
 #
 # Usage:
 #   bash docker/verify-read.sh           # run and tear down on completion
@@ -103,6 +110,36 @@ run_client() {
     ${COMPOSE} run --rm -e ADBE_CLIENT_ID="$1" client 2>&1 || true
 }
 
+# trigger_snapshot - trigger a cluster snapshot via ClusterTool on every member.
+# Only the leader can take a snapshot; followers report 'not the leader' and are
+# ignored. The --add-opens flags are required by Agrona (matches the launcher).
+# Fails if no member applied a snapshot.
+trigger_snapshot() {
+    local out="" applied=""
+    for n in 0 1 2; do
+        out="$(${COMPOSE} exec -T "adbe-node-${n}" java \
+            --add-opens java.base/jdk.internal.misc=ALL-UNNAMED \
+            --add-opens java.base/sun.nio.ch=ALL-UNNAMED \
+            -cp '/opt/adbe/lib/*' io.aeron.cluster.ClusterTool /var/adbe/cluster snapshot 2>&1 || true)"
+        echo "${out}" | grep -q "SNAPSHOT applied successfully" && applied="yes"
+    done
+    [ -n "${applied}" ] || die "no cluster member applied a snapshot (leader trigger failed)"
+}
+
+# await_log_contains <service> <substring> [timeout_s] - wait until a service's
+# docker logs contain a substring.
+await_log_contains() {
+    local svc="$1" want="$2" timeout="${3:-30}"
+    local deadline=$(( $(date +%s) + timeout ))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        if ${COMPOSE} logs --no-color "$svc" 2>/dev/null | grep -q "$want"; then
+            return 0
+        fi
+        sleep 1
+    done
+    die "timed out waiting for ${svc} logs to contain '${want}'"
+}
+
 # --- Cleanup -----------------------------------------------------------------
 cleanup() {
     if [ "${KEEP}" = "1" ]; then
@@ -180,5 +217,47 @@ ${COMPOSE} start adbe-read-0
 await_health "${READ_BASE}/healthz" 90
 await_contains "${READ_BASE}/supply" '"totalSupply":2000' 30
 pass "read node restarted and caught up (supply=2000)"
+
+log "Step 9: snapshot load - trigger a cluster snapshot, restart the read node, it loads the snapshot"
+# Commit one more credit (supply -> 2500) so the snapshot captures real state.
+run_client 5 >/dev/null
+await_contains "${READ_BASE}/supply" '"totalSupply":2500' 30
+# Trigger a snapshot on the leader (ClusterTool on every member; followers report
+# 'not the leader' and are ignored).
+trigger_snapshot
+pass "cluster snapshot triggered on the leader"
+# Restart the read node: starting fresh (applied position 0) it discovers the
+# service snapshot on the archive, loads it (advance-only, skipping the cluster
+# framing), and serves the snapshotted state. The 'snapshot loaded' log proves
+# the snapshot path was exercised, and the supply proves no clobber occurred.
+${COMPOSE} restart adbe-read-0
+await_health "${READ_BASE}/healthz" 90
+await_log_contains adbe-read-0 "snapshot loaded" 30
+await_contains "${READ_BASE}/supply" '"totalSupply":2500' 30
+pass "read node restarted, loaded the service snapshot, and serves correct data (supply=2500)"
+
+log "Step 10: archive failover (ADR 0008) - kill node 0, the read node's archive source"
+# node 0 is first in ADBE_ARCHIVE_CHANNELS, so the read node follows its Archive.
+# Killing it (SIGKILL => a crash, not a graceful stop) breaks that source; the
+# write cluster keeps quorum (nodes 1 and 2) and the read node must fail over to
+# a surviving member's Archive and keep converging.
+${COMPOSE} kill adbe-node-0
+# Commit one more credit (supply -> 3000) through the surviving quorum, retrying
+# across the leader change triggered by node 0's death (same client id => the
+# command is idempotent across retries).
+committed=""
+for _ in 1 2 3 4 5 6; do
+    out="$(run_client 6)"
+    if echo "${out}" | grep -q "status=SUCCESS"; then
+        committed="yes"
+        break
+    fi
+    sleep 2
+done
+[ -n "${committed}" ] || die "writes failed after killing node 0 (quorum 2 of 3 should survive)"
+pass "write cluster still commits after node 0 dies (quorum survives)"
+await_contains "${READ_BASE}/supply" '"totalSupply":3000' 60
+await_health "${READ_BASE}/healthz" 60
+pass "read node failed over to a surviving archive and converged (supply=3000)"
 
 log "ALL OPERATIONAL CHECKS PASSED"

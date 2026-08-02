@@ -318,18 +318,22 @@ scrape_configs:
 
 The read service (`adbe-read`) serves eventually-consistent balance, allowance,
 and total-supply reads over HTTP via a read replica node. `ReadReplicaNode` runs
-as a standalone process, independent of the Raft cluster: it connects to a write
-cluster member's Aeron Archive, follows the consensus log recording (from the
-last loaded snapshot position, or from position 0 when no snapshot has loaded
-yet), loads service snapshots as they appear, and serves reads from the engine.
-It is NOT a cluster member: it does not vote, does not affect quorum, and can be
-added, removed, or restarted independently. See ADR 0006 and 0007.
+as a standalone process, independent of the Raft cluster: it connects to the
+write cluster members' Aeron Archives, follows the consensus log recording (from
+the position it has applied up to, or from position 0 on a fresh replica), loads
+service snapshots as they appear, and serves reads from the engine. It accepts
+multiple Archive endpoints (one per member) and fails over between them, so the
+loss of any single member's Archive does not freeze reads. It is NOT a cluster
+member: it does not vote, does not affect quorum, and can be added, removed, or
+restarted independently. See ADR 0006, 0007, and 0008.
 
 ### Running a read replica node
 
 ```bash
-# Gradle (development): standalone read replica, connects to localhost:20104 archive.
-ADBE_ARCHIVE_CHANNEL=aeron:udp?endpoint=localhost:20104 ./gradlew :adbe-read:run
+# Gradle (development): standalone read replica. Configure every member's Archive
+# so the node can fail over (ADR 0008); a single channel also works (legacy).
+ADBE_ARCHIVE_CHANNELS="aeron:udp?endpoint=localhost:20104,aeron:udp?endpoint=localhost:20204,aeron:udp?endpoint=localhost:20304" \
+    ./gradlew :adbe-read:run
 
 # Standalone process with live log following.
 java \
@@ -340,13 +344,17 @@ java \
 
 Recognised environment variables:
 
-| Variable                 | Required | Default                               | Description                                           |
-|--------------------------|:--------:|---------------------------------------|-------------------------------------------------------|
-| `ADBE_ARCHIVE_CHANNEL`   | yes      | `aeron:udp?endpoint=localhost:20104`  | Cluster member's Archive control channel.             |
-| `ADBE_LOCAL_HOST`        | no       | `localhost`                           | Routable host for Archive call-backs (control response + replays). Set to the container address in Docker. |
-| `ADBE_HTTP_PORT`         | no       | `8080`                                | Port for the HTTP query API.                          |
-| `ADBE_SNAPSHOT_POLL_MS`  | no       | `5000`                                | Interval (ms) between snapshot polls on the Archive.  |
-| `ADBE_LIVE_LOG`          | no       | `true`                                | Follow the consensus log for sub-second staleness.    |
+| Variable                  | Required | Default                               | Description                                           |
+|---------------------------|:--------:|---------------------------------------|-------------------------------------------------------|
+| `ADBE_ARCHIVE_CHANNELS`   | no*      | `aeron:udp?endpoint=localhost:20104`  | Comma-separated Archive control channels, one per cluster member; the node fails over across them (ADR 0008). |
+| `ADBE_ARCHIVE_CHANNEL`    | no*      | `aeron:udp?endpoint=localhost:20104`  | Single Archive control channel (legacy fallback when `ADBE_ARCHIVE_CHANNELS` is unset). |
+| `ADBE_LOCAL_HOST`         | no       | `localhost`                           | Routable host for Archive call-backs (control response + replays). Set to the container address in Docker. |
+| `ADBE_HTTP_PORT`          | no       | `8080`                                | Port for the HTTP query API.                          |
+| `ADBE_SNAPSHOT_POLL_MS`   | no       | `5000`                                | Interval (ms) between snapshot polls on the Archive.  |
+| `ADBE_LIVE_LOG`           | no       | `true`                                | Follow the consensus log for sub-second staleness.    |
+
+\* At least one Archive endpoint is required: set `ADBE_ARCHIVE_CHANNELS`
+(preferred) or `ADBE_ARCHIVE_CHANNEL`.
 
 ### Consistency and health
 
@@ -355,9 +363,15 @@ Recognised environment variables:
   follows the log from position 0 when no snapshot exists, it serves real state
   on a fresh cluster without any externally triggered snapshot; a snapshot, when
   present, bounds the replay.
-- Liveness probe: `GET /healthz` returns `{"status":"ok"}`.
+- Archive failover (ADR 0008): when the followed member's Archive dies or becomes
+  unreachable, the node fails over to the next configured endpoint (round-robin
+  with backoff), keeping its state; reads keep converging instead of freezing.
+- Health probe: `GET /healthz` returns `200 {"status":"ok",...}` while following
+  and `503 {"status":"stale",...}` while reconnecting after a source failure. The
+  body also carries `appliedPosition`, the active `endpoint`, and `failovers`, so
+  an orchestrator or load balancer can detect a degraded replica.
 - Gateway counters: `GET /metrics` returns `submitted`, `completed`, `pending`,
-  `overloads`, and `orphanResponses` as JSON.
+  `overloads`, `orphanResponses`, and `failovers` as JSON.
 
 ### Deployment
 
@@ -374,15 +388,17 @@ curl http://localhost:8080/supply
 curl http://localhost:8080/healthz
 ```
 
-The read node connects to node 0's Archive (`ADBE_ARCHIVE_CHANNEL`) and
-advertises its own container address for Archive call-backs (`ADBE_LOCAL_HOST`,
-derived automatically by the entrypoint). Read replica nodes are NOT cluster members:
-they do not vote, do not affect quorum, and can be added, removed, or restarted
-independently.
+The read node is configured with all three member Archives
+(`ADBE_ARCHIVE_CHANNELS`): it follows the first reachable one and fails over to a
+survivor if that member dies (ADR 0008). It advertises its own container address
+for Archive call-backs (`ADBE_LOCAL_HOST`, derived automatically by the
+entrypoint). Read replica nodes are NOT cluster members: they do not vote, do not
+affect quorum, and can be added, removed, or restarted independently.
 
 An operational verification script exercises the full topology end to end (cold
 start, read-after-write over the live log, malformed-request handling, read-node
-restart and re-sync, write-node restart, and read decoupling from quorum):
+restart and re-sync, write-node restart, read decoupling from quorum, and archive
+failover after killing the followed member):
 
 ```bash
 bash docker/verify-read.sh

@@ -1,17 +1,27 @@
 package com.adbe.read.config;
 
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+
 /**
  * Immutable configuration for a read replica node that replicates cluster state
- * via Aeron Archive snapshot replay, independent of the Raft consensus protocol.
+ * via Aeron Archive, independent of the Raft consensus protocol.
  *
- * <p>The read replica node connects to a cluster member's Archive, periodically
- * downloads the latest service snapshot, loads it into the balance engine, and
- * serves eventually-consistent reads over HTTP. It does NOT appear in the
- * cluster's {@code clusterMembers} string and does not affect quorum.
+ * <p>The read replica node connects to a cluster member's Archive, follows the
+ * committed consensus log, loads service snapshots as they appear, and serves
+ * eventually-consistent reads over HTTP. It does NOT appear in the cluster's
+ * {@code clusterMembers} string and does not affect quorum.
+ *
+ * <p>The replica accepts an ORDERED list of Archive control channels (one per
+ * cluster member) and fails over between them: by ADR 0008 every member records
+ * the committed consensus log to its own Archive, so the replica uses the first
+ * reachable endpoint and, on failure, moves to the next (round-robin with
+ * backoff). A single channel remains supported for backward compatibility.
  */
 public final class ReadReplicaConfig {
 
-    private final String archiveControlChannel;
+    private final List<String> archiveControlChannels;
     private final String localHost;
     private final int archiveControlStreamId;
     private final int snapshotStreamId;
@@ -19,9 +29,12 @@ public final class ReadReplicaConfig {
     private final long pollIntervalMs;
     private final long replayTimeoutMs;
     private final boolean liveLogEnabled;
+    private final long failoverBackoffMs;
+    private final long archiveMessageTimeoutMs;
+    private final long liveLogLivenessTimeoutMs;
 
     private ReadReplicaConfig(final Builder builder) {
-        this.archiveControlChannel = builder.archiveControlChannel;
+        this.archiveControlChannels = Collections.unmodifiableList(new ArrayList<>(builder.archiveControlChannels));
         this.localHost = builder.localHost;
         this.archiveControlStreamId = builder.archiveControlStreamId;
         this.snapshotStreamId = builder.snapshotStreamId;
@@ -29,6 +42,9 @@ public final class ReadReplicaConfig {
         this.pollIntervalMs = builder.pollIntervalMs;
         this.replayTimeoutMs = builder.replayTimeoutMs;
         this.liveLogEnabled = builder.liveLogEnabled;
+        this.failoverBackoffMs = builder.failoverBackoffMs;
+        this.archiveMessageTimeoutMs = builder.archiveMessageTimeoutMs;
+        this.liveLogLivenessTimeoutMs = builder.liveLogLivenessTimeoutMs;
     }
 
     public static Builder builder() {
@@ -39,9 +55,19 @@ public final class ReadReplicaConfig {
         return builder().build();
     }
 
-    /** Aeron Archive control channel endpoint (e.g. {@code aeron:udp?endpoint=host:20104}). */
+    /**
+     * The ordered Aeron Archive control channels (e.g.
+     * {@code aeron:udp?endpoint=host:20104}), one per cluster member. The replica
+     * connects to the first reachable channel and fails over to the next on
+     * failure, round-robin.
+     */
+    public List<String> archiveControlChannels() {
+        return archiveControlChannels;
+    }
+
+    /** The first configured Archive control channel (convenience for logging). */
     public String archiveControlChannel() {
-        return archiveControlChannel;
+        return archiveControlChannels.get(0);
     }
 
     /**
@@ -86,9 +112,35 @@ public final class ReadReplicaConfig {
         return liveLogEnabled;
     }
 
+    /** Delay before retrying after a failed Archive connect or a failover. */
+    public long failoverBackoffMs() {
+        return failoverBackoffMs;
+    }
+
+    /**
+     * Aeron Archive control-message timeout. Bounds how long a dead Archive's
+     * control session can block a {@code listRecordings} / {@code startReplay}
+     * (and thus how long failover detection takes) and how long a connect to an
+     * unreachable endpoint waits before giving up.
+     */
+    public long archiveMessageTimeoutMs() {
+        return archiveMessageTimeoutMs;
+    }
+
+    /**
+     * Backstop liveness timeout for the live log: if no fragments arrive AND no
+     * snapshot poll succeeds within this window the source is presumed dead and a
+     * failover is triggered. Covers a silently dead Archive that raises no
+     * exception; a successful snapshot poll counts as activity, so an idle but
+     * healthy cluster does not false-positive.
+     */
+    public long liveLogLivenessTimeoutMs() {
+        return liveLogLivenessTimeoutMs;
+    }
+
     /** Fluent builder for {@link ReadReplicaConfig}. */
     public static final class Builder {
-        private String archiveControlChannel = "aeron:udp?endpoint=localhost:20104";
+        private final List<String> archiveControlChannels = new ArrayList<>();
         private String localHost = "localhost";
         private int archiveControlStreamId = 10;
         private int snapshotStreamId = 106;
@@ -96,11 +148,32 @@ public final class ReadReplicaConfig {
         private long pollIntervalMs = 5_000L;
         private long replayTimeoutMs = 30_000L;
         private boolean liveLogEnabled = true;
+        private long failoverBackoffMs = 1_000L;
+        private long archiveMessageTimeoutMs = 2_000L;
+        private long liveLogLivenessTimeoutMs = 10_000L;
 
-        private Builder() {}
+        private Builder() {
+            archiveControlChannels.add("aeron:udp?endpoint=localhost:20104");
+        }
 
+        /** Sets a single Archive control channel (backward-compatible form). */
         public Builder archiveControlChannel(final String value) {
-            this.archiveControlChannel = value;
+            this.archiveControlChannels.clear();
+            this.archiveControlChannels.add(value);
+            return this;
+        }
+
+        /** Sets the ordered Archive control channels, one per cluster member. */
+        public Builder archiveControlChannels(final String... values) {
+            this.archiveControlChannels.clear();
+            Collections.addAll(this.archiveControlChannels, values);
+            return this;
+        }
+
+        /** Sets the ordered Archive control channels, one per cluster member. */
+        public Builder archiveControlChannels(final List<String> values) {
+            this.archiveControlChannels.clear();
+            this.archiveControlChannels.addAll(values);
             return this;
         }
 
@@ -139,9 +212,29 @@ public final class ReadReplicaConfig {
             return this;
         }
 
+        public Builder failoverBackoffMs(final long value) {
+            this.failoverBackoffMs = value;
+            return this;
+        }
+
+        public Builder archiveMessageTimeoutMs(final long value) {
+            this.archiveMessageTimeoutMs = value;
+            return this;
+        }
+
+        public Builder liveLogLivenessTimeoutMs(final long value) {
+            this.liveLogLivenessTimeoutMs = value;
+            return this;
+        }
+
         public ReadReplicaConfig build() {
-            if (archiveControlChannel == null || archiveControlChannel.isBlank()) {
-                throw new IllegalArgumentException("archiveControlChannel is required");
+            if (archiveControlChannels.isEmpty()) {
+                throw new IllegalArgumentException("at least one archiveControlChannel is required");
+            }
+            for (final String channel : archiveControlChannels) {
+                if (channel == null || channel.isBlank()) {
+                    throw new IllegalArgumentException("archiveControlChannel entries must be non-blank");
+                }
             }
             return new ReadReplicaConfig(this);
         }

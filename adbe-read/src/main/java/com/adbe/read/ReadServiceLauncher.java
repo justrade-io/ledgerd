@@ -17,7 +17,10 @@ import java.util.concurrent.CountDownLatch;
  * defaults:
  *
  * <pre>
- *   ADBE_ARCHIVE_CHANNEL  Archive control channel        (default localhost:20104)
+ *   ADBE_ARCHIVE_CHANNELS comma-separated Archive control channels, one per
+ *                         cluster member; the replica fails over across them
+ *                         (ADR 0008). Falls back to ADBE_ARCHIVE_CHANNEL.
+ *   ADBE_ARCHIVE_CHANNEL  single Archive control channel (default localhost:20104)
  *   ADBE_LOCAL_HOST       routable host for Archive call-backs (default localhost)
  *   ADBE_HTTP_PORT        HTTP query port                (default 8080)
  *   ADBE_SNAPSHOT_POLL_MS interval between snapshot polls (default 5000)
@@ -36,8 +39,8 @@ public final class ReadServiceLauncher {
 
         try (ReadReplicaNode node = new ReadReplicaNode(replicaConfig, CoreConfig.defaults(), readConfig)) {
             System.out.printf(
-                    "ADBE read replica service started: httpPort=%d archiveChannel=%s liveLog=%s%n",
-                    node.httpPort(), replicaConfig.archiveControlChannel(), replicaConfig.liveLogEnabled());
+                    "ADBE read replica service started: httpPort=%d archiveChannels=%s liveLog=%s%n",
+                    node.httpPort(), replicaConfig.archiveControlChannels(), replicaConfig.liveLogEnabled());
             parkUntilShutdown("adbe-read-replica-shutdown");
         }
     }
@@ -45,9 +48,16 @@ public final class ReadServiceLauncher {
     private static ReadReplicaConfig resolveReadReplicaConfig() {
         final ReadReplicaConfig.Builder builder = ReadReplicaConfig.builder();
 
-        final String archiveChannel = System.getenv("ADBE_ARCHIVE_CHANNEL");
-        if (archiveChannel != null && !archiveChannel.isBlank()) {
-            builder.archiveControlChannel(archiveChannel);
+        // Prefer the multi-endpoint list (ADR 0008); fall back to the legacy
+        // single channel so existing deployments keep working unchanged.
+        final String archiveChannels = System.getenv("ADBE_ARCHIVE_CHANNELS");
+        if (archiveChannels != null && !archiveChannels.isBlank()) {
+            builder.archiveControlChannels(splitChannels(archiveChannels));
+        } else {
+            final String archiveChannel = System.getenv("ADBE_ARCHIVE_CHANNEL");
+            if (archiveChannel != null && !archiveChannel.isBlank()) {
+                builder.archiveControlChannel(archiveChannel);
+            }
         }
         final String localHost = System.getenv("ADBE_LOCAL_HOST");
         if (localHost != null && !localHost.isBlank()) {
@@ -77,5 +87,17 @@ public final class ReadServiceLauncher {
     private static String envOrDefault(final String name, final String fallback) {
         final String value = System.getenv(name);
         return value == null || value.isBlank() ? fallback : value;
+    }
+
+    /** Splits a comma-separated channel list, trimming whitespace and dropping blanks. */
+    private static java.util.List<String> splitChannels(final String value) {
+        final java.util.List<String> channels = new java.util.ArrayList<>();
+        for (final String channel : value.split(",")) {
+            final String trimmed = channel.trim();
+            if (!trimmed.isBlank()) {
+                channels.add(trimmed);
+            }
+        }
+        return channels;
     }
 }

@@ -80,8 +80,9 @@ services:
     ports:
       - "9102:9100/tcp"
 
-  # Read replica node. Connects to node 0's Archive and serves reads over HTTP.
-  # Not a Raft member: no vote, no quorum impact, independent lifecycle.
+  # Read replica node. Follows the cluster Archives (all three members) and
+  # serves reads over HTTP, failing over across them if one member dies (ADR
+  # 0008). Not a Raft member: no vote, no quorum impact, independent lifecycle.
   adbe-read-0:
     build:
       context: .
@@ -98,7 +99,7 @@ services:
       - adbe-node-1
       - adbe-node-2
     environment:
-      ADBE_ARCHIVE_CHANNEL: "aeron:udp?endpoint=adbe-node-0:20104"
+      ADBE_ARCHIVE_CHANNELS: "aeron:udp?endpoint=adbe-node-0:20104,aeron:udp?endpoint=adbe-node-1:20204,aeron:udp?endpoint=adbe-node-2:20304"
       ADBE_HTTP_PORT: "8080"
       ADBE_SNAPSHOT_POLL_MS: "5000"
       ADBE_LIVE_LOG: "true"

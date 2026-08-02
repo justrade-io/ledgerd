@@ -690,8 +690,10 @@ single-writer discipline is preserved.
 ### Running a read node
 
 ```bash
-# Gradle (development): standalone read replica, connects to localhost:20104 archive.
-ADBE_ARCHIVE_CHANNEL=aeron:udp?endpoint=localhost:20104 ./gradlew :adbe-read:run
+# Gradle (development): standalone read replica. Configure every member's Archive
+# so the node can fail over (ADR 0008); a single channel also works (legacy).
+ADBE_ARCHIVE_CHANNELS="aeron:udp?endpoint=localhost:20104,aeron:udp?endpoint=localhost:20204,aeron:udp?endpoint=localhost:20304" \
+    ./gradlew :adbe-read:run
 ```
 
 ```java
@@ -700,21 +702,27 @@ import com.adbe.read.ReadReplicaNode;
 import com.adbe.read.config.ReadServiceConfig;
 import com.adbe.read.config.ReadReplicaConfig;
 
-ReadReplicaConfig read replicaConfig = ReadReplicaConfig.builder()
-        .archiveControlChannel("aeron:udp?endpoint=localhost:20104")
+ReadReplicaConfig replicaConfig = ReadReplicaConfig.builder()
+        .archiveControlChannels(
+                "aeron:udp?endpoint=localhost:20104",
+                "aeron:udp?endpoint=localhost:20204",
+                "aeron:udp?endpoint=localhost:20304")
         .build();
 ReadServiceConfig readConfig = ReadServiceConfig.builder().httpPort(8080).build();
 
-try (ReadReplicaNode node = new ReadReplicaNode(read replicaConfig, CoreConfig.defaults(), readConfig)) {
-    // Serves reads on http://localhost:8080 while following the cluster log.
+try (ReadReplicaNode node = new ReadReplicaNode(replicaConfig, CoreConfig.defaults(), readConfig)) {
+    // Serves reads on http://localhost:8080 while following the cluster log,
+    // failing over across the member Archives if one becomes unreachable.
 }
 ```
 
 Configured by environment variables via `com.adbe.read.ReadServiceLauncher`:
-`ADBE_ARCHIVE_CHANNEL`, `ADBE_LOCAL_HOST` (routable host for Archive call-backs,
-default `localhost`; set to the container address in Docker), `ADBE_HTTP_PORT`
-(default `8080`), `ADBE_SNAPSHOT_POLL_MS` (default `5000`), `ADBE_LIVE_LOG`
-(default `true`). See
+`ADBE_ARCHIVE_CHANNELS` (comma-separated Archive control channels, one per
+member; the node fails over across them - ADR 0008), `ADBE_ARCHIVE_CHANNEL`
+(single channel, legacy fallback), `ADBE_LOCAL_HOST` (routable host for Archive
+call-backs, default `localhost`; set to the container address in Docker),
+`ADBE_HTTP_PORT` (default `8080`), `ADBE_SNAPSHOT_POLL_MS` (default `5000`),
+`ADBE_LIVE_LOG` (default `true`). See
 [OPERATIONS.md - Read Service](OPERATIONS.md#8-read-service-http-query-api)
 for the full reference.
 
@@ -726,8 +734,8 @@ for the full reference.
 | POST   | `/balances`                   | Batch balances (ids in request body) | `{"balances":[{"account":100,"exists":true,"balance":350}, ...]}`   |
 | GET    | `/allowance/{owner}/{delegate}` | Allowance for a pair               | `{"owner":1,"delegate":9,"allowance":200}`                          |
 | GET    | `/supply`                     | Engine-wide total supply             | `{"totalSupply":500}`                                               |
-| GET    | `/healthz`                    | Liveness probe                       | `{"status":"ok"}`                                                   |
-| GET    | `/metrics`                    | Gateway counters                     | `{"submitted":...,"completed":...,"pending":...}`                   |
+| GET    | `/healthz`                    | Health probe (200 ok / 503 stale)    | `{"status":"ok","appliedPosition":...,"endpoint":"...","failovers":...}` |
+| GET    | `/metrics`                    | Gateway + replication counters       | `{"submitted":...,"completed":...,"pending":...,"failovers":...}`   |
 
 - A missing account returns HTTP 200 with `{"exists":false}` (not 404), so batch responses stay
   uniform. The `balance` field is omitted when `exists` is false.

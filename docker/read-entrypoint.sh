@@ -4,7 +4,10 @@
 # (loading snapshots as they appear), and serves reads over HTTP.
 #
 # Recognised environment variables (see ReadServiceLauncher):
-#   ADBE_ARCHIVE_CHANNEL   Archive control channel (required),
+#   ADBE_ARCHIVE_CHANNELS  comma-separated Archive control channels, one per
+#                          cluster member; the replica fails over across them
+#                          (ADR 0008). Falls back to ADBE_ARCHIVE_CHANNEL.
+#   ADBE_ARCHIVE_CHANNEL   single Archive control channel (legacy),
 #                          e.g. aeron:udp?endpoint=write-node:20104
 #   ADBE_LOCAL_HOST        routable host for Archive call-backs (control response
 #                          + replays). Defaults to this container's own IP so the
@@ -14,7 +17,11 @@
 #   ADBE_LIVE_LOG          follow the consensus log (default true)
 set -eu
 
-: "${ADBE_ARCHIVE_CHANNEL:?ADBE_ARCHIVE_CHANNEL is required (e.g. aeron:udp?endpoint=write-node:20104)}"
+# At least one Archive endpoint must be configured (multi-endpoint preferred).
+if [ -z "${ADBE_ARCHIVE_CHANNELS:-}" ] && [ -z "${ADBE_ARCHIVE_CHANNEL:-}" ]; then
+    echo "ADBE_ARCHIVE_CHANNELS (comma-separated) or ADBE_ARCHIVE_CHANNEL is required" >&2
+    exit 1
+fi
 
 # The Archive connects back to this node's control-response subscription and
 # replays, so advertise an address routable from the Archive: this container's
@@ -22,5 +29,5 @@ set -eu
 CONTAINER_IP="$(hostname -i | awk '{print $1}')"
 export ADBE_LOCAL_HOST="${ADBE_LOCAL_HOST:-${CONTAINER_IP}}"
 
-echo "Starting ADBE read replica node (http=${ADBE_HTTP_PORT:-8080}, archive=${ADBE_ARCHIVE_CHANNEL}, localHost=${ADBE_LOCAL_HOST})"
+echo "Starting ADBE read replica node (http=${ADBE_HTTP_PORT:-8080}, archives=${ADBE_ARCHIVE_CHANNELS:-${ADBE_ARCHIVE_CHANNEL:-}}, localHost=${ADBE_LOCAL_HOST})"
 exec /opt/adbe/bin/adbe-read

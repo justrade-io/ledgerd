@@ -23,18 +23,16 @@ import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * Acceptance test for the read-node HA design (future ADR 0008): when the
- * cluster member whose Archive the read replica follows (node 0) dies, the read
- * replica must fail over to a surviving member's Archive and keep converging on
- * the committed log.
+ * Acceptance test for the read-node HA design (ADR 0008): when the cluster
+ * member whose Archive the read replica follows (node 0) dies, the read replica
+ * must fail over to a surviving member's Archive and keep converging on the
+ * committed log.
  *
- * <p>EXPECTED TO FAIL against the current code. The read replica connects to a
- * single, statically configured Archive endpoint (node 0) once in its
- * constructor and never reconnects, so once node 0 dies it serves a frozen state
- * forever. This test is the proof of that gap and the acceptance bar for the
- * fix: it goes green once the read replica accepts multiple Archive endpoints
- * and fails over between them (at which point the {@link ReadReplicaConfig}
- * below is updated to pass all three member Archive channels).
+ * <p>The read replica is configured with ALL THREE member Archive endpoints. It
+ * follows the first reachable one (node 0) and, when node 0 dies, fails over to
+ * a surviving member's Archive (round-robin with backoff), keeping its engine
+ * state; the engine's command-id dedup makes re-applying the already-seen log
+ * prefix idempotent, so reads converge on the new state instead of freezing.
  *
  * <p>The write cluster keeps quorum (2 of 3 survive), so writes still commit
  * after node 0 dies; only the read replica's data source is gone.
@@ -60,11 +58,13 @@ class ReadReplicaArchiveFailoverFaultTest {
             // channels match the nodes MultiNodeCluster launched above.
             final ClusterConfig[] configs = ClusterConfig.multiNodeLocalhost(NODE_COUNT, baseDir);
 
-            // Read replica pinned to node 0's Archive: the current single-endpoint
-            // behaviour. When ADR 0008 lands this becomes the list of all member
-            // Archive endpoints so the node can fail over.
+            // All three member Archive endpoints (ADR 0008): the replica follows
+            // the first reachable one and fails over to a survivor when node 0 dies.
             final ReadReplicaConfig replicaConfig = ReadReplicaConfig.builder()
-                    .archiveControlChannel(configs[0].archiveControlChannel())
+                    .archiveControlChannels(
+                            configs[0].archiveControlChannel(),
+                            configs[1].archiveControlChannel(),
+                            configs[2].archiveControlChannel())
                     .pollIntervalMs(250L)
                     .liveLogEnabled(true)
                     .build();
@@ -96,7 +96,7 @@ class ReadReplicaArchiveFailoverFaultTest {
                 assertEquals(StatusCode.SUCCESS, client.lastStatus());
 
                 // ACCEPTANCE: the read replica must fail over to a surviving member's
-                // Archive and converge on the new state. RED until ADR 0008 lands.
+                // Archive and converge on the new state (ADR 0008).
                 awaitHttp(http, baseUrl, "/supply", "\"totalSupply\":750");
             }
         }
