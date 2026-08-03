@@ -72,7 +72,7 @@ public final class BalanceEngine {
         out.reset(idHi, idLo);
         dispatch(cmd, out);
 
-        dedup.store(
+        final boolean evicted = dedup.store(
                 clientId,
                 clientSeq,
                 idHi,
@@ -82,6 +82,9 @@ public final class BalanceEngine {
                 out.hasBalance(),
                 out.resultAllowance(),
                 out.hasAllowance());
+        if (evicted) {
+            metrics.onDedupEvicted();
+        }
 
         metrics.onCommandProcessed();
         recordStatus(out);
@@ -188,5 +191,12 @@ public final class BalanceEngine {
     /** Prepares this engine's stores to receive a snapshot load. */
     public void beginSnapshotLoad(final SnapshotManager snapshotManager) {
         snapshotManager.beginLoad(balances, allowances, dedup);
+    }
+
+    /** Clears all engine state; used to discard a rejected snapshot load. */
+    public void clearState() {
+        balances.clear();
+        allowances.clear();
+        dedup.clear();
     }
 }

@@ -2,6 +2,8 @@
 // injection, and overflow tests. Also hosts the test-only cluster client harness
 // via testFixtures (NOT a shipped Edge SDK).
 
+import org.gradle.testing.jacoco.tasks.JacocoReport
+
 plugins {
     `java-test-fixtures`
 }
@@ -79,4 +81,21 @@ tasks.named("check") {
 // Test code is not the production hot path; keep lint informative but non-fatal.
 tasks.withType<JavaCompile>().configureEach {
     options.compilerArgs.remove("-Werror")
+}
+
+// Coverage (F6): the test suite lives here but exercises the production modules,
+// so attribute coverage of their main sources to this module's report. Includes
+// both unit (test) and single-node (integrationTest) execution data. Generated
+// SBE codecs in adbe-protocol are excluded as they are not hand-written code.
+tasks.named<JacocoReport>("jacocoTestReport") {
+    val coveredProjects = listOf(":adbe-core", ":adbe-client", ":adbe-launcher", ":adbe-read")
+    dependsOn("test", "integrationTest")
+    executionData(fileTree(layout.buildDirectory).include("jacoco/test.exec", "jacoco/integrationTest.exec"))
+    coveredProjects.forEach { path ->
+        val covered = project(path)
+        additionalSourceDirs(files(covered.projectDir.resolve("src/main/java")))
+        additionalClassDirs(fileTree(covered.layout.buildDirectory.dir("classes/java/main")) {
+            exclude("**/generated/**")
+        })
+    }
 }

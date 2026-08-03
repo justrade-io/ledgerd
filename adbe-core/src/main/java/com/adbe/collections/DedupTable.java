@@ -18,6 +18,8 @@ public final class DedupTable {
 
     private final Long2ObjectHashMap<DedupRing> perClient;
     private final int window;
+    private long[] clientScratch = new long[0];
+    private long[] seqScratch = new long[0];
 
     public DedupTable(final int clientCapacity, final int window) {
         this.perClient = new Long2ObjectHashMap<>(clientCapacity, LOAD_FACTOR);
@@ -29,8 +31,13 @@ public final class DedupTable {
         return perClient.get(clientId);
     }
 
-    /** Caches a command result, creating the client ring on first use. */
-    public void store(
+    /**
+     * Caches a command result, creating the client ring on first use.
+     *
+     * @return {@code true} if storing evicted a different, older sequence from
+     *     the bounded window (its dedup record is now lost).
+     */
+    public boolean store(
             final long clientId,
             final long seq,
             final long idHi,
@@ -45,7 +52,7 @@ public final class DedupTable {
             ring = new DedupRing(window);
             perClient.put(clientId, ring);
         }
-        ring.put(seq, idHi, idLo, status, balance, hasBalance, allowance, hasAllowance);
+        return ring.put(seq, idHi, idLo, status, balance, hasBalance, allowance, hasAllowance);
     }
 
     public int clientCount() {
@@ -63,14 +70,22 @@ public final class DedupTable {
      * <p>Cold snapshot path: key extraction and sorting are acceptable here.
      */
     public void forEachSorted(final DedupRecordConsumer consumer) {
-        final long[] clientIds = new long[perClient.size()];
+        final int clientCount = perClient.size();
+        if (clientScratch.length < clientCount) {
+            clientScratch = new long[clientCount];
+        }
+        final long[] clientIds = clientScratch;
         final int[] cursor = {0};
         perClient.forEachLong((clientId, ring) -> clientIds[cursor[0]++] = clientId);
-        Arrays.sort(clientIds);
+        Arrays.sort(clientIds, 0, clientCount);
 
-        for (final long clientId : clientIds) {
+        for (int c = 0; c < clientCount; c++) {
+            final long clientId = clientIds[c];
             final DedupRing ring = perClient.get(clientId);
-            final long[] seqs = new long[ring.capacity()];
+            if (seqScratch.length < ring.capacity()) {
+                seqScratch = new long[ring.capacity()];
+            }
+            final long[] seqs = seqScratch;
             final int count = ring.occupiedSeqs(seqs);
             Arrays.sort(seqs, 0, count);
             for (int i = 0; i < count; i++) {

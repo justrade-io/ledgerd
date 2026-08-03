@@ -15,6 +15,7 @@
 #   ADBE_HTTP_PORT         HTTP query port (default 8080)
 #   ADBE_SNAPSHOT_POLL_MS  interval between snapshot polls (default 5000)
 #   ADBE_LIVE_LOG          follow the consensus log (default true)
+#   ADBE_AERON_DIR         embedded media driver directory (default /tmp/aeron-adbe-read)
 set -eu
 
 # At least one Archive endpoint must be configured (multi-endpoint preferred).
@@ -28,6 +29,10 @@ fi
 # own IP on the docker network (an ephemeral port is chosen with :0).
 CONTAINER_IP="$(hostname -i | awk '{print $1}')"
 export ADBE_LOCAL_HOST="${ADBE_LOCAL_HOST:-${CONTAINER_IP}}"
+
+# Absolute, container-local media driver directory so co-located replicas never
+# share a driver dir; override with ADBE_AERON_DIR.
+export ADBE_AERON_DIR="${ADBE_AERON_DIR:-/tmp/aeron-adbe-read}"
 
 echo "Starting ADBE read replica node (http=${ADBE_HTTP_PORT:-8080}, archives=${ADBE_ARCHIVE_CHANNELS:-${ADBE_ARCHIVE_CHANNEL:-}}, localHost=${ADBE_LOCAL_HOST})"
 exec /opt/adbe/bin/adbe-read

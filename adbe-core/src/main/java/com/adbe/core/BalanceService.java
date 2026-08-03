@@ -164,6 +164,12 @@ public final class BalanceService implements io.aeron.cluster.service.ClusteredS
         if (cluster != null) {
             metrics.snapshotReadNanos(cluster.time() - start);
         }
+        // A corrupt or truncated snapshot must never become committed state; fail
+        // fast so the node aborts recovery rather than serving a broken ledger.
+        if (!snapshotManager.verifyInvariant()) {
+            throw new IllegalStateException(
+                    "Snapshot integrity check failed: sum(balances) != totalSupply or footer missing");
+        }
         // Reflect the restored map sizes immediately, before any command arrives.
         engine.publishSizeGauges();
     }

@@ -52,6 +52,7 @@ import java.util.concurrent.TimeUnit;
 public final class QueryHttpServer implements AutoCloseable {
 
     private static final int MAX_CONTENT_LENGTH = 1 << 16;
+    private static final System.Logger LOG = System.getLogger(QueryHttpServer.class.getName());
 
     private final ReadQueryGateway gateway;
     private final ReadServiceConfig config;
@@ -247,14 +248,17 @@ public final class QueryHttpServer implements AutoCloseable {
             return "{\"submitted\":" + gateway.submitted() + ",\"completed\":" + gateway.completed()
                     + ",\"pending\":" + gateway.pendingCount() + ",\"overloads\":" + gateway.overloads()
                     + ",\"orphanResponses\":" + gateway.orphanResponses() + ",\"failovers\":" + health.failovers()
-                    + "}";
+                    + ",\"integrityFailures\":" + health.integrityFailures() + "}";
         }
 
         @Override
         public void exceptionCaught(final ChannelHandlerContext ctx, final Throwable cause) {
             // Edge boundary: surface codec/aggregator/write failures instead of
             // dropping them silently, then close the offending connection.
-            System.err.println("read HTTP error on " + ctx.channel().remoteAddress() + ": " + cause);
+            LOG.log(
+                    System.Logger.Level.WARNING,
+                    "read HTTP error on " + ctx.channel().remoteAddress(),
+                    cause);
             ctx.close();
         }
     }

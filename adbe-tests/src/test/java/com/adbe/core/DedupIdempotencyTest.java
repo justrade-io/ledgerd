@@ -53,4 +53,30 @@ class DedupIdempotencyTest {
         }
         assertEquals(50L, engine.balances().rawGet(200L));
     }
+
+    @Test
+    void sequenceEvictedFromBoundedWindowIsCountedAndReapplied() {
+        // window=16, so clientSeq 0 and 16 map to the same ring slot (seq & 15).
+        final CoreMetrics metrics = new CoreMetrics();
+        final BalanceEngine engine = new BalanceEngine(CoreConfig.of(1024, 64, 8, 64, 16), metrics);
+        final CommandFixtures fixtures = new CommandFixtures();
+        final CommandOutcome outcome = new CommandOutcome();
+
+        // Fill all 16 slots (seq 0..15): no eviction, each slot was empty.
+        for (long seq = 0; seq < 16; seq++) {
+            engine.process(fixtures.encode(1L, seq, 0L, seq, CommandType.CREDIT, 100L, 0L, 0L, 1L), outcome);
+        }
+        assertEquals(0L, metrics.dedupEvicted());
+
+        // seq 16 lands on slot 0, evicting seq 0's dedup record.
+        engine.process(fixtures.encode(1L, 16L, 0L, 16L, CommandType.CREDIT, 100L, 0L, 0L, 1L), outcome);
+        assertEquals(1L, metrics.dedupEvicted());
+        assertEquals(17L, engine.balances().rawGet(100L));
+
+        // A late retry of the evicted seq 0 is no longer deduplicated: it re-applies.
+        final boolean duplicate =
+                engine.process(fixtures.encode(1L, 0L, 0L, 0L, CommandType.CREDIT, 100L, 0L, 0L, 1L), outcome);
+        assertFalse(duplicate, "evicted sequence must not be detected as duplicate");
+        assertEquals(18L, engine.balances().rawGet(100L));
+    }
 }

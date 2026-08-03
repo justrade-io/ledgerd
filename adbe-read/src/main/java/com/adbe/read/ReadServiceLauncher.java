@@ -22,12 +22,15 @@ import java.util.concurrent.CountDownLatch;
  *                         (ADR 0008). Falls back to ADBE_ARCHIVE_CHANNEL.
  *   ADBE_ARCHIVE_CHANNEL  single Archive control channel (default localhost:20104)
  *   ADBE_LOCAL_HOST       routable host for Archive call-backs (default localhost)
+ *   ADBE_AERON_DIR        embedded media driver directory (default build/read-replica/driver)
  *   ADBE_HTTP_PORT        HTTP query port                (default 8080)
  *   ADBE_SNAPSHOT_POLL_MS interval between snapshot polls (default 5000)
  *   ADBE_LIVE_LOG         follow the consensus log       (default true)
  * </pre>
  */
 public final class ReadServiceLauncher {
+
+    private static final System.Logger LOG = System.getLogger(ReadServiceLauncher.class.getName());
 
     private ReadServiceLauncher() {}
 
@@ -38,9 +41,12 @@ public final class ReadServiceLauncher {
         final ReadReplicaConfig replicaConfig = resolveReadReplicaConfig();
 
         try (ReadReplicaNode node = new ReadReplicaNode(replicaConfig, CoreConfig.defaults(), readConfig)) {
-            System.out.printf(
-                    "ADBE read replica service started: httpPort=%d archiveChannels=%s liveLog=%s%n",
-                    node.httpPort(), replicaConfig.archiveControlChannels(), replicaConfig.liveLogEnabled());
+            LOG.log(
+                    System.Logger.Level.INFO,
+                    "ADBE read replica service started: httpPort={0} archiveChannels={1} liveLog={2}",
+                    node.httpPort(),
+                    replicaConfig.archiveControlChannels(),
+                    replicaConfig.liveLogEnabled());
             parkUntilShutdown("adbe-read-replica-shutdown");
         }
     }
@@ -62,6 +68,10 @@ public final class ReadServiceLauncher {
         final String localHost = System.getenv("ADBE_LOCAL_HOST");
         if (localHost != null && !localHost.isBlank()) {
             builder.localHost(localHost);
+        }
+        final String aeronDir = System.getenv("ADBE_AERON_DIR");
+        if (aeronDir != null && !aeronDir.isBlank()) {
+            builder.aeronDir(aeronDir);
         }
         final String pollInterval = System.getenv("ADBE_SNAPSHOT_POLL_MS");
         if (pollInterval != null && !pollInterval.isBlank()) {

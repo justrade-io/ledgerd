@@ -29,7 +29,8 @@ public interface CounterSink {
         OVERFLOW,
         INVALID_AMOUNT,
         BACKPRESSURE_EVENTS,
-        LEADER_ELECTIONS;
+        LEADER_ELECTIONS,
+        DEDUP_EVICTED;
 
         /** Number of distinct counters; useful for sizing off-heap buffers. */
         public static final int COUNT = values().length;

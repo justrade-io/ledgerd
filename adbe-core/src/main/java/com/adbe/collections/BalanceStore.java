@@ -20,6 +20,7 @@ public final class BalanceStore {
 
     private final Long2LongHashMap balances;
     private long totalSupply;
+    private long[] sortScratch = new long[0];
 
     public BalanceStore(final int initialCapacity) {
         this.balances = new Long2LongHashMap(initialCapacity, LOAD_FACTOR, MISSING);
@@ -72,12 +73,16 @@ public final class BalanceStore {
      * (snapshot only), so extracting and sorting keys is acceptable.
      */
     public void forEachSorted(final LongLongConsumer consumer) {
-        final long[] keys = new long[balances.size()];
+        final int size = balances.size();
+        if (sortScratch.length < size) {
+            sortScratch = new long[size];
+        }
+        final long[] keys = sortScratch;
         final int[] cursor = {0};
         balances.forEachLong((k, v) -> keys[cursor[0]++] = k);
-        Arrays.sort(keys);
-        for (final long key : keys) {
-            consumer.accept(key, balances.get(key));
+        Arrays.sort(keys, 0, size);
+        for (int i = 0; i < size; i++) {
+            consumer.accept(keys[i], balances.get(keys[i]));
         }
     }
 }

@@ -23,6 +23,7 @@ public final class ReadReplicaConfig {
 
     private final List<String> archiveControlChannels;
     private final String localHost;
+    private final String aeronDir;
     private final int archiveControlStreamId;
     private final int snapshotStreamId;
     private final int logStreamId;
@@ -36,6 +37,7 @@ public final class ReadReplicaConfig {
     private ReadReplicaConfig(final Builder builder) {
         this.archiveControlChannels = Collections.unmodifiableList(new ArrayList<>(builder.archiveControlChannels));
         this.localHost = builder.localHost;
+        this.aeronDir = builder.aeronDir;
         this.archiveControlStreamId = builder.archiveControlStreamId;
         this.snapshotStreamId = builder.snapshotStreamId;
         this.logStreamId = builder.logStreamId;
@@ -80,6 +82,15 @@ public final class ReadReplicaConfig {
      */
     public String localHost() {
         return localHost;
+    }
+
+    /**
+     * Directory for this replica's embedded Aeron media driver. Must be unique per
+     * replica process on a host so that co-located replicas do not share a driver
+     * directory. Default {@code build/read-replica/driver}.
+     */
+    public String aeronDir() {
+        return aeronDir;
     }
 
     /** Stream id for the Archive control protocol (default 10). */
@@ -142,6 +153,7 @@ public final class ReadReplicaConfig {
     public static final class Builder {
         private final List<String> archiveControlChannels = new ArrayList<>();
         private String localHost = "localhost";
+        private String aeronDir = "build/read-replica/driver";
         private int archiveControlStreamId = 10;
         private int snapshotStreamId = 106;
         private int logStreamId = 100;
@@ -179,6 +191,11 @@ public final class ReadReplicaConfig {
 
         public Builder localHost(final String value) {
             this.localHost = value;
+            return this;
+        }
+
+        public Builder aeronDir(final String value) {
+            this.aeronDir = value;
             return this;
         }
 

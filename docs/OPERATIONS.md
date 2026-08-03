@@ -170,7 +170,11 @@ section so any two healthy nodes produce byte-identical snapshots.
 ```
 
 **Integrity check**: `SnapshotManager.verifyInvariant()` confirms `sum(balances) == totalSupply`
-after load. A mismatch indicates snapshot corruption.
+after load, and that the terminating footer was seen. It is enforced on every recovery: the
+cluster service (`BalanceService`) aborts startup on a mismatch so a corrupt or truncated snapshot
+never becomes committed state, and a read replica discards the failed load and rebuilds from the
+consensus log (surfacing an `integrityFailures` count on `/metrics`). A mismatch indicates snapshot
+corruption or truncation.
 
 ---
 

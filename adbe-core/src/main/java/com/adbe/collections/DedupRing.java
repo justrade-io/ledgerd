@@ -52,7 +52,7 @@ public final class DedupRing {
     }
 
     /** Stores (or overwrites) the cached result for a sequence. */
-    public void put(
+    public boolean put(
             final long seq,
             final long idHi,
             final long idLo,
@@ -62,6 +62,8 @@ public final class DedupRing {
             final long allowance,
             final boolean hasAllowance) {
         final int idx = (int) (seq & mask);
+        final long prior = seqSlots[idx];
+        final boolean evicted = prior != EMPTY && prior != seq;
         seqSlots[idx] = seq;
         commandIdHi[idx] = idHi;
         commandIdLo[idx] = idLo;
@@ -76,6 +78,7 @@ public final class DedupRing {
             f |= FLAG_HAS_ALLOWANCE;
         }
         flags[idx] = (byte) f;
+        return evicted;
     }
 
     public long commandIdHi(final long seq) {

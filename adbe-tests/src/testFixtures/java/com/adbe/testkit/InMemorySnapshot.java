@@ -41,6 +41,40 @@ public final class InMemorySnapshot {
         }
     }
 
+    /**
+     * Restores every record except the trailing footer, standing in for a
+     * truncated snapshot whose terminating footer never arrived.
+     */
+    public void readIntoDroppingFooter(final SnapshotManager manager, final BalanceEngine engine) {
+        int lastRecordStart = 0;
+        int scan = 0;
+        while (scan < length) {
+            lastRecordStart = scan;
+            scan += Integer.BYTES + buffer.getInt(scan);
+        }
+        engine.beginSnapshotLoad(manager);
+        int offset = 0;
+        while (offset < lastRecordStart && !manager.loadComplete()) {
+            final int recordLength = buffer.getInt(offset);
+            offset += Integer.BYTES;
+            manager.onRecord(buffer, offset);
+            offset += recordLength;
+        }
+    }
+
+    /**
+     * Flips a byte of the first balance entry's value, simulating on-the-wire
+     * corruption so the loaded balances no longer reconcile with total supply.
+     */
+    public void corruptFirstBalanceValue() {
+        // Record 0 is the SnapshotHeader; record 1 is the first BalanceEntry.
+        int offset = Integer.BYTES + buffer.getInt(0);
+        offset += Integer.BYTES; // skip record-1 length prefix
+        final int balanceValueIndex =
+                offset + com.adbe.protocol.MessageHeaderDecoder.ENCODED_LENGTH + Long.BYTES; // after accountId
+        buffer.putByte(balanceValueIndex, (byte) (buffer.getByte(balanceValueIndex) ^ 0x01));
+    }
+
     /** Returns a copy of the raw serialized bytes for byte-identical comparisons. */
     public byte[] toByteArray() {
         final byte[] out = new byte[length];

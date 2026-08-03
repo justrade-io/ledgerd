@@ -33,6 +33,7 @@ final class LiveLogSubscriber implements AutoCloseable {
     private static final int CONSENSUS_FRAMING_LENGTH =
             io.aeron.cluster.codecs.MessageHeaderDecoder.ENCODED_LENGTH + SessionMessageHeaderDecoder.BLOCK_LENGTH;
     private static final long RESOLVE_ENDPOINT_TIMEOUT_MS = 10_000L;
+    private static final System.Logger LOG = System.getLogger(LiveLogSubscriber.class.getName());
 
     private final AeronArchive archive;
     private final BalanceEngine engine;
@@ -89,28 +90,28 @@ final class LiveLogSubscriber implements AutoCloseable {
             return false;
         }
 
-        final int replayStreamId = 43;
-
-        // The read replica runs its own media driver, so the replay travels over UDP.
-        // Bind an ephemeral-port subscription, resolve the port, then replay to it.
-        final Subscription sub =
-                archive.context().aeron().addSubscription("aeron:udp?endpoint=" + localHost + ":0", replayStreamId);
+        final Subscription sub = archive.context()
+                .aeron()
+                .addSubscription("aeron:udp?endpoint=" + localHost + ":0", ReadStreams.LIVE_LOG_REPLAY);
         final String endpoint = awaitResolvedEndpoint(sub);
         if (endpoint == null) {
             sub.close();
-            System.err.println("LiveLogSubscriber: timed out resolving replay endpoint");
+            LOG.log(System.Logger.Level.WARNING, "LiveLogSubscriber: timed out resolving replay endpoint");
             return false;
         }
 
         final String replayChannel = "aeron:udp?endpoint=" + endpoint;
         final long sessionId = archive.startReplay(
-                recordingId, startPosition, AeronArchive.NULL_LENGTH, replayChannel, replayStreamId);
+                recordingId, startPosition, AeronArchive.NULL_LENGTH, replayChannel, ReadStreams.LIVE_LOG_REPLAY);
         this.subscription = sub;
         this.lastPosition = startPosition;
 
-        System.out.printf(
-                "LiveLogSubscriber: following recording=%d from position=%d session=%d%n",
-                recordingId, startPosition, sessionId);
+        LOG.log(
+                System.Logger.Level.INFO,
+                "LiveLogSubscriber: following recording={0} from position={1} session={2}",
+                recordingId,
+                startPosition,
+                sessionId);
         return true;
     }
 

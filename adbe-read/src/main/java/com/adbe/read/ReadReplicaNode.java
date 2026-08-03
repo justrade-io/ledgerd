@@ -68,9 +68,9 @@ public final class ReadReplicaNode implements AutoCloseable {
 
     private static final int FRAGMENT_LIMIT = 64;
     private static final int REQUEST_DRAIN_LIMIT = 64;
-    private static final int REPLAY_STREAM_ID = 42;
     private static final long STARTUP_CONNECT_TIMEOUT_MS = 10_000L;
     private static final long LIVE_LOG_RECONNECT_BACKOFF_MS = 250L;
+    private static final System.Logger LOG = System.getLogger(ReadReplicaNode.class.getName());
 
     private final MediaDriver mediaDriver;
     private final Aeron aeron;
@@ -121,6 +121,7 @@ public final class ReadReplicaNode implements AutoCloseable {
     private enum SnapshotResult {
         LOADED,
         SKIPPED,
+        CORRUPT,
         FAILED
     }
 
@@ -171,40 +172,57 @@ public final class ReadReplicaNode implements AutoCloseable {
                     snapshotManager.onRecord(buffer, offset);
                 };
 
-        final String aeronDir = "build/read-replica/driver";
-        this.mediaDriver = MediaDriver.launch(new MediaDriver.Context()
-                .aeronDirectoryName(aeronDir)
-                .threadingMode(ThreadingMode.SHARED)
-                .dirDeleteOnStart(true)
-                .dirDeleteOnShutdown(true));
-        this.aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(aeronDir));
+        final String aeronDir = replicaConfig.aeronDir();
+        MediaDriver driver = null;
+        Aeron aeronClient = null;
+        QueryHttpServer server = null;
+        AgentRunner runner = null;
+        try {
+            driver = MediaDriver.launch(new MediaDriver.Context()
+                    .aeronDirectoryName(aeronDir)
+                    .threadingMode(ThreadingMode.SHARED)
+                    .dirDeleteOnStart(true)
+                    .dirDeleteOnShutdown(true));
+            aeronClient = Aeron.connect(new Aeron.Context().aeronDirectoryName(aeronDir));
+            server = new QueryHttpServer(gateway, readConfig, health);
+            runner = new AgentRunner(new BackoffIdleStrategy(), this::onAgentError, null, new Agent() {
+                @Override
+                public int doWork() {
+                    return doWorkCycle();
+                }
 
-        this.source = new ArchiveSource(aeron, replicaConfig);
+                @Override
+                public String roleName() {
+                    return "adbe-read-replica-agent";
+                }
+            });
 
-        this.httpServer = new QueryHttpServer(gateway, readConfig, health);
+            this.mediaDriver = driver;
+            this.aeron = aeronClient;
+            this.source = new ArchiveSource(aeronClient, replicaConfig);
+            this.httpServer = server;
+            this.agentRunner = runner;
+        } catch (final RuntimeException e) {
+            // Do not leak the driver, client, HTTP server, or gateway dispatcher
+            // thread if a later component fails to start.
+            closeQuietly(runner, server, aeronClient, driver);
+            gateway.close();
+            throw e;
+        }
 
-        this.agentRunner = new AgentRunner(new BackoffIdleStrategy(), this::onAgentError, null, new Agent() {
-            @Override
-            public int doWork() {
-                return doWorkCycle();
-            }
-
-            @Override
-            public String roleName() {
-                return "adbe-read-replica-agent";
-            }
-        });
         final Thread agentThread = new Thread(agentRunner, "adbe-read-replica-agent");
         agentThread.setDaemon(true);
         agentThread.start();
 
-        // Wait (bounded) until the agent has connected, so that when a cluster is
-        // reachable the node is already following and healthy by the time the
-        // constructor returns (matching the previous eager-connect behaviour). The
-        // archive may not be reachable on the very first attempt while a cluster
-        // is still starting, so this observes the published health rather than a
-        // single attempt. When no endpoint is reachable the wait times out and the
-        // agent keeps retrying in the background.
+        awaitInitialConnect();
+    }
+
+    /**
+     * Blocks (bounded) until the agent reports healthy, so a reachable cluster is
+     * already being followed when the constructor returns. When no endpoint is
+     * reachable the wait times out and the agent keeps retrying in the background.
+     */
+    private void awaitInitialConnect() {
         final long deadline = System.currentTimeMillis() + STARTUP_CONNECT_TIMEOUT_MS;
         while (!health.isHealthy() && System.currentTimeMillis() < deadline) {
             try {
@@ -212,6 +230,18 @@ public final class ReadReplicaNode implements AutoCloseable {
             } catch (final InterruptedException e) {
                 Thread.currentThread().interrupt();
                 break;
+            }
+        }
+    }
+
+    private static void closeQuietly(final AutoCloseable... resources) {
+        for (final AutoCloseable resource : resources) {
+            if (resource != null) {
+                try {
+                    resource.close();
+                } catch (final Exception ignored) {
+                    // Best-effort cleanup after a failed startup.
+                }
             }
         }
     }
@@ -239,7 +269,7 @@ public final class ReadReplicaNode implements AutoCloseable {
     private void onAgentError(final Throwable throwable) {
         // Non-fatal: the AgentRunner keeps the agent running after an error, so a
         // transient failure (e.g. a replay hiccup) does not stop query serving.
-        System.err.println("Read replica agent error: " + throwable);
+        LOG.log(System.Logger.Level.ERROR, "Read replica agent error", throwable);
     }
 
     /** Tries to (re)connect to the current candidate Archive endpoint. */
@@ -258,7 +288,7 @@ public final class ReadReplicaNode implements AutoCloseable {
             nextSnapshotPollMs = 0L;
             restartLiveLog();
             health.markHealthy(source.activeChannel(), appliedLogPosition);
-            System.out.printf("Read replica connected to archive: %s%n", source.activeChannel());
+            LOG.log(System.Logger.Level.INFO, "Read replica connected to archive: {0}", source.activeChannel());
             return 1;
         }
         // Endpoint unreachable: advance round-robin and back off.
@@ -276,7 +306,7 @@ public final class ReadReplicaNode implements AutoCloseable {
         try {
             work += pollLiveLog();
         } catch (final RuntimeException e) {
-            System.err.println("Read replica live log failed: " + e.getMessage());
+            LOG.log(System.Logger.Level.ERROR, "Read replica live log failed: {0}", e.getMessage());
             failover();
             return work;
         }
@@ -288,7 +318,7 @@ public final class ReadReplicaNode implements AutoCloseable {
             } catch (final RuntimeException e) {
                 // A control-session failure here means the source is dead; fail over
                 // rather than retrying the same broken endpoint.
-                System.err.println("Read replica snapshot poll failed: " + e.getMessage());
+                LOG.log(System.Logger.Level.ERROR, "Read replica snapshot poll failed: {0}", e.getMessage());
                 failover();
                 return work;
             }
@@ -299,7 +329,7 @@ public final class ReadReplicaNode implements AutoCloseable {
         // fragments). A successful snapshot poll counts as activity, so an idle
         // but healthy cluster does not false-positive.
         if (System.currentTimeMillis() - lastActivityMs > replicaConfig.liveLogLivenessTimeoutMs()) {
-            System.err.println("Read replica live log liveness timeout; failing over");
+            LOG.log(System.Logger.Level.WARNING, "Read replica live log liveness timeout; failing over");
             failover();
             return work;
         }
@@ -319,9 +349,11 @@ public final class ReadReplicaNode implements AutoCloseable {
         state = State.DEGRADED;
         nextConnectAttemptMs = System.currentTimeMillis() + replicaConfig.failoverBackoffMs();
         health.markStale(source.activeChannel(), appliedLogPosition);
-        System.out.printf(
-                "Read replica failing over to next archive: %s (failovers=%d)%n",
-                source.activeChannel(), health.failovers());
+        LOG.log(
+                System.Logger.Level.WARNING,
+                "Read replica failing over to next archive: {0} (failovers={1})",
+                source.activeChannel(),
+                health.failovers());
     }
 
     private int pollLiveLog() {
@@ -371,6 +403,15 @@ public final class ReadReplicaNode implements AutoCloseable {
                 // Does not advance state; within a source snapshots advance
                 // monotonically, so no older recording will either.
                 maxSnapshotRecordingId = recordingId;
+                return 0;
+            }
+            if (result == SnapshotResult.CORRUPT) {
+                // Integrity check failed: skip this recording permanently on this
+                // source and rebuild engine state from the start of the log.
+                maxSnapshotRecordingId = recordingId;
+                appliedLogPosition = 0L;
+                health.recordIntegrityFailure();
+                restartLiveLog();
                 return 0;
             }
             // FAILED: transient; retry the newest recording on the next poll.
@@ -455,11 +496,12 @@ public final class ReadReplicaNode implements AutoCloseable {
         // replay to that concrete endpoint.
         snapshotDecision = SnapshotDecision.PENDING;
 
-        final Subscription subscription =
-                aeron.addSubscription("aeron:udp?endpoint=" + replicaConfig.localHost() + ":0", REPLAY_STREAM_ID);
+        final Subscription subscription = aeron.addSubscription(
+                "aeron:udp?endpoint=" + replicaConfig.localHost() + ":0", ReadStreams.SNAPSHOT_REPLAY);
         try {
             final String replayChannel = "aeron:udp?endpoint=" + awaitResolvedEndpoint(subscription);
-            source.archive().startReplay(recordingId, 0, AeronArchive.NULL_LENGTH, replayChannel, REPLAY_STREAM_ID);
+            source.archive()
+                    .startReplay(recordingId, 0, AeronArchive.NULL_LENGTH, replayChannel, ReadStreams.SNAPSHOT_REPLAY);
 
             final long deadline = System.currentTimeMillis() + replicaConfig.replayTimeoutMs();
             while (System.currentTimeMillis() < deadline) {
@@ -489,9 +531,21 @@ public final class ReadReplicaNode implements AutoCloseable {
             subscription.close();
         }
 
+        // A replayed snapshot that does not reconcile (sum(balances) != totalSupply)
+        // must not be served; discard the partial load and rebuild from the log.
+        if (!snapshotManager.verifyInvariant()) {
+            engine.clearState();
+            LOG.log(
+                    System.Logger.Level.WARNING,
+                    "Read replica snapshot integrity check failed: recordingId={0}",
+                    recordingId);
+            return SnapshotResult.CORRUPT;
+        }
+
         engine.publishSizeGauges();
-        System.out.printf(
-                "Read replica snapshot loaded: recordingId=%d logPosition=%d balances=%d%n",
+        LOG.log(
+                System.Logger.Level.INFO,
+                "Read replica snapshot loaded: recordingId={0} logPosition={1} balances={2}",
                 recordingId,
                 snapshotManager.loadedLogPosition(),
                 engine.balances().size());

@@ -17,6 +17,7 @@ public final class ReplicationHealth {
     private volatile long appliedPosition;
     private volatile String activeEndpoint = "";
     private volatile long failovers;
+    private volatile long integrityFailures;
 
     /** Records a successful connect / steady following cycle. */
     public void markHealthy(final String endpoint, final long appliedLogPosition) {
@@ -37,6 +38,11 @@ public final class ReplicationHealth {
         this.failovers++;
     }
 
+    /** Notes that a replayed snapshot failed its integrity check and was discarded. */
+    public void recordIntegrityFailure() {
+        this.integrityFailures++;
+    }
+
     public boolean isHealthy() {
         return healthy;
     }
@@ -51,5 +57,9 @@ public final class ReplicationHealth {
 
     public long failovers() {
         return failovers;
+    }
+
+    public long integrityFailures() {
+        return integrityFailures;
     }
 }

@@ -27,6 +27,7 @@ public final class CoreMetrics {
     private long invalidAmount;
     private long backpressureEvents;
     private long leaderElections;
+    private long dedupEvicted;
     private long lastSnapshotWriteNanos;
     private long lastSnapshotReadNanos;
     private long balanceCount;
@@ -86,6 +87,14 @@ public final class CoreMetrics {
     public void onLeaderElection() {
         leaderElections++;
         sink.increment(Counter.LEADER_ELECTIONS);
+    }
+
+    // A fresh command whose bounded-window slot still held a different, older
+    // sequence: that older sequence's dedup record is now gone, so a late retry
+    // of it would re-apply. A rising count means the dedup window is too small.
+    public void onDedupEvicted() {
+        dedupEvicted++;
+        sink.increment(Counter.DEDUP_EVICTED);
     }
 
     public void snapshotWriteNanos(final long nanos) {
@@ -150,6 +159,10 @@ public final class CoreMetrics {
 
     public long leaderElections() {
         return leaderElections;
+    }
+
+    public long dedupEvicted() {
+        return dedupEvicted;
     }
 
     public long lastSnapshotWriteNanos() {
