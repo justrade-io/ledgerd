@@ -23,17 +23,22 @@ public final class DelegatedTransferHandler {
     }
 
     public void handle(
-            final long delegateId, final long ownerId, final long toId, final long amount, final CommandOutcome out) {
+            final long assetId,
+            final long delegateId,
+            final long ownerId,
+            final long toId,
+            final long amount,
+            final CommandOutcome out) {
         if (Amounts.isNegative(amount)) {
             out.status(StatusCode.INVALID_AMOUNT);
             return;
         }
-        final long allowance = allowances.get(ownerId, delegateId);
+        final long allowance = allowances.get(assetId, ownerId, delegateId);
         if (allowance < amount) {
             out.status(StatusCode.INSUFFICIENT_ALLOWANCE);
             return;
         }
-        final long ownerBalance = balances.rawGet(ownerId);
+        final long ownerBalance = balances.rawGet(assetId, ownerId);
         if (ownerBalance == BalanceStore.MISSING) {
             out.status(StatusCode.INVALID_ACCOUNT);
             return;
@@ -45,22 +50,22 @@ public final class DelegatedTransferHandler {
         if (ownerId == toId) {
             // Funds remain with the owner; only allowance is consumed.
             final long remaining = allowance - amount;
-            allowances.set(ownerId, delegateId, remaining);
+            allowances.set(assetId, ownerId, delegateId, remaining);
             out.balance(ownerBalance);
             out.allowance(remaining);
             out.status(StatusCode.SUCCESS);
             return;
         }
-        final long toRaw = balances.rawGet(toId);
+        final long toRaw = balances.rawGet(assetId, toId);
         final long toBase = toRaw == BalanceStore.MISSING ? 0L : toRaw;
         if (Amounts.addOverflows(toBase, amount)) {
             out.status(StatusCode.OVERFLOW);
             return;
         }
-        balances.set(ownerId, ownerBalance - amount);
-        balances.set(toId, toBase + amount);
+        balances.set(assetId, ownerId, ownerBalance - amount);
+        balances.set(assetId, toId, toBase + amount);
         final long remainingAllowance = allowance - amount;
-        allowances.set(ownerId, delegateId, remainingAllowance);
+        allowances.set(assetId, ownerId, delegateId, remainingAllowance);
         out.balance(ownerBalance - amount);
         out.allowance(remainingAllowance);
         out.status(StatusCode.SUCCESS);

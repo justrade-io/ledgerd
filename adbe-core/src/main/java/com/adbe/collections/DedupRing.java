@@ -25,6 +25,9 @@ public final class DedupRing {
     /** Flag bit indicating the cached result carried an allowance value. */
     public static final int FLAG_HAS_ALLOWANCE = 1 << 1;
 
+    /** Flag bit indicating the cached result carried a reserved value. */
+    public static final int FLAG_HAS_RESERVED = 1 << 2;
+
     private final int mask;
     private final long[] seqSlots;
     private final long[] commandIdHi;
@@ -32,6 +35,7 @@ public final class DedupRing {
     private final short[] statusValue;
     private final long[] resultBalance;
     private final long[] resultAllowance;
+    private final long[] resultReserved;
     private final byte[] flags;
 
     public DedupRing(final int capacity) {
@@ -42,6 +46,7 @@ public final class DedupRing {
         this.statusValue = new short[capacity];
         this.resultBalance = new long[capacity];
         this.resultAllowance = new long[capacity];
+        this.resultReserved = new long[capacity];
         this.flags = new byte[capacity];
         Arrays.fill(seqSlots, EMPTY);
     }
@@ -60,7 +65,9 @@ public final class DedupRing {
             final long balance,
             final boolean hasBalance,
             final long allowance,
-            final boolean hasAllowance) {
+            final boolean hasAllowance,
+            final long reserved,
+            final boolean hasReserved) {
         final int idx = (int) (seq & mask);
         final long prior = seqSlots[idx];
         final boolean evicted = prior != EMPTY && prior != seq;
@@ -70,12 +77,16 @@ public final class DedupRing {
         statusValue[idx] = status;
         resultBalance[idx] = balance;
         resultAllowance[idx] = allowance;
+        resultReserved[idx] = reserved;
         int f = 0;
         if (hasBalance) {
             f |= FLAG_HAS_BALANCE;
         }
         if (hasAllowance) {
             f |= FLAG_HAS_ALLOWANCE;
+        }
+        if (hasReserved) {
+            f |= FLAG_HAS_RESERVED;
         }
         flags[idx] = (byte) f;
         return evicted;
@@ -101,12 +112,20 @@ public final class DedupRing {
         return resultAllowance[(int) (seq & mask)];
     }
 
+    public long resultReserved(final long seq) {
+        return resultReserved[(int) (seq & mask)];
+    }
+
     public boolean hasBalance(final long seq) {
         return (flags[(int) (seq & mask)] & FLAG_HAS_BALANCE) != 0;
     }
 
     public boolean hasAllowance(final long seq) {
         return (flags[(int) (seq & mask)] & FLAG_HAS_ALLOWANCE) != 0;
+    }
+
+    public boolean hasReserved(final long seq) {
+        return (flags[(int) (seq & mask)] & FLAG_HAS_RESERVED) != 0;
     }
 
     /** Ring capacity (power of two). */

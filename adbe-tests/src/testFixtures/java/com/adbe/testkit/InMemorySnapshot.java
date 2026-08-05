@@ -12,6 +12,7 @@ import org.agrona.ExpandableArrayBuffer;
 public final class InMemorySnapshot {
 
     private final ExpandableArrayBuffer buffer = new ExpandableArrayBuffer();
+    private final com.adbe.protocol.MessageHeaderDecoder headerDecoder = new com.adbe.protocol.MessageHeaderDecoder();
     private int length;
 
     /** Writes a full snapshot of {@code engine} into the in-memory buffer. */
@@ -67,12 +68,23 @@ public final class InMemorySnapshot {
      * corruption so the loaded balances no longer reconcile with total supply.
      */
     public void corruptFirstBalanceValue() {
-        // Record 0 is the SnapshotHeader; record 1 is the first BalanceEntry.
-        int offset = Integer.BYTES + buffer.getInt(0);
-        offset += Integer.BYTES; // skip record-1 length prefix
-        final int balanceValueIndex =
-                offset + com.adbe.protocol.MessageHeaderDecoder.ENCODED_LENGTH + Long.BYTES; // after accountId
-        buffer.putByte(balanceValueIndex, (byte) (buffer.getByte(balanceValueIndex) ^ 0x01));
+        // Scan length-prefixed records for the first BalanceEntry; per-asset supply
+        // records precede the balances, so the balance is no longer at a fixed index.
+        int offset = 0;
+        while (offset < length) {
+            final int recordLength = buffer.getInt(offset);
+            final int bodyOffset = offset + Integer.BYTES;
+            headerDecoder.wrap(buffer, bodyOffset);
+            if (headerDecoder.templateId() == com.adbe.protocol.BalanceEntryDecoder.TEMPLATE_ID) {
+                final int balanceValueIndex = bodyOffset
+                        + com.adbe.protocol.MessageHeaderDecoder.ENCODED_LENGTH
+                        + Long.BYTES; // after accountId
+                buffer.putByte(balanceValueIndex, (byte) (buffer.getByte(balanceValueIndex) ^ 0x01));
+                return;
+            }
+            offset = bodyOffset + recordLength;
+        }
+        throw new IllegalStateException("no BalanceEntry record found to corrupt");
     }
 
     /** Returns a copy of the raw serialized bytes for byte-identical comparisons. */

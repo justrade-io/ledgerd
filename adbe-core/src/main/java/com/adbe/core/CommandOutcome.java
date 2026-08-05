@@ -19,6 +19,8 @@ public final class CommandOutcome {
     private boolean hasBalance;
     private long resultAllowance;
     private boolean hasAllowance;
+    private long resultReserved;
+    private boolean hasReserved;
 
     /** Clears all fields and records the command identity for the next dispatch. */
     public void reset(final long idHi, final long idLo) {
@@ -29,6 +31,8 @@ public final class CommandOutcome {
         this.hasBalance = false;
         this.resultAllowance = 0L;
         this.hasAllowance = false;
+        this.resultReserved = 0L;
+        this.hasReserved = false;
     }
 
     public void status(final StatusCode newStatus) {
@@ -45,6 +49,11 @@ public final class CommandOutcome {
         this.hasAllowance = true;
     }
 
+    public void reserved(final long reserved) {
+        this.resultReserved = reserved;
+        this.hasReserved = true;
+    }
+
     /** Copies identity and result fields from a cached dedup record. */
     public void set(
             final long idHi,
@@ -53,7 +62,9 @@ public final class CommandOutcome {
             final long balance,
             final boolean balancePresent,
             final long allowance,
-            final boolean allowancePresent) {
+            final boolean allowancePresent,
+            final long reserved,
+            final boolean reservedPresent) {
         this.commandIdHi = idHi;
         this.commandIdLo = idLo;
         this.status = cachedStatus;
@@ -61,6 +72,8 @@ public final class CommandOutcome {
         this.hasBalance = balancePresent;
         this.resultAllowance = allowance;
         this.hasAllowance = allowancePresent;
+        this.resultReserved = reserved;
+        this.hasReserved = reservedPresent;
     }
 
     public long commandIdHi() {
@@ -89,5 +102,13 @@ public final class CommandOutcome {
 
     public boolean hasAllowance() {
         return hasAllowance;
+    }
+
+    public long resultReserved() {
+        return resultReserved;
+    }
+
+    public boolean hasReserved() {
+        return hasReserved;
     }
 }

@@ -28,7 +28,7 @@ class OverflowTest {
         assertEquals(StatusCode.OVERFLOW, outcome.status());
 
         // Balance must be unchanged by the rejected command.
-        assertEquals(Long.MAX_VALUE - 10L, engine.balances().rawGet(1L));
+        assertEquals(Long.MAX_VALUE - 10L, engine.balances().rawGet(0L, 1L));
     }
 
     @Test

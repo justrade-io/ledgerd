@@ -5,6 +5,8 @@ import com.adbe.collections.BalanceStore;
 import com.adbe.collections.DedupTable;
 import com.adbe.protocol.AllowanceEntryDecoder;
 import com.adbe.protocol.AllowanceEntryEncoder;
+import com.adbe.protocol.AssetSupplyEntryDecoder;
+import com.adbe.protocol.AssetSupplyEntryEncoder;
 import com.adbe.protocol.BalanceEntryDecoder;
 import com.adbe.protocol.BalanceEntryEncoder;
 import com.adbe.protocol.DedupEntryDecoder;
@@ -35,12 +37,13 @@ import org.agrona.concurrent.UnsafeBuffer;
  */
 public final class SnapshotManager {
 
-    private static final int MAX_RECORD_LENGTH = 64;
+    private static final int MAX_RECORD_LENGTH = 128;
 
     private final MessageHeaderEncoder headerEncoder = new MessageHeaderEncoder();
     private final SnapshotHeaderEncoder snapshotHeaderEncoder = new SnapshotHeaderEncoder();
     private final BalanceEntryEncoder balanceEncoder = new BalanceEntryEncoder();
     private final AllowanceEntryEncoder allowanceEncoder = new AllowanceEntryEncoder();
+    private final AssetSupplyEntryEncoder assetSupplyEncoder = new AssetSupplyEntryEncoder();
     private final DedupEntryEncoder dedupEncoder = new DedupEntryEncoder();
     private final SnapshotFooterEncoder footerEncoder = new SnapshotFooterEncoder();
     private final UnsafeBuffer recordBuffer = new UnsafeBuffer(new byte[MAX_RECORD_LENGTH]);
@@ -49,6 +52,7 @@ public final class SnapshotManager {
     private final SnapshotHeaderDecoder snapshotHeaderDecoder = new SnapshotHeaderDecoder();
     private final BalanceEntryDecoder balanceDecoder = new BalanceEntryDecoder();
     private final AllowanceEntryDecoder allowanceDecoder = new AllowanceEntryDecoder();
+    private final AssetSupplyEntryDecoder assetSupplyDecoder = new AssetSupplyEntryDecoder();
     private final DedupEntryDecoder dedupDecoder = new DedupEntryDecoder();
     private final SnapshotFooterDecoder footerDecoder = new SnapshotFooterDecoder();
 
@@ -57,6 +61,7 @@ public final class SnapshotManager {
     private AllowanceStore loadAllowances;
     private DedupTable loadDedup;
     private long computedChecksum;
+    private long expectedAggregateSupply;
     private boolean footerSeen;
     private long loadedLogPosition;
 
@@ -88,45 +93,62 @@ public final class SnapshotManager {
                 .balanceCount(balances.size())
                 .allowanceCount(allowances.ownerCount())
                 .dedupCount(dedup.clientCount())
-                .totalSupply(balances.totalSupply())
+                .totalSupply(balances.aggregateSupply())
+                .assetCount(balances.assetCount())
                 .encodedLength();
         emit(sink, idler, MessageHeaderEncoder.ENCODED_LENGTH + len);
 
-        balances.forEachSorted((accountId, balance) -> {
-            final int l = balanceEncoder
+        balances.forEachSupplySorted((assetId, supply) -> {
+            final int l = assetSupplyEncoder
                     .wrapAndApplyHeader(recordBuffer, 0, headerEncoder)
-                    .accountId(accountId)
-                    .balance(balance)
+                    .assetId(assetId)
+                    .totalSupply(supply)
                     .encodedLength();
             emit(sink, idler, MessageHeaderEncoder.ENCODED_LENGTH + l);
         });
 
-        allowances.forEachSorted((ownerId, delegateId, allowance) -> {
+        balances.forEachSorted((assetId, accountId, balance, reserved) -> {
+            final int l = balanceEncoder
+                    .wrapAndApplyHeader(recordBuffer, 0, headerEncoder)
+                    .accountId(accountId)
+                    .balance(balance)
+                    .assetId(assetId)
+                    .reserved(reserved)
+                    .encodedLength();
+            emit(sink, idler, MessageHeaderEncoder.ENCODED_LENGTH + l);
+        });
+
+        allowances.forEachSorted((assetId, ownerId, delegateId, allowance) -> {
             final int l = allowanceEncoder
                     .wrapAndApplyHeader(recordBuffer, 0, headerEncoder)
                     .ownerId(ownerId)
                     .delegateId(delegateId)
                     .allowance(allowance)
+                    .assetId(assetId)
                     .encodedLength();
             emit(sink, idler, MessageHeaderEncoder.ENCODED_LENGTH + l);
         });
 
-        dedup.forEachSorted((clientId, seq, cmdHi, cmdLo, status, resBal, hasBal, resAllow, hasAllow) -> {
-            dedupEncoder
-                    .wrapAndApplyHeader(recordBuffer, 0, headerEncoder)
-                    .clientId(clientId)
-                    .clientSeq(seq)
-                    .commandIdHi(cmdHi)
-                    .commandIdLo(cmdLo)
-                    .status(StatusCode.get(status));
-            if (hasBal) {
-                dedupEncoder.resultBalance(resBal);
-            }
-            if (hasAllow) {
-                dedupEncoder.resultAllowance(resAllow);
-            }
-            emit(sink, idler, MessageHeaderEncoder.ENCODED_LENGTH + dedupEncoder.encodedLength());
-        });
+        dedup.forEachSorted(
+                (clientId, seq, cmdHi, cmdLo, status, resBal, hasBal, resAllow, hasAllow, resReserved, hasReserved) -> {
+                    dedupEncoder
+                            .wrapAndApplyHeader(recordBuffer, 0, headerEncoder)
+                            .clientId(clientId)
+                            .clientSeq(seq)
+                            .commandIdHi(cmdHi)
+                            .commandIdLo(cmdLo)
+                            .status(StatusCode.get(status));
+                    if (hasBal) {
+                        dedupEncoder.resultBalance(resBal);
+                    }
+                    if (hasAllow) {
+                        dedupEncoder.resultAllowance(resAllow);
+                    }
+                    if (hasReserved) {
+                        dedupEncoder.resultReserved(resReserved);
+                    }
+                    emit(sink, idler, MessageHeaderEncoder.ENCODED_LENGTH + dedupEncoder.encodedLength());
+                });
 
         len = footerEncoder
                 .wrapAndApplyHeader(recordBuffer, 0, headerEncoder)
@@ -149,6 +171,7 @@ public final class SnapshotManager {
         this.loadAllowances = allowances;
         this.loadDedup = dedup;
         this.computedChecksum = 0L;
+        this.expectedAggregateSupply = 0L;
         this.footerSeen = false;
     }
 
@@ -164,25 +187,54 @@ public final class SnapshotManager {
             case SnapshotHeaderDecoder.TEMPLATE_ID -> {
                 snapshotHeaderDecoder.wrap(buffer, bodyOffset, blockLength, version);
                 loadedLogPosition = snapshotHeaderDecoder.logPosition();
-                loadBalances.totalSupply(snapshotHeaderDecoder.totalSupply());
+                expectedAggregateSupply = snapshotHeaderDecoder.totalSupply();
+                // Pre-2 snapshots carry a single aggregate supply and no per-asset
+                // records; seed the default asset so they load unchanged. Version-2
+                // snapshots overwrite this via AssetSupplyEntry records that follow.
+                loadBalances.setSupply(BalanceStore.DEFAULT_ASSET, snapshotHeaderDecoder.totalSupply());
+            }
+            case AssetSupplyEntryDecoder.TEMPLATE_ID -> {
+                assetSupplyDecoder.wrap(buffer, bodyOffset, blockLength, version);
+                loadBalances.setSupply(assetSupplyDecoder.assetId(), assetSupplyDecoder.totalSupply());
             }
             case BalanceEntryDecoder.TEMPLATE_ID -> {
                 balanceDecoder.wrap(buffer, bodyOffset, blockLength, version);
                 final long balance = balanceDecoder.balance();
-                loadBalances.set(balanceDecoder.accountId(), balance);
-                computedChecksum += balance;
+                final long accountId = balanceDecoder.accountId();
+                long assetId = balanceDecoder.assetId();
+                if (assetId == BalanceEntryDecoder.assetIdNullValue()) {
+                    assetId = BalanceStore.DEFAULT_ASSET;
+                }
+                long reserved = balanceDecoder.reserved();
+                if (reserved == BalanceEntryDecoder.reservedNullValue()) {
+                    reserved = 0L;
+                }
+                loadBalances.set(assetId, accountId, balance);
+                if (reserved != 0L) {
+                    loadBalances.setReserved(assetId, accountId, reserved);
+                }
+                computedChecksum += balance + reserved;
             }
             case AllowanceEntryDecoder.TEMPLATE_ID -> {
                 allowanceDecoder.wrap(buffer, bodyOffset, blockLength, version);
+                long assetId = allowanceDecoder.assetId();
+                if (assetId == AllowanceEntryDecoder.assetIdNullValue()) {
+                    assetId = BalanceStore.DEFAULT_ASSET;
+                }
                 loadAllowances.set(
-                        allowanceDecoder.ownerId(), allowanceDecoder.delegateId(), allowanceDecoder.allowance());
+                        assetId,
+                        allowanceDecoder.ownerId(),
+                        allowanceDecoder.delegateId(),
+                        allowanceDecoder.allowance());
             }
             case DedupEntryDecoder.TEMPLATE_ID -> {
                 dedupDecoder.wrap(buffer, bodyOffset, blockLength, version);
                 final long resBal = dedupDecoder.resultBalance();
                 final long resAllow = dedupDecoder.resultAllowance();
+                final long resReserved = dedupDecoder.resultReserved();
                 final boolean hasBal = resBal != DedupEntryDecoder.resultBalanceNullValue();
                 final boolean hasAllow = resAllow != DedupEntryDecoder.resultAllowanceNullValue();
+                final boolean hasReserved = resReserved != DedupEntryDecoder.resultReservedNullValue();
                 loadDedup.store(
                         dedupDecoder.clientId(),
                         dedupDecoder.clientSeq(),
@@ -192,7 +244,9 @@ public final class SnapshotManager {
                         hasBal ? resBal : 0L,
                         hasBal,
                         hasAllow ? resAllow : 0L,
-                        hasAllow);
+                        hasAllow,
+                        hasReserved ? resReserved : 0L,
+                        hasReserved);
             }
             case SnapshotFooterDecoder.TEMPLATE_ID -> {
                 footerDecoder.wrap(buffer, bodyOffset, blockLength, version);
@@ -212,14 +266,14 @@ public final class SnapshotManager {
         return loadedLogPosition;
     }
 
-    /** Verifies that the restored balances reproduce the header's total supply. */
+    /** Verifies that the restored balances reproduce the aggregate total supply. */
     public boolean verifyInvariant() {
-        return footerSeen && computedChecksum == loadBalances.totalSupply();
+        return footerSeen && computedChecksum == expectedAggregateSupply;
     }
 
     private static long checksumOf(final BalanceStore balances) {
         final long[] sum = {0L};
-        balances.forEachSorted((accountId, balance) -> sum[0] += balance);
+        balances.forEachSorted((assetId, accountId, balance, reserved) -> sum[0] += balance + reserved);
         return sum[0];
     }
 

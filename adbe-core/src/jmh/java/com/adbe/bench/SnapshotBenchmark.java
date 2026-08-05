@@ -120,7 +120,8 @@ public class SnapshotBenchmark implements SnapshotManager.SnapshotSink {
                     .accountB(0L)
                     .amount(1_000L)
                     .correlationId(CommandEnvelopeEncoder.correlationIdNullValue())
-                    .accountC(0L);
+                    .accountC(0L)
+                    .assetId(0L);
             headerDecoder.wrap(buffer, 0);
             decoder.wrap(
                     buffer, MessageHeaderDecoder.ENCODED_LENGTH, headerDecoder.blockLength(), headerDecoder.version());

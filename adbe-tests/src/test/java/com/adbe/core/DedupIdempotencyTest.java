@@ -37,7 +37,7 @@ class DedupIdempotencyTest {
         assertEquals(50L, outcome.resultBalance());
         assertEquals(42L, outcome.commandIdLo());
 
-        assertEquals(50L, engine.balances().rawGet(100L));
+        assertEquals(50L, engine.balances().rawGet(0L, 100L));
         assertEquals(1L, metrics.duplicatesDetected());
         assertEquals(1L, metrics.commandsProcessed());
     }
@@ -51,7 +51,7 @@ class DedupIdempotencyTest {
         for (long seq = 0; seq < 5; seq++) {
             engine.process(fixtures.encode(7L, seq, 0L, seq, CommandType.CREDIT, 200L, 0L, 0L, 10L), outcome);
         }
-        assertEquals(50L, engine.balances().rawGet(200L));
+        assertEquals(50L, engine.balances().rawGet(0L, 200L));
     }
 
     @Test
@@ -71,12 +71,12 @@ class DedupIdempotencyTest {
         // seq 16 lands on slot 0, evicting seq 0's dedup record.
         engine.process(fixtures.encode(1L, 16L, 0L, 16L, CommandType.CREDIT, 100L, 0L, 0L, 1L), outcome);
         assertEquals(1L, metrics.dedupEvicted());
-        assertEquals(17L, engine.balances().rawGet(100L));
+        assertEquals(17L, engine.balances().rawGet(0L, 100L));
 
         // A late retry of the evicted seq 0 is no longer deduplicated: it re-applies.
         final boolean duplicate =
                 engine.process(fixtures.encode(1L, 0L, 0L, 0L, CommandType.CREDIT, 100L, 0L, 0L, 1L), outcome);
         assertFalse(duplicate, "evicted sequence must not be detected as duplicate");
-        assertEquals(18L, engine.balances().rawGet(100L));
+        assertEquals(18L, engine.balances().rawGet(0L, 100L));
     }
 }

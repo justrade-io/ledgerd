@@ -15,7 +15,8 @@ import org.agrona.MutableDirectBuffer;
  *   offset 0  : long correlationId
  *   offset 8  : int  queryType code
  *   offset 12 : int  operandCount
- *   offset 16 : long operand[0..operandCount-1]
+ *   offset 16 : long assetId
+ *   offset 24 : long operand[0..operandCount-1]
  * </pre>
  *
  * <p>Response layout:
@@ -24,7 +25,7 @@ import org.agrona.MutableDirectBuffer;
  *   offset 0  : long correlationId
  *   offset 8  : int  queryType code
  *   offset 12 : int  entryCount
- *   offset 16 : { long value ; int present } * entryCount
+ *   offset 24 : { long value ; int present } * entryCount
  * </pre>
  */
 public final class QueryCodec {
@@ -38,7 +39,8 @@ public final class QueryCodec {
     private static final int CORRELATION_OFFSET = 0;
     private static final int TYPE_OFFSET = 8;
     private static final int COUNT_OFFSET = 12;
-    private static final int BODY_OFFSET = 16;
+    private static final int ASSET_OFFSET = 16;
+    private static final int BODY_OFFSET = 24;
 
     private static final int OPERAND_SIZE = Long.BYTES;
     private static final int ENTRY_SIZE = Long.BYTES + Integer.BYTES;
@@ -57,11 +59,13 @@ public final class QueryCodec {
             final MutableDirectBuffer dst,
             final long correlationId,
             final QueryType type,
+            final long assetId,
             final long[] operands,
             final int operandCount) {
         dst.putLong(CORRELATION_OFFSET, correlationId);
         dst.putInt(TYPE_OFFSET, type.code());
         dst.putInt(COUNT_OFFSET, operandCount);
+        dst.putLong(ASSET_OFFSET, assetId);
         for (int i = 0; i < operandCount; i++) {
             dst.putLong(BODY_OFFSET + i * OPERAND_SIZE, operands[i]);
         }
@@ -78,6 +82,10 @@ public final class QueryCodec {
 
     public static int count(final DirectBuffer buffer, final int offset) {
         return buffer.getInt(offset + COUNT_OFFSET);
+    }
+
+    public static long assetId(final DirectBuffer buffer, final int offset) {
+        return buffer.getLong(offset + ASSET_OFFSET);
     }
 
     public static long operand(final DirectBuffer buffer, final int offset, final int index) {

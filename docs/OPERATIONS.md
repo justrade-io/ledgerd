@@ -388,6 +388,7 @@ docker compose up --build
 # Write via AdbeClient to localhost:20100.
 # Read from the read replica node:
 curl http://localhost:8080/balance/100
+curl "http://localhost:8080/balance/100?asset=1"   # optional ?asset= (default 0)
 curl http://localhost:8080/supply
 curl http://localhost:8080/healthz
 ```

@@ -33,6 +33,12 @@ double-applied command or a nondeterministic replay is a correctness failure.
   snapshots include the dedup table so idempotency survives recovery.
 - **Overflow-Safe**: 64-bit fixed-scale amounts with checked arithmetic; overflow
   returns a status code, never a silent wrap-around.
+- **Multi-Asset**: balances, allowances, and total supply are isolated per asset
+  via a composite `(assetId, accountId)` key; a single-asset deployment simply
+  uses asset `0` (ADR 0009).
+- **Two-Phase Holds**: `RESERVE` / `CAPTURE` / `RELEASE` split each balance into
+  `available` and `reserved` buckets for escrow, authorization, and settlement
+  flows, with total supply conserved (ADR 0010).
 - **SBE Wire Format**: fixed binary layout, no reflection, backward-compatible
   schema evolution via optional fields.
 - **Fault-Tolerant Failover**: multi-node Raft cluster with leader election and
@@ -123,7 +129,8 @@ new CommandEnvelopeEncoder()
     .commandType(CommandType.CREDIT)
     .accountA(100).accountB(0).amount(500)
     .correlationId(CommandEnvelopeEncoder.correlationIdNullValue())
-    .accountC(0);
+    .accountC(0)
+    .assetId(0);
 
 // Wrap a decoder at the message body and process the command.
 MessageHeaderDecoder headerDecoder = new MessageHeaderDecoder();
@@ -172,7 +179,8 @@ arrive at `BalanceService` in total order on a single thread:
 
 1. **Dispatch**: `onSessionMessage` decodes the SBE envelope. The dedup table is
    checked first; a hit returns the cached result verbatim. A miss dispatches to
-   a handler (credit, debit, transfer, approve, delegated transfer).
+   a handler (credit, debit, transfer, approve, delegated transfer, reserve,
+   capture, release).
 2. **Idempotency**: because `clientSeq` is monotonic per client, its dedup slot
    is `seq & (capacity - 1)`, so lookup and store are O(1) and allocation-free.
 3. **ACK**: the result is encoded as an SBE `CommandResult` carrying the original
@@ -269,8 +277,8 @@ flowchart TB
         BE["BalanceEngine\ndeterministic dispatch + dedup"]
         subgraph STATE["State"]
             DT["DedupTable\nper-client rings"]
-            BSTORE["BalanceStore\nbalances + total supply"]
-            ASTORE["AllowanceStore\n(owner, delegate)"]
+            BSTORE["BalanceStore\nper-asset available + reserved + supply"]
+            ASTORE["AllowanceStore\n(assetId, owner, delegate)"]
         end
         SM["SnapshotManager\nstreaming SBE"]
         BS --> BE
@@ -300,7 +308,7 @@ Within `adbe-core`:
 | `BalanceEngine`   | Idempotent dispatch over balance and allowance state              |
 | `BalanceService`  | ClusteredService callbacks: decode, apply, ACK, snapshot          |
 | `BalanceStore`    | Primitive balance map plus the total-supply invariant             |
-| `AllowanceStore`  | Nested primitive map keyed by (owner, delegate)                   |
+| `AllowanceStore`  | Nested primitive map keyed by (assetId, owner, delegate)          |
 | `DedupTable`      | Per-client rings, O(1) idempotency within the dedup window        |
 | `SnapshotManager` | Deterministic streaming snapshot write and load                   |
 | `CoreMetrics`     | Single-writer observability counters                              |

@@ -59,7 +59,14 @@ public final class RemoteClientExample {
         }
         final ClientConfig config = configBuilder.build();
 
+        final String scenario = envOrDefault("ADBE_SCENARIO", "");
+
         try (AdbeClient client = new AdbeClient(config, handler)) {
+            if ("multiasset".equals(scenario)) {
+                runMultiAssetScenario(client, lastStatus, lastCommandIdLo);
+                return;
+            }
+
             System.out.println("-> CREDIT account 100 with 500");
             final long creditId = client.submit(CommandType.CREDIT, 100L, 0L, 0L, 500L);
             awaitResult(client, creditId, lastCommandIdLo);
@@ -73,6 +80,50 @@ public final class RemoteClientExample {
             System.out.printf(
                     "OK: cluster processed commands (leaderChanges=%d, completed=%d). Final balance=%d.%n",
                     client.leaderChanges(), client.completed(), lastBalance[0]);
+        }
+    }
+
+    /**
+     * Exercises the multi-asset (ADR 0009) and holds (ADR 0010) commands on fresh
+     * accounts and assets so an operational check can observe both over the read
+     * HTTP API (available balances and per-asset supply). Held funds are inferred
+     * from the drop in available balance together with conserved supply, since the
+     * read API exposes available balances, not the reserved bucket.
+     */
+    private static void runMultiAssetScenario(
+            final AdbeClient client, final StatusCode[] lastStatus, final long[] lastId) {
+        // Asset 1: plain multi-asset credit + transfer on fresh accounts 700/701.
+        submitAndAwait(client, lastStatus, lastId, CommandType.CREDIT, 1L, 700L, 0L, 0L, 1000L);
+        submitAndAwait(client, lastStatus, lastId, CommandType.TRANSFER, 1L, 700L, 701L, 0L, 400L);
+
+        // Asset 2: two-phase holds. reserve moves available -> reserved; capture
+        // settles held funds to 701; release returns the remainder to available.
+        submitAndAwait(client, lastStatus, lastId, CommandType.CREDIT, 2L, 700L, 0L, 0L, 1000L);
+        submitAndAwait(client, lastStatus, lastId, CommandType.RESERVE, 2L, 700L, 0L, 0L, 300L);
+        submitAndAwait(client, lastStatus, lastId, CommandType.CAPTURE, 2L, 700L, 701L, 0L, 200L);
+        submitAndAwait(client, lastStatus, lastId, CommandType.RELEASE, 2L, 700L, 0L, 0L, 50L);
+
+        System.out.printf(
+                "OK: multi-asset + holds scenario committed (leaderChanges=%d, completed=%d).%n",
+                client.leaderChanges(), client.completed());
+    }
+
+    private static void submitAndAwait(
+            final AdbeClient client,
+            final StatusCode[] lastStatus,
+            final long[] lastId,
+            final CommandType type,
+            final long assetId,
+            final long a,
+            final long b,
+            final long c,
+            final long amount) {
+        System.out.printf("-> %s asset=%d a=%d b=%d amount=%d%n", type, assetId, a, b, amount);
+        final long id = client.submit(type, assetId, a, b, c, amount);
+        awaitResult(client, id, lastId);
+        if (lastStatus[0] != StatusCode.SUCCESS) {
+            throw new IllegalStateException("scenario command " + type + " on asset " + assetId + " returned "
+                    + lastStatus[0] + " (expected SUCCESS)");
         }
     }
 

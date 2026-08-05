@@ -8,6 +8,7 @@ import com.adbe.core.handlers.ApproveHandler;
 import com.adbe.core.handlers.CreditHandler;
 import com.adbe.core.handlers.DebitHandler;
 import com.adbe.core.handlers.DelegatedTransferHandler;
+import com.adbe.core.handlers.ReserveHandler;
 import com.adbe.core.handlers.TransferHandler;
 import com.adbe.persistence.SnapshotManager;
 import com.adbe.protocol.CommandEnvelopeDecoder;
@@ -34,6 +35,7 @@ public final class BalanceEngine {
     private final TransferHandler transferHandler;
     private final ApproveHandler approveHandler;
     private final DelegatedTransferHandler delegatedTransferHandler;
+    private final ReserveHandler reserveHandler;
 
     private long lastBalanceCount = -1L;
     private long lastAllowanceOwnerCount = -1L;
@@ -49,6 +51,7 @@ public final class BalanceEngine {
         this.transferHandler = new TransferHandler(balances);
         this.approveHandler = new ApproveHandler(allowances);
         this.delegatedTransferHandler = new DelegatedTransferHandler(balances, allowances);
+        this.reserveHandler = new ReserveHandler(balances);
     }
 
     /**
@@ -81,7 +84,9 @@ public final class BalanceEngine {
                 out.resultBalance(),
                 out.hasBalance(),
                 out.resultAllowance(),
-                out.hasAllowance());
+                out.hasAllowance(),
+                out.resultReserved(),
+                out.hasReserved());
         if (evicted) {
             metrics.onDedupEvicted();
         }
@@ -107,7 +112,9 @@ public final class BalanceEngine {
                     ring.resultBalance(clientSeq),
                     ring.hasBalance(clientSeq),
                     ring.resultAllowance(clientSeq),
-                    ring.hasAllowance(clientSeq));
+                    ring.hasAllowance(clientSeq),
+                    ring.resultReserved(clientSeq),
+                    ring.hasReserved(clientSeq));
             return DedupRingHit.DUPLICATE;
         }
         return DedupRingHit.FRESH;
@@ -119,14 +126,21 @@ public final class BalanceEngine {
         final long b = cmd.accountB();
         final long c = cmd.accountC();
         final long amount = cmd.amount();
+        long asset = cmd.assetId();
+        if (asset == CommandEnvelopeDecoder.assetIdNullValue()) {
+            asset = BalanceStore.DEFAULT_ASSET;
+        }
         switch (type) {
-            case CREDIT -> creditHandler.handle(a, amount, out);
-            case DEBIT -> debitHandler.handle(a, amount, out);
-            case TRANSFER -> transferHandler.handle(a, b, amount, out);
-            case APPROVE -> approveHandler.approve(a, b, amount, out);
-            case INCREASE_ALLOWANCE -> approveHandler.increase(a, b, amount, out);
-            case DECREASE_ALLOWANCE -> approveHandler.decrease(a, b, amount, out);
-            case DELEGATED_TRANSFER -> delegatedTransferHandler.handle(a, b, c, amount, out);
+            case CREDIT -> creditHandler.handle(asset, a, amount, out);
+            case DEBIT -> debitHandler.handle(asset, a, amount, out);
+            case TRANSFER -> transferHandler.handle(asset, a, b, amount, out);
+            case APPROVE -> approveHandler.approve(asset, a, b, amount, out);
+            case INCREASE_ALLOWANCE -> approveHandler.increase(asset, a, b, amount, out);
+            case DECREASE_ALLOWANCE -> approveHandler.decrease(asset, a, b, amount, out);
+            case DELEGATED_TRANSFER -> delegatedTransferHandler.handle(asset, a, b, c, amount, out);
+            case RESERVE -> reserveHandler.reserve(asset, a, amount, out);
+            case CAPTURE -> reserveHandler.capture(asset, a, b, amount, out);
+            case RELEASE -> reserveHandler.release(asset, a, amount, out);
             case NULL_VAL -> out.status(com.adbe.protocol.StatusCode.INVALID_AMOUNT);
         }
     }

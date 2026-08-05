@@ -46,13 +46,15 @@ public final class DedupTable {
             final long balance,
             final boolean hasBalance,
             final long allowance,
-            final boolean hasAllowance) {
+            final boolean hasAllowance,
+            final long reserved,
+            final boolean hasReserved) {
         DedupRing ring = perClient.get(clientId);
         if (ring == null) {
             ring = new DedupRing(window);
             perClient.put(clientId, ring);
         }
-        return ring.put(seq, idHi, idLo, status, balance, hasBalance, allowance, hasAllowance);
+        return ring.put(seq, idHi, idLo, status, balance, hasBalance, allowance, hasAllowance, reserved, hasReserved);
     }
 
     public int clientCount() {
@@ -99,7 +101,9 @@ public final class DedupTable {
                         ring.resultBalance(seq),
                         ring.hasBalance(seq),
                         ring.resultAllowance(seq),
-                        ring.hasAllowance(seq));
+                        ring.hasAllowance(seq),
+                        ring.resultReserved(seq),
+                        ring.hasReserved(seq));
             }
         }
     }
@@ -116,6 +120,8 @@ public final class DedupTable {
                 long resultBalance,
                 boolean hasBalance,
                 long resultAllowance,
-                boolean hasAllowance);
+                boolean hasAllowance,
+                long resultReserved,
+                boolean hasReserved);
     }
 }

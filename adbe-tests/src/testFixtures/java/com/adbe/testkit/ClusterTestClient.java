@@ -72,13 +72,28 @@ public final class ClusterTestClient implements EgressListener, AutoCloseable {
         }
     }
 
-    /** Encodes and reliably offers one command to the cluster. */
+    /** Encodes and reliably offers one command (default asset {@code 0}) to the cluster. */
     public void send(
             final long clientId,
             final long clientSeq,
             final long commandIdHi,
             final long commandIdLo,
             final CommandType type,
+            final long accountA,
+            final long accountB,
+            final long accountC,
+            final long amount) {
+        send(clientId, clientSeq, commandIdHi, commandIdLo, type, 0L, accountA, accountB, accountC, amount);
+    }
+
+    /** Encodes and reliably offers one command on a given asset to the cluster. */
+    public void send(
+            final long clientId,
+            final long clientSeq,
+            final long commandIdHi,
+            final long commandIdLo,
+            final CommandType type,
+            final long assetId,
             final long accountA,
             final long accountB,
             final long accountC,
@@ -95,7 +110,8 @@ public final class ClusterTestClient implements EgressListener, AutoCloseable {
                 .accountB(accountB)
                 .amount(amount)
                 .correlationId(CommandEnvelopeEncoder.correlationIdNullValue())
-                .accountC(accountC);
+                .accountC(accountC)
+                .assetId(assetId);
 
         final int length = MessageHeaderEncoder.ENCODED_LENGTH + envelopeEncoder.encodedLength();
         long result;

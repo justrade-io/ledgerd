@@ -97,7 +97,11 @@ public final class BalanceService implements io.aeron.cluster.service.ClusteredS
                 .resultAllowance(
                         outcome.hasAllowance()
                                 ? outcome.resultAllowance()
-                                : CommandResultEncoder.resultAllowanceNullValue());
+                                : CommandResultEncoder.resultAllowanceNullValue())
+                .resultReserved(
+                        outcome.hasReserved()
+                                ? outcome.resultReserved()
+                                : CommandResultEncoder.resultReservedNullValue());
 
         final int msgLength = MessageHeaderEncoder.ENCODED_LENGTH + resultEncoder.encodedLength();
         offerToSession(session, msgLength);

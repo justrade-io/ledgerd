@@ -26,8 +26,11 @@
 #      data, proving the snapshot load path end to end.
 #   10. Archive failover (ADR 0008): kill the write member whose Archive the read
 #      node follows (node 0); the cluster keeps committing (quorum 2 of 3) and
-#      the read node fails over to a surviving member's Archive and converges.
-#
+#      the read node fails over to a surviving member's Archive and converges.#   11. Multi-asset + holds (ADR 0009, 0010): a scenario client writes on assets 1
+#       and 2 (credit/transfer plus reserve/capture/release), and the read node
+#       serves the correct per-asset available balances and conserved supply via
+#       the ?asset= query parameter. Held funds are inferred from the drop in
+#       available balance together with conserved supply.#
 # Usage:
 #   bash docker/verify-read.sh           # run and tear down on completion
 #   KEEP=1 bash docker/verify-read.sh    # leave the stack running afterwards
@@ -110,6 +113,12 @@ run_client() {
     ${COMPOSE} run --rm -e ADBE_CLIENT_ID="$1" client 2>&1 || true
 }
 
+# run_client_scenario <client_id> <scenario> - run the remote client with a named
+# scenario (see RemoteClientExample). Used to drive multi-asset + holds commands.
+run_client_scenario() {
+    ${COMPOSE} run --rm -e ADBE_CLIENT_ID="$1" -e ADBE_SCENARIO="$2" client 2>&1 || true
+}
+
 # trigger_snapshot - trigger a cluster snapshot via ClusterTool on every member.
 # Only the leader can take a snapshot; followers report 'not the leader' and are
 # ignored. The --add-opens flags are required by Agrona (matches the launcher).
@@ -155,6 +164,9 @@ trap cleanup EXIT
 log "Step 0: clean slate + build + up (3 write members + 1 read replica node)"
 ${COMPOSE} down --remove-orphans >/dev/null 2>&1 || true
 ${COMPOSE} up -d --build
+# The client is profile-gated and started via 'compose run', which reuses a
+# cached image; build it explicitly so scenario runs pick up the latest code.
+${COMPOSE} build client
 pass "stack started"
 
 log "Step 1: await health of all write nodes and the read node"
@@ -259,5 +271,34 @@ pass "write cluster still commits after node 0 dies (quorum survives)"
 await_contains "${READ_BASE}/supply" '"totalSupply":3000' 60
 await_health "${READ_BASE}/healthz" 60
 pass "read node failed over to a surviving archive and converged (supply=3000)"
+
+log "Step 11: multi-asset (ADR 0009) + holds (ADR 0010) end to end via ?asset="
+# A dedicated scenario client writes on fresh accounts (700/701) and assets (1, 2),
+# independent of the default-asset state above. Retry across any leader change left
+# over from node 0's death in Step 10 (same client id => idempotent retries).
+committed=""
+for _ in 1 2 3 4 5 6; do
+    out="$(run_client_scenario 7 multiasset)"
+    if echo "${out}" | grep -q "multi-asset + holds scenario committed"; then
+        committed="yes"
+        break
+    fi
+    sleep 2
+done
+[ -n "${committed}" ] || die "multi-asset + holds scenario did not commit:\n${out}"
+# Asset 1: plain multi-asset credit (1000) + transfer (400 of it, 700 -> 701).
+await_contains "${READ_BASE}/balance/700?asset=1" '"balance":600' 30
+await_contains "${READ_BASE}/balance/701?asset=1" '"balance":400' 30
+await_contains "${READ_BASE}/supply?asset=1" '"totalSupply":1000' 30
+# Asset 2: two-phase holds. credit 1000, reserve 300, capture 200 (700 -> 701),
+# release 50 leaves account 700 available at 750 and account 701 at 200; supply is
+# conserved at 1000 (reserved funds never left the total).
+await_contains "${READ_BASE}/balance/700?asset=2" '"balance":750' 30
+await_contains "${READ_BASE}/balance/701?asset=2" '"balance":200' 30
+await_contains "${READ_BASE}/supply?asset=2" '"totalSupply":1000' 30
+# Asset isolation: account 700 was never touched on the default asset 0.
+await_contains "${READ_BASE}/balance/700?asset=0" '"exists":false' 30
+await_contains "${READ_BASE}/balance/700" '"exists":false' 30
+pass "multi-asset balances/supply and two-phase holds verified across assets 1 and 2"
 
 log "ALL OPERATIONAL CHECKS PASSED"

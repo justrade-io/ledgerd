@@ -123,12 +123,13 @@ public final class QueryHttpServer implements AutoCloseable {
             final boolean keepAlive = HttpUtil.isKeepAlive(request);
             final HttpMethod method = request.method();
             final String path = stripQuery(request.uri());
+            final long assetId = assetParam(request.uri());
 
             try {
                 if (HttpMethod.GET.equals(method)) {
-                    handleGet(ctx, keepAlive, path);
+                    handleGet(ctx, keepAlive, path, assetId);
                 } else if (HttpMethod.POST.equals(method) && "/balances".equals(path)) {
-                    handleBatch(ctx, keepAlive, request.content().toString(StandardCharsets.UTF_8));
+                    handleBatch(ctx, keepAlive, request.content().toString(StandardCharsets.UTF_8), assetId);
                 } else {
                     writeJson(ctx, keepAlive, HttpResponseStatus.NOT_FOUND, "{\"error\":\"not found\"}");
                 }
@@ -137,7 +138,8 @@ public final class QueryHttpServer implements AutoCloseable {
             }
         }
 
-        private void handleGet(final ChannelHandlerContext ctx, final boolean keepAlive, final String path) {
+        private void handleGet(
+                final ChannelHandlerContext ctx, final boolean keepAlive, final String path, final long assetId) {
             if ("/healthz".equals(path)) {
                 final boolean ok = health.isHealthy();
                 final String json = "{\"status\":\"" + (ok ? "ok" : "stale") + "\",\"appliedPosition\":"
@@ -147,10 +149,10 @@ public final class QueryHttpServer implements AutoCloseable {
             } else if ("/metrics".equals(path)) {
                 writeJson(ctx, keepAlive, HttpResponseStatus.OK, metricsJson());
             } else if ("/supply".equals(path)) {
-                submitSupply(ctx, keepAlive);
+                submitSupply(ctx, keepAlive, assetId);
             } else if (path.startsWith("/balance/")) {
                 final long accountId = Long.parseLong(path.substring("/balance/".length()));
-                submitSingleBalance(ctx, keepAlive, accountId);
+                submitSingleBalance(ctx, keepAlive, assetId, accountId);
             } else if (path.startsWith("/allowance/")) {
                 final String rest = path.substring("/allowance/".length());
                 final int slash = rest.indexOf('/');
@@ -159,15 +161,16 @@ public final class QueryHttpServer implements AutoCloseable {
                 }
                 final long owner = Long.parseLong(rest.substring(0, slash));
                 final long delegate = Long.parseLong(rest.substring(slash + 1));
-                submitAllowance(ctx, keepAlive, owner, delegate);
+                submitAllowance(ctx, keepAlive, assetId, owner, delegate);
             } else {
                 writeJson(ctx, keepAlive, HttpResponseStatus.NOT_FOUND, "{\"error\":\"not found\"}");
             }
         }
 
-        private void submitSingleBalance(final ChannelHandlerContext ctx, final boolean keepAlive, final long id) {
+        private void submitSingleBalance(
+                final ChannelHandlerContext ctx, final boolean keepAlive, final long assetId, final long id) {
             final long[] ids = {id};
-            final long correlationId = gateway.submit(QueryType.BALANCE, ids, 1, (buffer, offset, length) -> {
+            final long correlationId = gateway.submit(QueryType.BALANCE, assetId, ids, 1, (buffer, offset, length) -> {
                 final boolean exists = QueryCodec.entryPresent(buffer, offset, 0);
                 final long balance = QueryCodec.entryValue(buffer, offset, 0);
                 writeJson(ctx, keepAlive, HttpResponseStatus.OK, balanceJson(id, exists, balance));
@@ -175,47 +178,55 @@ public final class QueryHttpServer implements AutoCloseable {
             afterSubmit(ctx, keepAlive, correlationId);
         }
 
-        private void handleBatch(final ChannelHandlerContext ctx, final boolean keepAlive, final String body) {
+        private void handleBatch(
+                final ChannelHandlerContext ctx, final boolean keepAlive, final String body, final long assetId) {
             final long[] ids = parseIds(body, config.maxBatchSize());
             if (ids.length == 0) {
                 writeJson(ctx, keepAlive, HttpResponseStatus.BAD_REQUEST, "{\"error\":\"no account ids\"}");
                 return;
             }
             final int count = ids.length;
-            final long correlationId = gateway.submit(QueryType.BATCH_BALANCE, ids, count, (buffer, offset, length) -> {
-                final StringBuilder sb = new StringBuilder(32 + count * 48);
-                sb.append("{\"balances\":[");
-                for (int i = 0; i < count; i++) {
-                    if (i > 0) {
-                        sb.append(',');
-                    }
-                    final boolean exists = QueryCodec.entryPresent(buffer, offset, i);
-                    final long balance = QueryCodec.entryValue(buffer, offset, i);
-                    sb.append(balanceJson(ids[i], exists, balance));
-                }
-                sb.append("]}");
-                writeJson(ctx, keepAlive, HttpResponseStatus.OK, sb.toString());
-            });
+            final long correlationId =
+                    gateway.submit(QueryType.BATCH_BALANCE, assetId, ids, count, (buffer, offset, length) -> {
+                        final StringBuilder sb = new StringBuilder(32 + count * 48);
+                        sb.append("{\"balances\":[");
+                        for (int i = 0; i < count; i++) {
+                            if (i > 0) {
+                                sb.append(',');
+                            }
+                            final boolean exists = QueryCodec.entryPresent(buffer, offset, i);
+                            final long balance = QueryCodec.entryValue(buffer, offset, i);
+                            sb.append(balanceJson(ids[i], exists, balance));
+                        }
+                        sb.append("]}");
+                        writeJson(ctx, keepAlive, HttpResponseStatus.OK, sb.toString());
+                    });
             afterSubmit(ctx, keepAlive, correlationId);
         }
 
         private void submitAllowance(
-                final ChannelHandlerContext ctx, final boolean keepAlive, final long owner, final long delegate) {
+                final ChannelHandlerContext ctx,
+                final boolean keepAlive,
+                final long assetId,
+                final long owner,
+                final long delegate) {
             final long[] operands = {owner, delegate};
-            final long correlationId = gateway.submit(QueryType.ALLOWANCE, operands, 2, (buffer, offset, length) -> {
-                final long allowance = QueryCodec.entryValue(buffer, offset, 0);
-                final String json =
-                        "{\"owner\":" + owner + ",\"delegate\":" + delegate + ",\"allowance\":" + allowance + "}";
-                writeJson(ctx, keepAlive, HttpResponseStatus.OK, json);
-            });
+            final long correlationId =
+                    gateway.submit(QueryType.ALLOWANCE, assetId, operands, 2, (buffer, offset, length) -> {
+                        final long allowance = QueryCodec.entryValue(buffer, offset, 0);
+                        final String json = "{\"owner\":" + owner + ",\"delegate\":" + delegate + ",\"allowance\":"
+                                + allowance + "}";
+                        writeJson(ctx, keepAlive, HttpResponseStatus.OK, json);
+                    });
             afterSubmit(ctx, keepAlive, correlationId);
         }
 
-        private void submitSupply(final ChannelHandlerContext ctx, final boolean keepAlive) {
-            final long correlationId = gateway.submit(QueryType.TOTAL_SUPPLY, EMPTY, 0, (buffer, offset, length) -> {
-                final long supply = QueryCodec.entryValue(buffer, offset, 0);
-                writeJson(ctx, keepAlive, HttpResponseStatus.OK, "{\"totalSupply\":" + supply + "}");
-            });
+        private void submitSupply(final ChannelHandlerContext ctx, final boolean keepAlive, final long assetId) {
+            final long correlationId =
+                    gateway.submit(QueryType.TOTAL_SUPPLY, assetId, EMPTY, 0, (buffer, offset, length) -> {
+                        final long supply = QueryCodec.entryValue(buffer, offset, 0);
+                        writeJson(ctx, keepAlive, HttpResponseStatus.OK, "{\"totalSupply\":" + supply + "}");
+                    });
             afterSubmit(ctx, keepAlive, correlationId);
         }
 
@@ -275,6 +286,23 @@ public final class QueryHttpServer implements AutoCloseable {
     private static String stripQuery(final String uri) {
         final int q = uri.indexOf('?');
         return q < 0 ? uri : uri.substring(0, q);
+    }
+
+    /** Parses the optional {@code ?asset=} query parameter; defaults to asset 0. */
+    private static long assetParam(final String uri) {
+        final int q = uri.indexOf("asset=");
+        if (q < 0) {
+            return 0L;
+        }
+        int end = q + "asset=".length();
+        final int start = end;
+        while (end < uri.length() && uri.charAt(end) != '&') {
+            end++;
+        }
+        if (end == start) {
+            return 0L;
+        }
+        return Long.parseLong(uri.substring(start, end));
     }
 
     /** Extracts up to {@code max} signed decimal integers from arbitrary text. */

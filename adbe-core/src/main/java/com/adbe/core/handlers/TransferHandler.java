@@ -18,12 +18,13 @@ public final class TransferHandler {
         this.balances = balances;
     }
 
-    public void handle(final long fromId, final long toId, final long amount, final CommandOutcome out) {
+    public void handle(
+            final long assetId, final long fromId, final long toId, final long amount, final CommandOutcome out) {
         if (Amounts.isNegative(amount)) {
             out.status(StatusCode.INVALID_AMOUNT);
             return;
         }
-        final long fromBalance = balances.rawGet(fromId);
+        final long fromBalance = balances.rawGet(assetId, fromId);
         if (fromBalance == BalanceStore.MISSING) {
             out.status(StatusCode.INVALID_ACCOUNT);
             return;
@@ -38,14 +39,14 @@ public final class TransferHandler {
             out.status(StatusCode.SUCCESS);
             return;
         }
-        final long toRaw = balances.rawGet(toId);
+        final long toRaw = balances.rawGet(assetId, toId);
         final long toBase = toRaw == BalanceStore.MISSING ? 0L : toRaw;
         if (Amounts.addOverflows(toBase, amount)) {
             out.status(StatusCode.OVERFLOW);
             return;
         }
-        balances.set(fromId, fromBalance - amount);
-        balances.set(toId, toBase + amount);
+        balances.set(assetId, fromId, fromBalance - amount);
+        balances.set(assetId, toId, toBase + amount);
         out.balance(fromBalance - amount);
         out.status(StatusCode.SUCCESS);
     }

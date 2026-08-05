@@ -17,6 +17,7 @@ public final class WorkloadGenerator {
     private static final CommandType[] TYPES = CommandType.values();
     private static final int CLIENTS = 4;
     private static final int ACCOUNTS = 8;
+    private static final int ASSETS = 3;
 
     private WorkloadGenerator() {}
 
@@ -31,13 +32,14 @@ public final class WorkloadGenerator {
         for (int i = 0; i < count; i++) {
             final int client = random.nextInt(CLIENTS);
             final CommandType type = pickType(random);
+            final long asset = random.nextInt(ASSETS);
             final long a = 1L + random.nextInt(ACCOUNTS);
             final long b = 1L + random.nextInt(ACCOUNTS);
             final long c = 1L + random.nextInt(ACCOUNTS);
             final long amount = 1L + random.nextInt(1000);
             final long seq = nextSeq[client]++;
             commandId++;
-            engine.process(fixtures.encode(client + 1L, seq, 0L, commandId, type, a, b, c, amount), outcome);
+            engine.process(fixtures.encode(client + 1L, seq, 0L, commandId, type, asset, a, b, c, amount), outcome);
         }
     }
 

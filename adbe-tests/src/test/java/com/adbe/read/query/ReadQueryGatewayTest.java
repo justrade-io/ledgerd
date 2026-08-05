@@ -27,11 +27,12 @@ class ReadQueryGatewayTest {
             final boolean[] present = {false};
             final CountDownLatch done = new CountDownLatch(1);
 
-            final long correlationId = gateway.submit(QueryType.BALANCE, new long[] {42L}, 1, (buffer, offset, len) -> {
-                present[0] = QueryCodec.entryPresent(buffer, offset, 0);
-                observed[0] = QueryCodec.entryValue(buffer, offset, 0);
-                done.countDown();
-            });
+            final long correlationId =
+                    gateway.submit(QueryType.BALANCE, 0L, new long[] {42L}, 1, (buffer, offset, len) -> {
+                        present[0] = QueryCodec.entryPresent(buffer, offset, 0);
+                        observed[0] = QueryCodec.entryValue(buffer, offset, 0);
+                        done.countDown();
+                    });
             assertTrue(correlationId > 0, "correlation id assigned");
 
             // Stand in for the single service thread: decode the request, answer 777.
@@ -57,8 +58,8 @@ class ReadQueryGatewayTest {
     void cancelPreventsCompletion() throws InterruptedException {
         try (ReadQueryGateway gateway = new ReadQueryGateway(1 << 16, 1 << 16)) {
             final AtomicBoolean called = new AtomicBoolean(false);
-            final long correlationId =
-                    gateway.submit(QueryType.TOTAL_SUPPLY, new long[0], 0, (buffer, offset, len) -> called.set(true));
+            final long correlationId = gateway.submit(
+                    QueryType.TOTAL_SUPPLY, 0L, new long[0], 0, (buffer, offset, len) -> called.set(true));
 
             assertTrue(gateway.cancel(correlationId), "pending cancelled");
 
@@ -93,7 +94,7 @@ class ReadQueryGatewayTest {
             boolean rejected = false;
             int accepted = 0;
             for (int i = 0; i < 100_000; i++) {
-                final long id = gateway.submit(QueryType.BALANCE, new long[] {1L}, 1, (buffer, offset, len) -> {});
+                final long id = gateway.submit(QueryType.BALANCE, 0L, new long[] {1L}, 1, (buffer, offset, len) -> {});
                 if (id == ReadQueryGateway.NO_CAPACITY) {
                     rejected = true;
                     break;
@@ -110,7 +111,7 @@ class ReadQueryGatewayTest {
     void roundTripsQueryCodec() {
         final UnsafeBuffer buffer = new UnsafeBuffer(new byte[QueryCodec.maxMessageLength()]);
         final long[] operands = {1L, 2L, 3L};
-        final int len = QueryCodec.encodeRequest(buffer, 99L, QueryType.BATCH_BALANCE, operands, 3);
+        final int len = QueryCodec.encodeRequest(buffer, 99L, QueryType.BATCH_BALANCE, 0L, operands, 3);
         assertTrue(len > 0);
         assertEquals(99L, QueryCodec.correlationId(buffer, 0));
         assertEquals(QueryType.BATCH_BALANCE, QueryCodec.queryType(buffer, 0));

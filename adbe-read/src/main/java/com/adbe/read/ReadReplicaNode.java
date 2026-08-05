@@ -593,17 +593,18 @@ public final class ReadReplicaNode implements AutoCloseable {
             case BALANCE -> answerBalances(correlationId, buffer, index, 1);
             case BATCH_BALANCE -> answerBalances(correlationId, buffer, index, QueryCodec.count(buffer, index));
             case ALLOWANCE -> answerAllowance(correlationId, buffer, index);
-            case TOTAL_SUPPLY -> answerTotalSupply(correlationId);
+            case TOTAL_SUPPLY -> answerTotalSupply(correlationId, buffer, index);
         }
     }
 
     private void answerBalances(
             final long correlationId, final DirectBuffer request, final int reqIndex, final int accountCount) {
         final BalanceStore balances = engine.balances();
+        final long assetId = QueryCodec.assetId(request, reqIndex);
         QueryCodec.beginResponse(responseBuffer, correlationId, QueryType.BATCH_BALANCE, accountCount);
         for (int i = 0; i < accountCount; i++) {
             final long accountId = QueryCodec.operand(request, reqIndex, i);
-            final long balance = balances.rawGet(accountId);
+            final long balance = balances.rawGet(assetId, accountId);
             final boolean exists = balance != BalanceStore.MISSING;
             QueryCodec.putEntry(responseBuffer, i, exists ? balance : 0L, exists);
         }
@@ -612,16 +613,18 @@ public final class ReadReplicaNode implements AutoCloseable {
 
     private void answerAllowance(final long correlationId, final DirectBuffer request, final int reqIndex) {
         final AllowanceStore allowances = engine.allowances();
+        final long assetId = QueryCodec.assetId(request, reqIndex);
         final long ownerId = QueryCodec.operand(request, reqIndex, 0);
         final long delegateId = QueryCodec.operand(request, reqIndex, 1);
-        final long allowance = allowances.get(ownerId, delegateId);
+        final long allowance = allowances.get(assetId, ownerId, delegateId);
         QueryCodec.beginResponse(responseBuffer, correlationId, QueryType.ALLOWANCE, 1);
         QueryCodec.putEntry(responseBuffer, 0, allowance, true);
         gateway.offerResponse(responseBuffer, 0, QueryCodec.responseLength(1));
     }
 
-    private void answerTotalSupply(final long correlationId) {
-        final long supply = engine.balances().totalSupply();
+    private void answerTotalSupply(final long correlationId, final DirectBuffer request, final int reqIndex) {
+        final long assetId = QueryCodec.assetId(request, reqIndex);
+        final long supply = engine.balances().totalSupply(assetId);
         QueryCodec.beginResponse(responseBuffer, correlationId, QueryType.TOTAL_SUPPLY, 1);
         QueryCodec.putEntry(responseBuffer, 0, supply, true);
         gateway.offerResponse(responseBuffer, 0, QueryCodec.responseLength(1));

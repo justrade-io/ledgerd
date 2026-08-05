@@ -68,7 +68,8 @@ public class BalanceEngineBenchmark {
                 .accountB(0L)
                 .amount(amount)
                 .correlationId(CommandEnvelopeEncoder.correlationIdNullValue())
-                .accountC(0L);
+                .accountC(0L)
+                .assetId(0L);
     }
 
     private CommandEnvelopeDecoder wrapDecoder() {
@@ -85,7 +86,7 @@ public class BalanceEngineBenchmark {
 
     @Benchmark
     public long mapLookup() {
-        return engine.balances().rawGet(1L);
+        return engine.balances().rawGet(0L, 1L);
     }
 
     @Benchmark

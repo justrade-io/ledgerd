@@ -17,20 +17,20 @@ public final class CreditHandler {
         this.balances = balances;
     }
 
-    public void handle(final long accountId, final long amount, final CommandOutcome out) {
+    public void handle(final long assetId, final long accountId, final long amount, final CommandOutcome out) {
         if (Amounts.isNegative(amount)) {
             out.status(StatusCode.INVALID_AMOUNT);
             return;
         }
-        final long raw = balances.rawGet(accountId);
+        final long raw = balances.rawGet(assetId, accountId);
         final long base = raw == BalanceStore.MISSING ? 0L : raw;
         if (Amounts.addOverflows(base, amount)) {
             out.status(StatusCode.OVERFLOW);
             return;
         }
         final long updated = base + amount;
-        balances.set(accountId, updated);
-        balances.adjustTotalSupply(amount);
+        balances.set(assetId, accountId, updated);
+        balances.adjustTotalSupply(assetId, amount);
         out.balance(updated);
         out.status(StatusCode.SUCCESS);
     }

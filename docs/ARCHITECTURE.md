@@ -206,10 +206,18 @@ intermediate objects. Little-endian, fixed field order.
 | `CommandEnvelope`| 1           | Command submitted by the Edge on behalf of a client|
 | `CommandResult`  | 2           | Exactly one deterministic result per command       |
 | `SnapshotHeader` | 10          | First snapshot record: log position, counts, supply|
-| `BalanceEntry`   | 11          | One account balance (ascending account id)         |
-| `AllowanceEntry` | 12          | One allowance (ascending owner, delegate)          |
+| `BalanceEntry`   | 11          | One account balance (ascending assetId, accountId) |
+| `AllowanceEntry` | 12          | One allowance (ascending assetId, owner, delegate) |
 | `DedupEntry`     | 13          | One cached result (ascending clientId, clientSeq)  |
 | `SnapshotFooter` | 14          | Terminal record with integrity checksum            |
+| `AssetSupplyEntry`| 15         | Per-asset total supply (ascending assetId)         |
+
+Schema version 2 adds an optional `assetId` to `CommandEnvelope`, `BalanceEntry`
+and `AllowanceEntry`, an optional `reserved` bucket to `BalanceEntry`, an
+optional `resultReserved` to `CommandResult` / `DedupEntry`, and the
+`AssetSupplyEntry` record (ADR 0009, ADR 0010). Absent optional fields decode to
+the default asset (0) and zero reserved, so pre-2 snapshots and log records
+replay unchanged.
 
 Optional fields (`presence="optional"`) prepare the schema for
 backward-compatible evolution, which SBE supports and which matters for reading
@@ -230,7 +238,8 @@ free of Aeron so it can run in tests; `BalanceService` adapts it to the cluster.
 | `TransferHandler`   | Atomic move between two accounts, total supply preserved                |
 | `ApproveHandler`    | Allowance overwrite, relative increase, relative decrease               |
 | `DelegatedTransferHandler` | Delegate spends owner funds, distinguishes allowance vs balance  |
-| `BalanceStore`      | `Long2LongHashMap` of balances plus the running total supply            |
+| `ReserveHandler`    | Two-phase holds: RESERVE / RELEASE / CAPTURE over available and reserved |
+| `BalanceStore`      | Per-asset `AssetBucket` (available, reserved, supply) with last-asset cache |
 | `AllowanceStore`    | Nested primitive map keyed by (owner, delegate), no lossy hashing       |
 | `DedupTable`        | Per-client `DedupRing`s providing 100% idempotency in the dedup window  |
 | `DedupRing`         | Power-of-two ring, O(1) lookup via `seq & (capacity - 1)`               |
@@ -342,13 +351,14 @@ and idempotency possible without the core knowing any real user identity.
 | `clientId`    | Session identity assigned by the Edge after authentication      |
 | `clientSeq`   | Monotonic per-client sequence; drives the dedup window          |
 | `commandId`   | Globally unique id minted at the Edge (128-bit: hi + lo)        |
-| `commandType` | CREDIT, DEBIT, TRANSFER, APPROVE, INCREASE/DECREASE_ALLOWANCE, DELEGATED_TRANSFER |
+| `commandType` | CREDIT, DEBIT, TRANSFER, APPROVE, INCREASE/DECREASE_ALLOWANCE, DELEGATED_TRANSFER, RESERVE, CAPTURE, RELEASE |
 | `accountA/B/C`| Operands (from/owner, to/delegate, delegated-transfer target)   |
+| `assetId`     | Asset dimension of the command; 0 is the default asset          |
 | `amount`      | 64-bit signed value with a fixed scale                          |
 
 The reply is a `CommandResult` carrying the original `commandId` and a
 `StatusCode`: SUCCESS, INSUFFICIENT_BALANCE, INSUFFICIENT_ALLOWANCE,
-INVALID_ACCOUNT, DUPLICATE, OVERFLOW, INVALID_AMOUNT.
+INVALID_ACCOUNT, DUPLICATE, OVERFLOW, INVALID_AMOUNT, INSUFFICIENT_RESERVED.
 
 ---
 

@@ -196,7 +196,15 @@ needed.
 | `INCREASE_ALLOWANCE`  | no           | yes            | `resultAllowance` = updated allowance     |
 | `DECREASE_ALLOWANCE`  | no           | yes            | `resultAllowance` = updated allowance     |
 | `DELEGATED_TRANSFER`  | yes          | yes            | owner's new balance; remaining allowance  |
+| `RESERVE`             | yes          | no             | `resultBalance` = available after reserve |
+| `RELEASE`             | yes          | no             | `resultBalance` = available after release |
+| `CAPTURE`             | yes          | no             | `resultBalance` = from's available        |
 | Any error status      | no           | no             | both fields absent                        |
+
+The wire `CommandResult` also carries an optional `resultReserved` (remaining
+held balance) for the holds commands; the current `ResultHandler` callback does
+not surface it. Held funds are observable as a reduced available balance with
+conserved total supply.
 
 ---
 
@@ -401,13 +409,16 @@ Every command is wrapped in a `CommandEnvelope` (SBE-encoded) with the following
 | `clientSeq`   | `long` | Edge        | Monotonic per-client counter. Drives the O(1) dedup slot.     |
 | `commandIdHi` | `long` | Edge        | High word of 128-bit globally unique command id.              |
 | `commandIdLo` | `long` | Edge        | Low word; returned by `submit()` for result correlation.       |
-| `commandType` | enum   | Edge        | One of the seven command types below.                         |
+| `commandType` | enum   | Edge        | One of the ten command types below.                         |
 | `accountA`    | `long` | caller      | Primary account operand (sender, owner, or delegate).         |
 | `accountB`    | `long` | caller      | Secondary operand (recipient, delegate).                      |
 | `accountC`    | `long` | caller      | Tertiary operand (recipient in DELEGATED_TRANSFER; else `0`). |
 | `amount`      | `long` | caller      | Non-negative 64-bit fixed-scale value.                        |
+| `assetId`     | `long` | caller      | Asset dimension; `0` is the default asset (ADR 0009).         |
 
-`submit(type, accountA, accountB, accountC, amount)` - argument order matches this table.
+`submit(type, accountA, accountB, accountC, amount)` targets the default asset
+(`0`); `submit(type, assetId, accountA, accountB, accountC, amount)` targets a
+specific asset. Argument order otherwise matches this table.
 
 ---
 
@@ -422,6 +433,16 @@ Every command is wrapped in a `CommandEnvelope` (SBE-encoded) with the following
 | `INCREASE_ALLOWANCE`  | owner        | delegate    | (unused)    | `resultAllowance` = new allowance      | `INVALID_AMOUNT`, `OVERFLOW`                                      |
 | `DECREASE_ALLOWANCE`  | owner        | delegate    | (unused)    | `resultAllowance` = new allowance      | `INVALID_AMOUNT`, `INSUFFICIENT_ALLOWANCE`                        |
 | `DELEGATED_TRANSFER`  | delegate     | owner       | recipient   | `resultBalance` + `resultAllowance`    | `INVALID_AMOUNT`, `INSUFFICIENT_ALLOWANCE`, `INVALID_ACCOUNT`, `INSUFFICIENT_BALANCE`, `OVERFLOW` |
+| `RESERVE`             | account      | (unused)    | (unused)    | `resultBalance` = available; `resultReserved` = held | `INVALID_AMOUNT`, `INVALID_ACCOUNT`, `INSUFFICIENT_BALANCE` |
+| `CAPTURE`             | from         | to          | (unused)    | `resultBalance` = from's available; `resultReserved` = from's remaining held | `INVALID_AMOUNT`, `INVALID_ACCOUNT`, `INSUFFICIENT_RESERVED`, `OVERFLOW` |
+| `RELEASE`             | account      | (unused)    | (unused)    | `resultBalance` = available; `resultReserved` = held | `INVALID_AMOUNT`, `INVALID_ACCOUNT`, `INSUFFICIENT_RESERVED` |
+
+All commands carry an optional `assetId` (default `0`). Balances, allowances,
+and supply are isolated per asset (ADR 0009). `RESERVE` / `CAPTURE` / `RELEASE`
+are the two-phase holds commands (ADR 0010): `RESERVE` moves funds from an
+account's `available` to its `reserved` bucket, `RELEASE` moves them back, and
+`CAPTURE` settles held funds from `from`'s reserved bucket into `to`'s available
+balance. Total supply is conserved by all three.
 
 ---
 
@@ -517,6 +538,34 @@ submit(DELEGATED_TRANSFER, delegate, owner, recipient, amount)
 
 ---
 
+### RESERVE / RELEASE / CAPTURE (two-phase holds)
+
+Each account's balance is split per asset into an `available` bucket and a
+`reserved` bucket (ADR 0010). Total supply is conserved by all three commands.
+
+```
+submit(RESERVE, assetId, account, 0,  0, amount)   // available -> reserved
+submit(RELEASE, assetId, account, 0,  0, amount)   // reserved  -> available
+submit(CAPTURE, assetId, from,    to, 0, amount)   // from.reserved -> to.available
+```
+
+- `RESERVE` fails `INVALID_ACCOUNT` if the account is unknown and
+  `INSUFFICIENT_BALANCE` if `available < amount`.
+- `RELEASE` and `CAPTURE` fail `INSUFFICIENT_RESERVED` if `reserved < amount`.
+- `CAPTURE` is a settlement transfer (funds move within the ledger), not a
+  withdrawal; a withdrawal of held funds is `RELEASE` then `DEBIT`.
+- On `SUCCESS`, `resultBalance` is the acting account's available balance and
+  `resultReserved` is its remaining held balance.
+
+### Multi-asset
+
+Every command carries an optional `assetId` (default `0`). Balances, allowances,
+and total supply are isolated per asset: an allowance approved on one asset never
+authorizes spending another (ADR 0009). A single-asset deployment simply sends
+`assetId = 0` everywhere and behaves exactly as before.
+
+---
+
 ## 9. Status Codes
 
 | Code                    | Value | Meaning                                                             | When to expect                                                  |
@@ -528,6 +577,7 @@ submit(DELEGATED_TRANSFER, delegate, owner, recipient, amount)
 | `DUPLICATE`             | 4     | Cached result returned; command was not re-applied.                 | Retransmit of same `(clientId, clientSeq, commandId)`.          |
 | `OVERFLOW`              | 5     | Operation would push balance or allowance above `Long.MAX_VALUE`.   | CREDIT large amount, TRANSFER recipient, INCREASE_ALLOWANCE, DELEGATED_TRANSFER recipient. |
 | `INVALID_AMOUNT`        | 6     | `amount` is negative.                                               | Any command submitted with `amount < 0`.                        |
+| `INSUFFICIENT_RESERVED` | 7     | Reserved (held) balance is less than the requested amount.          | RELEASE, CAPTURE (held funds too low).                          |
 | `NULL_VAL`              | -1    | Uninitialized sentinel; never returned by the engine.               | Check `hasBalance`/`hasAllowance` rather than comparing to this value. |
 
 On any non-`SUCCESS` status (including `DUPLICATE`), `hasBalance` and `hasAllowance` are both
@@ -739,6 +789,10 @@ for the full reference.
 
 - A missing account returns HTTP 200 with `{"exists":false}` (not 404), so batch responses stay
   uniform. The `balance` field is omitted when `exists` is false.
+- All read endpoints accept an optional `?asset=<id>` query parameter (default `0`) to target a
+  specific asset (ADR 0009), e.g. `GET /balance/100?asset=1`, `GET /supply?asset=1`. Balances
+  returned are the account's `available` funds; reserved (held) funds are not exposed directly but
+  are reflected as a lower available balance with conserved supply (ADR 0010).
 - `POST /balances` accepts any JSON or text body containing the account ids; every signed decimal
   integer in the body is treated as an id, up to `maxBatchSize` (default 512). Example body:
   `{"ids":[100,200,999]}`.
@@ -750,6 +804,9 @@ for the full reference.
 ```bash
 curl http://localhost:8080/balance/100
 # {"account":100,"exists":true,"balance":350}
+
+curl "http://localhost:8080/balance/100?asset=1"
+# {"account":100,"exists":false}   # asset 1 untouched; default asset is 0
 
 curl -X POST http://localhost:8080/balances -d '{"ids":[100,200,999]}'
 # {"balances":[{"account":100,"exists":true,"balance":350},

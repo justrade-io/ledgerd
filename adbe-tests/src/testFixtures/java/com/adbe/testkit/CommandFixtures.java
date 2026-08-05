@@ -22,13 +22,28 @@ public final class CommandFixtures {
     private final MessageHeaderDecoder headerDecoder = new MessageHeaderDecoder();
     private final CommandEnvelopeDecoder decoder = new CommandEnvelopeDecoder();
 
-    /** Encodes a command and returns a decoder wrapped at its body. */
+    /** Encodes a command on the default asset ({@code 0}) and returns a wrapped decoder. */
     public CommandEnvelopeDecoder encode(
             final long clientId,
             final long clientSeq,
             final long commandIdHi,
             final long commandIdLo,
             final CommandType type,
+            final long accountA,
+            final long accountB,
+            final long accountC,
+            final long amount) {
+        return encode(clientId, clientSeq, commandIdHi, commandIdLo, type, 0L, accountA, accountB, accountC, amount);
+    }
+
+    /** Encodes a command on a given asset and returns a decoder wrapped at its body. */
+    public CommandEnvelopeDecoder encode(
+            final long clientId,
+            final long clientSeq,
+            final long commandIdHi,
+            final long commandIdLo,
+            final CommandType type,
+            final long assetId,
             final long accountA,
             final long accountB,
             final long accountC,
@@ -44,7 +59,8 @@ public final class CommandFixtures {
                 .accountB(accountB)
                 .amount(amount)
                 .correlationId(CommandEnvelopeEncoder.correlationIdNullValue())
-                .accountC(accountC);
+                .accountC(accountC)
+                .assetId(assetId);
 
         headerDecoder.wrap(buffer, 0);
         decoder.wrap(buffer, MessageHeaderDecoder.ENCODED_LENGTH, headerDecoder.blockLength(), headerDecoder.version());

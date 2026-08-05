@@ -41,20 +41,20 @@ public class ReadQueryBenchmark {
         engine = new BalanceEngine(CoreConfig.of(1 << 16, 1024, 8, 1024, 1024), new CoreMetrics());
         final BalanceStore balances = engine.balances();
         for (int i = 0; i < ACCOUNTS; i++) {
-            balances.set(i, (i + 1) * 10L);
+            balances.set(0L, i, (i + 1) * 10L);
         }
 
         singleRequest = new UnsafeBuffer(new byte[QueryCodec.maxMessageLength()]);
         batchRequest = new UnsafeBuffer(new byte[QueryCodec.maxMessageLength()]);
         response = new UnsafeBuffer(new byte[QueryCodec.maxMessageLength()]);
 
-        QueryCodec.encodeRequest(singleRequest, 1L, QueryType.BALANCE, new long[] {ACCOUNTS / 2}, 1);
+        QueryCodec.encodeRequest(singleRequest, 1L, QueryType.BALANCE, 0L, new long[] {ACCOUNTS / 2}, 1);
 
         final long[] ids = new long[BATCH];
         for (int i = 0; i < BATCH; i++) {
             ids[i] = (i * 97) % ACCOUNTS;
         }
-        QueryCodec.encodeRequest(batchRequest, 2L, QueryType.BATCH_BALANCE, ids, BATCH);
+        QueryCodec.encodeRequest(batchRequest, 2L, QueryType.BATCH_BALANCE, 0L, ids, BATCH);
     }
 
     @Benchmark
@@ -73,7 +73,7 @@ public class ReadQueryBenchmark {
         QueryCodec.beginResponse(response, correlationId, QueryType.BATCH_BALANCE, count);
         for (int i = 0; i < count; i++) {
             final long id = QueryCodec.operand(request, 0, i);
-            final long balance = balances.rawGet(id);
+            final long balance = balances.rawGet(0L, id);
             final boolean exists = balance != BalanceStore.MISSING;
             QueryCodec.putEntry(response, i, exists ? balance : 0L, exists);
         }

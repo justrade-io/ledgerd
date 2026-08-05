@@ -67,12 +67,16 @@ public final class ReadQueryGateway implements AutoCloseable {
      * if the request ring is full (the caller should reject with backpressure).
      */
     public long submit(
-            final QueryType type, final long[] operands, final int operandCount, final ReadCallback callback) {
+            final QueryType type,
+            final long assetId,
+            final long[] operands,
+            final int operandCount,
+            final ReadCallback callback) {
         final long correlationId = correlationSeq.getAndIncrement();
         pending.put(correlationId, callback);
 
         final UnsafeBuffer buffer = encodeBuffer.get();
-        final int length = QueryCodec.encodeRequest(buffer, correlationId, type, operands, operandCount);
+        final int length = QueryCodec.encodeRequest(buffer, correlationId, type, assetId, operands, operandCount);
         if (!requestRing.write(QueryCodec.MSG_TYPE_ID, buffer, 0, length)) {
             pending.remove(correlationId);
             overloads.incrementAndGet();

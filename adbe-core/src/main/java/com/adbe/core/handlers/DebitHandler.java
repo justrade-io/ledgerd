@@ -18,12 +18,12 @@ public final class DebitHandler {
         this.balances = balances;
     }
 
-    public void handle(final long accountId, final long amount, final CommandOutcome out) {
+    public void handle(final long assetId, final long accountId, final long amount, final CommandOutcome out) {
         if (Amounts.isNegative(amount)) {
             out.status(StatusCode.INVALID_AMOUNT);
             return;
         }
-        final long current = balances.rawGet(accountId);
+        final long current = balances.rawGet(assetId, accountId);
         if (current == BalanceStore.MISSING) {
             out.status(StatusCode.INVALID_ACCOUNT);
             return;
@@ -33,8 +33,8 @@ public final class DebitHandler {
             return;
         }
         final long updated = current - amount;
-        balances.set(accountId, updated);
-        balances.adjustTotalSupply(-amount);
+        balances.set(assetId, accountId, updated);
+        balances.adjustTotalSupply(assetId, -amount);
         out.balance(updated);
         out.status(StatusCode.SUCCESS);
     }

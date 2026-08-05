@@ -106,6 +106,15 @@ public final class AdbeClient implements EgressListener, AutoCloseable {
     }
 
     /**
+     * Submits a command on the default asset ({@code 0}). Convenience overload of
+     * {@link #submit(CommandType, long, long, long, long, long)}.
+     */
+    public long submit(
+            final CommandType type, final long accountA, final long accountB, final long accountC, final long amount) {
+        return submit(type, 0L, accountA, accountB, accountC, amount);
+    }
+
+    /**
      * Encodes and submits a command, returning its low command-id word for
      * correlation. The command is retried automatically (reusing the same id)
      * until acknowledged, on timeout or leader change.
@@ -114,7 +123,12 @@ public final class AdbeClient implements EgressListener, AutoCloseable {
      *     must poll and retry rather than have the command silently dropped.
      */
     public long submit(
-            final CommandType type, final long accountA, final long accountB, final long accountC, final long amount) {
+            final CommandType type,
+            final long assetId,
+            final long accountA,
+            final long accountB,
+            final long accountC,
+            final long amount) {
 
         if (freeTop == 0) {
             backpressureEvents++;
@@ -138,7 +152,8 @@ public final class AdbeClient implements EgressListener, AutoCloseable {
                 .accountB(accountB)
                 .amount(amount)
                 .correlationId(CommandEnvelopeEncoder.correlationIdNullValue())
-                .accountC(accountC);
+                .accountC(accountC)
+                .assetId(assetId);
 
         pc.length = MessageHeaderEncoder.ENCODED_LENGTH + envelopeEncoder.encodedLength();
         pc.submitNanos = System.nanoTime();

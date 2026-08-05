@@ -24,19 +24,26 @@ Mode : JMH average time, -PquickBench smoke run
 Results
 -------
 Benchmark                              (accounts)  Mode  Cnt       Score   Units
-BalanceEngineBenchmark.creditDispatch         N/A  avgt           19.205  ns/op
-BalanceEngineBenchmark.decodeEnvelope         N/A  avgt            1.907  ns/op
-BalanceEngineBenchmark.mapLookup              N/A  avgt            0.720  ns/op
-SnapshotBenchmark.snapshotWrite              1024  avgt         2651.633  us/op
-SnapshotBenchmark.snapshotWrite             16384  avgt        21254.898  us/op
-SnapshotBenchmark.snapshotRead               1024  avgt         8578.149  us/op
-SnapshotBenchmark.snapshotRead              16384  avgt       113264.049  us/op
+BalanceEngineBenchmark.creditDispatch         N/A  avgt           21.535  ns/op
+BalanceEngineBenchmark.decodeEnvelope         N/A  avgt            1.901  ns/op
+BalanceEngineBenchmark.mapLookup              N/A  avgt            0.754  ns/op
+SnapshotBenchmark.snapshotWrite              1024  avgt         3627.783  us/op
+SnapshotBenchmark.snapshotWrite             16384  avgt        17458.514  us/op
+SnapshotBenchmark.snapshotRead               1024  avgt        10107.138  us/op
+SnapshotBenchmark.snapshotRead              16384  avgt       137459.474  us/op
+
+Note: this baseline was refreshed for the multi-asset + holds work (ADR 0009,
+ADR 0010). The command key gained an asset dimension ((assetId, accountId)), so
+`creditDispatch` moved from 19.2 ns to ~21.5 ns - roughly one cached-bucket field
+compare plus a lazy-reserved null check. See the Performance section of ADR 0009
+for the justification; the figure remains an order of magnitude under the 500 ns
+dispatch budget.
 
 Budget check (docs/decisions/0002-core-budget.md)
 -------------------------------------------------
 Envelope decode       target < 100 ns   ->    1.9 ns   PASS
-Primitive map lookup  target <  50 ns   ->    0.7 ns   PASS
-Command dispatch      target < 500 ns   ->   19.2 ns   PASS
+Primitive map lookup  target <  50 ns   ->    0.8 ns   PASS
+Command dispatch      target < 500 ns   ->   21.5 ns   PASS
 
 Snapshot write/read scale with account count and are recovery-time figures, not
 steady-state hot-path latency; they are reported separately and not summed.
