@@ -1,6 +1,6 @@
 # ADBE API Reference
 
-ADBE (Aeron Deterministic Balance Engine) is a replicated, allocation-free balance engine built on Aeron
+ADBE (Aeron Distributed Balance Engine) is a replicated, allocation-free balance engine built on Aeron
 Cluster. Every command is committed via Raft, applied in total order on a single thread, and acknowledged
 with a deterministic `StatusCode`. This document covers the complete client integration surface.
 
