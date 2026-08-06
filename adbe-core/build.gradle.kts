@@ -29,6 +29,12 @@ jmh {
     ))
     resultFormat.set("JSON")
     resultsFile.set(layout.buildDirectory.file("results/jmh/results.json"))
+    // -Pjmh.profilers=gc attaches JMH profilers (e.g. the GC allocation profiler
+    // used to confirm zero steady-state allocation on the hot path).
+    if (project.hasProperty("jmh.profilers")) {
+        profilers.set((project.property("jmh.profilers") as String)
+            .split(",").map { it.trim() }.filter { it.isNotEmpty() })
+    }
     // -PquickBench: fast smoke run used by the CI gate.
     if (project.hasProperty("quickBench")) {
         warmupIterations.set(1)

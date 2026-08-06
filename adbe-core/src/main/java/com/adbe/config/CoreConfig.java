@@ -25,23 +25,32 @@ public final class CoreConfig {
     /** Default dedup window size (most recent commands retained per client). */
     public static final int DEFAULT_DEDUP_WINDOW = 1 << 10;
 
+    /** Default event-journal ring capacity in bytes (power of two, ADR 0011). */
+    public static final int DEFAULT_EVENT_JOURNAL_CAPACITY = 1 << 20;
+
     private final int accountCapacity;
     private final int allowanceOwnerCapacity;
     private final int delegateCapacity;
     private final int dedupClientCapacity;
     private final int dedupWindow;
+    private final boolean eventJournalEnabled;
+    private final int eventJournalCapacity;
 
     private CoreConfig(
             final int accountCapacity,
             final int allowanceOwnerCapacity,
             final int delegateCapacity,
             final int dedupClientCapacity,
-            final int dedupWindow) {
+            final int dedupWindow,
+            final boolean eventJournalEnabled,
+            final int eventJournalCapacity) {
         this.accountCapacity = requirePowerOfTwo(accountCapacity, "accountCapacity");
         this.allowanceOwnerCapacity = requirePowerOfTwo(allowanceOwnerCapacity, "allowanceOwnerCapacity");
         this.delegateCapacity = requirePowerOfTwo(delegateCapacity, "delegateCapacity");
         this.dedupClientCapacity = requirePowerOfTwo(dedupClientCapacity, "dedupClientCapacity");
         this.dedupWindow = requirePowerOfTwo(dedupWindow, "dedupWindow");
+        this.eventJournalEnabled = eventJournalEnabled;
+        this.eventJournalCapacity = requirePowerOfTwo(eventJournalCapacity, "eventJournalCapacity");
     }
 
     /** Returns a configuration populated with the documented defaults. */
@@ -51,7 +60,9 @@ public final class CoreConfig {
                 DEFAULT_ALLOWANCE_OWNER_CAPACITY,
                 DEFAULT_DELEGATE_CAPACITY,
                 DEFAULT_DEDUP_CLIENT_CAPACITY,
-                DEFAULT_DEDUP_WINDOW);
+                DEFAULT_DEDUP_WINDOW,
+                false,
+                DEFAULT_EVENT_JOURNAL_CAPACITY);
     }
 
     /** Returns a configuration with explicit capacities; each must be a power of two. */
@@ -62,7 +73,36 @@ public final class CoreConfig {
             final int dedupClientCapacity,
             final int dedupWindow) {
         return new CoreConfig(
-                accountCapacity, allowanceOwnerCapacity, delegateCapacity, dedupClientCapacity, dedupWindow);
+                accountCapacity,
+                allowanceOwnerCapacity,
+                delegateCapacity,
+                dedupClientCapacity,
+                dedupWindow,
+                false,
+                DEFAULT_EVENT_JOURNAL_CAPACITY);
+    }
+
+    /**
+     * Returns a copy of this configuration with the domain event journal enabled
+     * (ADR 0011), using a ring of {@code capacity} bytes (a power of two).
+     */
+    public CoreConfig withEventJournal(final int capacity) {
+        return new CoreConfig(
+                accountCapacity,
+                allowanceOwnerCapacity,
+                delegateCapacity,
+                dedupClientCapacity,
+                dedupWindow,
+                true,
+                capacity);
+    }
+
+    public boolean eventJournalEnabled() {
+        return eventJournalEnabled;
+    }
+
+    public int eventJournalCapacity() {
+        return eventJournalCapacity;
     }
 
     public int accountCapacity() {

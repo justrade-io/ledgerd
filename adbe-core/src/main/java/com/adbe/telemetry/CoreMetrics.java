@@ -28,6 +28,7 @@ public final class CoreMetrics {
     private long backpressureEvents;
     private long leaderElections;
     private long dedupEvicted;
+    private long eventJournalOverflow;
     private long lastSnapshotWriteNanos;
     private long lastSnapshotReadNanos;
     private long balanceCount;
@@ -97,6 +98,14 @@ public final class CoreMetrics {
         sink.increment(Counter.DEDUP_EVICTED);
     }
 
+    // The event-journal ring was full when the service thread tried to write a
+    // domain event; the record was not enqueued. A rising count means the
+    // journaler cannot keep up and the ring must be sized larger (ADR 0011).
+    public void onEventJournalOverflow() {
+        eventJournalOverflow++;
+        sink.increment(Counter.EVENT_JOURNAL_OVERFLOW);
+    }
+
     public void snapshotWriteNanos(final long nanos) {
         this.lastSnapshotWriteNanos = nanos;
         sink.set(CounterSink.Gauge.SNAPSHOT_WRITE_NANOS, nanos);
@@ -163,6 +172,10 @@ public final class CoreMetrics {
 
     public long dedupEvicted() {
         return dedupEvicted;
+    }
+
+    public long eventJournalOverflow() {
+        return eventJournalOverflow;
     }
 
     public long lastSnapshotWriteNanos() {

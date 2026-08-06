@@ -2,6 +2,7 @@ package com.adbe.core.handlers;
 
 import com.adbe.collections.BalanceStore;
 import com.adbe.core.CommandOutcome;
+import com.adbe.protocol.EventCause;
 import com.adbe.protocol.StatusCode;
 import com.adbe.util.Amounts;
 
@@ -32,6 +33,7 @@ public final class CreditHandler {
         balances.set(assetId, accountId, updated);
         balances.adjustTotalSupply(assetId, amount);
         out.balance(updated);
+        out.addBalanceChanged(assetId, accountId, updated, amount, EventCause.CREDIT);
         out.status(StatusCode.SUCCESS);
     }
 }

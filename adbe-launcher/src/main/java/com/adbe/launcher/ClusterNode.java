@@ -2,6 +2,7 @@ package com.adbe.launcher;
 
 import com.adbe.config.CoreConfig;
 import com.adbe.core.BalanceService;
+import com.adbe.pipeline.EventJournalRing;
 import com.adbe.telemetry.AtomicCounterSink;
 import com.adbe.telemetry.CoreMetrics;
 import com.adbe.telemetry.CounterSink;
@@ -48,6 +49,7 @@ public final class ClusterNode implements AutoCloseable {
     private final ClusteredServiceContainer container;
     private final CoreMetrics metrics;
     private final CountersManager countersManager;
+    private final EventJournaler eventJournaler;
 
     /** Launches a node that clears prior state on start (fresh cluster). */
     public ClusterNode(final ClusterConfig config, final CoreConfig coreConfig) {
@@ -114,11 +116,12 @@ public final class ClusterNode implements AutoCloseable {
                 .archiveContext(archiveClientContext.clone())
                 .deleteDirOnStart(cleanStart);
 
+        final ClusteredService service = serviceFactory.create(coreConfig, metrics);
         final ClusteredServiceContainer.Context serviceContext = new ClusteredServiceContainer.Context()
                 .aeronDirectoryName(config.aeronDirectoryName())
                 .archiveContext(archiveClientContext.clone())
                 .clusterDir(config.clusterDir())
-                .clusteredService(serviceFactory.create(coreConfig, metrics));
+                .clusteredService(service);
 
         this.clusteredMediaDriver =
                 ClusteredMediaDriver.launch(mediaDriverContext, archiveContext, consensusModuleContext);
@@ -127,6 +130,31 @@ public final class ClusterNode implements AutoCloseable {
         } catch (final RuntimeException e) {
             // Do not leak the media driver (and its non-daemon agent threads) if
             // the service container fails to start.
+            clusteredMediaDriver.close();
+            throw e;
+        }
+
+        this.eventJournaler = startJournalerIfEnabled(config, coreConfig, service, archiveClientContext);
+    }
+
+    // Starts the domain event journaler when the hosted service is a BalanceService
+    // with journaling enabled (ADR 0011). Returns null otherwise.
+    private EventJournaler startJournalerIfEnabled(
+            final ClusterConfig config,
+            final CoreConfig coreConfig,
+            final ClusteredService service,
+            final AeronArchive.Context archiveClientContext) {
+        if (!coreConfig.eventJournalEnabled() || !(service instanceof BalanceService)) {
+            return null;
+        }
+        final EventJournalRing ring = ((BalanceService) service).eventRing();
+        if (ring == null) {
+            return null;
+        }
+        try {
+            return new EventJournaler(config.aeronDirectoryName(), archiveClientContext, ring);
+        } catch (final RuntimeException e) {
+            container.close();
             clusteredMediaDriver.close();
             throw e;
         }
@@ -172,6 +200,9 @@ public final class ClusterNode implements AutoCloseable {
 
     @Override
     public void close() {
+        if (eventJournaler != null) {
+            eventJournaler.close();
+        }
         if (container != null) {
             container.close();
         }

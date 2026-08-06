@@ -3,6 +3,7 @@ package com.adbe.core.handlers;
 import com.adbe.collections.AllowanceStore;
 import com.adbe.collections.BalanceStore;
 import com.adbe.core.CommandOutcome;
+import com.adbe.protocol.EventCause;
 import com.adbe.protocol.StatusCode;
 import com.adbe.util.Amounts;
 
@@ -53,6 +54,7 @@ public final class DelegatedTransferHandler {
             allowances.set(assetId, ownerId, delegateId, remaining);
             out.balance(ownerBalance);
             out.allowance(remaining);
+            out.addAllowanceChanged(assetId, ownerId, delegateId, remaining);
             out.status(StatusCode.SUCCESS);
             return;
         }
@@ -68,6 +70,10 @@ public final class DelegatedTransferHandler {
         allowances.set(assetId, ownerId, delegateId, remainingAllowance);
         out.balance(ownerBalance - amount);
         out.allowance(remainingAllowance);
+        out.addBalanceChanged(assetId, ownerId, ownerBalance - amount, -amount, EventCause.DELEGATED_DEBIT);
+        out.addBalanceChanged(assetId, toId, toBase + amount, amount, EventCause.DELEGATED_CREDIT);
+        out.addTransfer(assetId, ownerId, toId, amount);
+        out.addAllowanceChanged(assetId, ownerId, delegateId, remainingAllowance);
         out.status(StatusCode.SUCCESS);
     }
 }

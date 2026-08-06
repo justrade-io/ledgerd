@@ -2,6 +2,7 @@ package com.adbe.core.handlers;
 
 import com.adbe.collections.BalanceStore;
 import com.adbe.core.CommandOutcome;
+import com.adbe.protocol.EventCause;
 import com.adbe.protocol.StatusCode;
 import com.adbe.util.Amounts;
 
@@ -42,6 +43,7 @@ public final class ReserveHandler {
         balances.setReserved(assetId, accountId, newReserved);
         out.balance(newAvailable);
         out.reserved(newReserved);
+        out.addHold(CommandOutcome.EventKind.RESERVED, assetId, accountId, newAvailable, newReserved);
         out.status(StatusCode.SUCCESS);
     }
 
@@ -67,6 +69,7 @@ public final class ReserveHandler {
         balances.setReserved(assetId, accountId, newReserved);
         out.balance(newAvailable);
         out.reserved(newReserved);
+        out.addHold(CommandOutcome.EventKind.RELEASED, assetId, accountId, newAvailable, newReserved);
         out.status(StatusCode.SUCCESS);
     }
 
@@ -98,6 +101,7 @@ public final class ReserveHandler {
             balances.setReserved(assetId, fromId, newReserved);
             out.balance(newAvailable);
             out.reserved(newReserved);
+            out.addHold(CommandOutcome.EventKind.CAPTURED, assetId, fromId, newAvailable, newReserved);
             out.status(StatusCode.SUCCESS);
             return;
         }
@@ -112,6 +116,9 @@ public final class ReserveHandler {
         balances.set(assetId, toId, toBase + amount);
         out.balance(fromAvailable);
         out.reserved(newReserved);
+        out.addHold(CommandOutcome.EventKind.CAPTURED, assetId, fromId, fromAvailable, newReserved);
+        out.addBalanceChanged(assetId, toId, toBase + amount, amount, EventCause.TRANSFER_CREDIT);
+        out.addTransfer(assetId, fromId, toId, amount);
         out.status(StatusCode.SUCCESS);
     }
 }

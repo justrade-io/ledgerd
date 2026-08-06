@@ -27,6 +27,7 @@ public final class ApproveHandler {
         }
         allowances.set(assetId, ownerId, delegateId, limit);
         out.allowance(limit);
+        out.addAllowanceChanged(assetId, ownerId, delegateId, limit);
         out.status(StatusCode.SUCCESS);
     }
 
@@ -45,6 +46,7 @@ public final class ApproveHandler {
         final long updated = current + delta;
         allowances.set(assetId, ownerId, delegateId, updated);
         out.allowance(updated);
+        out.addAllowanceChanged(assetId, ownerId, delegateId, updated);
         out.status(StatusCode.SUCCESS);
     }
 
@@ -63,6 +65,7 @@ public final class ApproveHandler {
         final long updated = current - delta;
         allowances.set(assetId, ownerId, delegateId, updated);
         out.allowance(updated);
+        out.addAllowanceChanged(assetId, ownerId, delegateId, updated);
         out.status(StatusCode.SUCCESS);
     }
 }

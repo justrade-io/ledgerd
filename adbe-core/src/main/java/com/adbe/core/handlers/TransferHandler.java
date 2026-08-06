@@ -2,6 +2,7 @@ package com.adbe.core.handlers;
 
 import com.adbe.collections.BalanceStore;
 import com.adbe.core.CommandOutcome;
+import com.adbe.protocol.EventCause;
 import com.adbe.protocol.StatusCode;
 import com.adbe.util.Amounts;
 
@@ -48,6 +49,9 @@ public final class TransferHandler {
         balances.set(assetId, fromId, fromBalance - amount);
         balances.set(assetId, toId, toBase + amount);
         out.balance(fromBalance - amount);
+        out.addBalanceChanged(assetId, fromId, fromBalance - amount, -amount, EventCause.TRANSFER_DEBIT);
+        out.addBalanceChanged(assetId, toId, toBase + amount, amount, EventCause.TRANSFER_CREDIT);
+        out.addTransfer(assetId, fromId, toId, amount);
         out.status(StatusCode.SUCCESS);
     }
 }

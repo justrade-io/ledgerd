@@ -24,7 +24,7 @@ Mode : JMH average time, -PquickBench smoke run
 Results
 -------
 Benchmark                              (accounts)  Mode  Cnt       Score   Units
-BalanceEngineBenchmark.creditDispatch         N/A  avgt           21.535  ns/op
+BalanceEngineBenchmark.creditDispatch         N/A  avgt           24.500  ns/op
 BalanceEngineBenchmark.decodeEnvelope         N/A  avgt            1.901  ns/op
 BalanceEngineBenchmark.mapLookup              N/A  avgt            0.754  ns/op
 SnapshotBenchmark.snapshotWrite              1024  avgt         3627.783  us/op
@@ -38,6 +38,14 @@ ADR 0010). The command key gained an asset dimension ((assetId, accountId)), so
 compare plus a lazy-reserved null check. See the Performance section of ADR 0009
 for the justification; the figure remains an order of magnitude under the 500 ns
 dispatch budget.
+
+Note: refreshed again for the domain event journal (ADR 0011). Every command now
+records its semantic events into the reused CommandOutcome descriptor buffer, so
+`creditDispatch` moved from ~21.5 ns to ~24.5 ns - a few preallocated field
+stores per event. It remains allocation-free (gc.alloc.rate.norm ~ 0 B/op,
+confirmed with -Pjmh.profilers=gc) and ~20x under the 500 ns dispatch budget. The
+separate SBE-encode-and-ring-write step runs in BalanceService (off the engine
+micro-benchmark) only when journaling is enabled.
 
 Budget check (docs/decisions/0002-core-budget.md)
 -------------------------------------------------

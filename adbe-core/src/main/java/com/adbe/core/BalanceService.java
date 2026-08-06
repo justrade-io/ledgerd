@@ -1,11 +1,21 @@
 package com.adbe.core;
 
+import com.adbe.collections.BalanceStore;
 import com.adbe.config.CoreConfig;
 import com.adbe.persistence.SnapshotManager;
+import com.adbe.pipeline.EventJournalRing;
+import com.adbe.protocol.AllowanceChangedEventEncoder;
+import com.adbe.protocol.BalanceChangedEventEncoder;
+import com.adbe.protocol.CapturedEventEncoder;
 import com.adbe.protocol.CommandEnvelopeDecoder;
+import com.adbe.protocol.CommandRejectedEventEncoder;
 import com.adbe.protocol.CommandResultEncoder;
 import com.adbe.protocol.MessageHeaderDecoder;
 import com.adbe.protocol.MessageHeaderEncoder;
+import com.adbe.protocol.ReleasedEventEncoder;
+import com.adbe.protocol.ReservedEventEncoder;
+import com.adbe.protocol.StatusCode;
+import com.adbe.protocol.TransferEventEncoder;
 import com.adbe.telemetry.CoreMetrics;
 import io.aeron.ExclusivePublication;
 import io.aeron.Image;
@@ -31,6 +41,7 @@ import org.agrona.concurrent.UnsafeBuffer;
 public final class BalanceService implements io.aeron.cluster.service.ClusteredService {
 
     private static final int EGRESS_BUFFER_LENGTH = 128;
+    private static final int EVENT_BUFFER_LENGTH = 64;
 
     private final BalanceEngine engine;
     private final SnapshotManager snapshotManager;
@@ -43,6 +54,20 @@ public final class BalanceService implements io.aeron.cluster.service.ClusteredS
     private final CommandOutcome outcome = new CommandOutcome();
     private final UnsafeBuffer egressBuffer = new UnsafeBuffer(new byte[EGRESS_BUFFER_LENGTH]);
 
+    // Domain event journal (ADR 0011): encoders and ring are only allocated when
+    // journaling is enabled, so a non-journaling node pays nothing.
+    private final boolean journalEnabled;
+    private final EventJournalRing eventRing;
+    private final MessageHeaderEncoder eventHeaderEncoder = new MessageHeaderEncoder();
+    private final BalanceChangedEventEncoder balanceChangedEncoder = new BalanceChangedEventEncoder();
+    private final ReservedEventEncoder reservedEncoder = new ReservedEventEncoder();
+    private final CapturedEventEncoder capturedEncoder = new CapturedEventEncoder();
+    private final ReleasedEventEncoder releasedEncoder = new ReleasedEventEncoder();
+    private final TransferEventEncoder transferEncoder = new TransferEventEncoder();
+    private final AllowanceChangedEventEncoder allowanceChangedEncoder = new AllowanceChangedEventEncoder();
+    private final CommandRejectedEventEncoder commandRejectedEncoder = new CommandRejectedEventEncoder();
+    private final UnsafeBuffer eventBuffer = new UnsafeBuffer(new byte[EVENT_BUFFER_LENGTH]);
+
     private Cluster cluster;
     private IdleStrategy idleStrategy;
 
@@ -50,6 +75,8 @@ public final class BalanceService implements io.aeron.cluster.service.ClusteredS
         this.metrics = metrics;
         this.engine = new BalanceEngine(config, metrics);
         this.snapshotManager = new SnapshotManager();
+        this.journalEnabled = config.eventJournalEnabled();
+        this.eventRing = journalEnabled ? new EventJournalRing(config.eventJournalCapacity()) : null;
     }
 
     @Override
@@ -82,8 +109,11 @@ public final class BalanceService implements io.aeron.cluster.service.ClusteredS
                 messageHeaderDecoder.blockLength(),
                 messageHeaderDecoder.version());
 
-        engine.process(envelopeDecoder, outcome);
+        final boolean duplicate = engine.process(envelopeDecoder, outcome);
         sendResult(session);
+        if (journalEnabled && !duplicate) {
+            journalEvents(timestamp);
+        }
     }
 
     private void sendResult(final ClientSession session) {
@@ -123,6 +153,135 @@ public final class BalanceService implements io.aeron.cluster.service.ClusteredS
             }
             metrics.onBackpressure();
             idleStrategy.idle();
+        }
+    }
+
+    /** The event-journal ring drained by the launcher's journaler, or null when disabled. */
+    public EventJournalRing eventRing() {
+        return eventRing;
+    }
+
+    // Encodes the domain events recorded for the command just applied (ADR 0011).
+    // A rejected command emits one CommandRejectedEvent; a successful command
+    // emits the events its handler recorded. Runs only on a fresh (non-duplicate)
+    // apply, after the ACK, on the single-writer thread.
+    private void journalEvents(final long timestamp) {
+        final long logPosition = cluster.logPosition();
+        if (outcome.status() != StatusCode.SUCCESS) {
+            encodeRejected(logPosition, timestamp);
+            return;
+        }
+        final int count = outcome.eventCount();
+        for (int i = 0; i < count; i++) {
+            encodeEvent(outcome.event(i), i, logPosition, timestamp);
+        }
+    }
+
+    private void encodeRejected(final long logPosition, final long timestamp) {
+        long asset = envelopeDecoder.assetId();
+        if (asset == CommandEnvelopeDecoder.assetIdNullValue()) {
+            asset = BalanceStore.DEFAULT_ASSET;
+        }
+        commandRejectedEncoder
+                .wrapAndApplyHeader(eventBuffer, 0, eventHeaderEncoder)
+                .logPosition(logPosition)
+                .timestamp(timestamp)
+                .eventIndex(0)
+                .assetId(asset)
+                .accountId(envelopeDecoder.accountA())
+                .amount(envelopeDecoder.amount())
+                .commandType(envelopeDecoder.commandType())
+                .reason(outcome.status());
+        offerEvent(MessageHeaderEncoder.ENCODED_LENGTH + commandRejectedEncoder.encodedLength());
+    }
+
+    private void encodeEvent(
+            final CommandOutcome.EventRecord e, final int index, final long logPosition, final long timestamp) {
+        int length = 0;
+        switch (e.kind()) {
+            case BALANCE_CHANGED -> {
+                balanceChangedEncoder
+                        .wrapAndApplyHeader(eventBuffer, 0, eventHeaderEncoder)
+                        .logPosition(logPosition)
+                        .timestamp(timestamp)
+                        .eventIndex(index)
+                        .assetId(e.assetId())
+                        .accountId(e.accountA())
+                        .newBalance(e.valueA())
+                        .delta(e.valueB())
+                        .cause(e.cause());
+                length = MessageHeaderEncoder.ENCODED_LENGTH + balanceChangedEncoder.encodedLength();
+            }
+            case RESERVED -> {
+                reservedEncoder
+                        .wrapAndApplyHeader(eventBuffer, 0, eventHeaderEncoder)
+                        .logPosition(logPosition)
+                        .timestamp(timestamp)
+                        .eventIndex(index)
+                        .assetId(e.assetId())
+                        .accountId(e.accountA())
+                        .newAvailable(e.valueA())
+                        .newReserved(e.valueB());
+                length = MessageHeaderEncoder.ENCODED_LENGTH + reservedEncoder.encodedLength();
+            }
+            case CAPTURED -> {
+                capturedEncoder
+                        .wrapAndApplyHeader(eventBuffer, 0, eventHeaderEncoder)
+                        .logPosition(logPosition)
+                        .timestamp(timestamp)
+                        .eventIndex(index)
+                        .assetId(e.assetId())
+                        .accountId(e.accountA())
+                        .newAvailable(e.valueA())
+                        .newReserved(e.valueB());
+                length = MessageHeaderEncoder.ENCODED_LENGTH + capturedEncoder.encodedLength();
+            }
+            case RELEASED -> {
+                releasedEncoder
+                        .wrapAndApplyHeader(eventBuffer, 0, eventHeaderEncoder)
+                        .logPosition(logPosition)
+                        .timestamp(timestamp)
+                        .eventIndex(index)
+                        .assetId(e.assetId())
+                        .accountId(e.accountA())
+                        .newAvailable(e.valueA())
+                        .newReserved(e.valueB());
+                length = MessageHeaderEncoder.ENCODED_LENGTH + releasedEncoder.encodedLength();
+            }
+            case TRANSFER -> {
+                transferEncoder
+                        .wrapAndApplyHeader(eventBuffer, 0, eventHeaderEncoder)
+                        .logPosition(logPosition)
+                        .timestamp(timestamp)
+                        .eventIndex(index)
+                        .assetId(e.assetId())
+                        .fromAccount(e.accountA())
+                        .toAccount(e.accountB())
+                        .amount(e.valueA());
+                length = MessageHeaderEncoder.ENCODED_LENGTH + transferEncoder.encodedLength();
+            }
+            case ALLOWANCE_CHANGED -> {
+                allowanceChangedEncoder
+                        .wrapAndApplyHeader(eventBuffer, 0, eventHeaderEncoder)
+                        .logPosition(logPosition)
+                        .timestamp(timestamp)
+                        .eventIndex(index)
+                        .assetId(e.assetId())
+                        .ownerId(e.accountA())
+                        .delegateId(e.accountB())
+                        .newAllowance(e.valueA());
+                length = MessageHeaderEncoder.ENCODED_LENGTH + allowanceChangedEncoder.encodedLength();
+            }
+            default -> length = 0;
+        }
+        if (length > 0) {
+            offerEvent(length);
+        }
+    }
+
+    private void offerEvent(final int length) {
+        if (!eventRing.write(eventBuffer, 0, length)) {
+            metrics.onEventJournalOverflow();
         }
     }
 
