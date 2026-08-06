@@ -724,8 +724,8 @@ Reads are served by a read replica node:
   `TRANSFER`, which the egress stream never carries. Read replica nodes are NOT
   cluster members: they do not vote, do not affect quorum, and can be added,
   removed, or restarted independently. See
-  [ADR 0006](decisions/0006-read replica-snapshot-read-nodes.md) and
-  [ADR 0007](decisions/0007-read replica-only-read-side.md).
+  [ADR 0006](decisions/0006-read-replica-nodes.md) and
+  [ADR 0007](decisions/0007-read-replica-only-read-side.md).
 
 **Consistency**: reads are eventually consistent with bounded staleness. With
 live log following (the default), staleness is the live log replay delay

@@ -16,6 +16,8 @@ observability for ADBE operators and SREs. For the client integration surface se
 6. [CoreConfig Capacity Reference](#6-coreconfig-capacity-reference)
 7. [Prometheus Metrics](#7-prometheus-metrics)
 8. [Read Service (HTTP Query API)](#8-read-service-http-query-api)
+9. [Domain Event Journal](#9-domain-event-journal)
+10. [AI Risk Service](#10-ai-risk-service)
 
 ---
 
@@ -58,6 +60,9 @@ must set them explicitly.
 
 # Expose Prometheus metrics on port 9100.
 ./gradlew :adbe-launcher:run -Dadbe.metricsPort=9100
+
+# Enable the opt-in domain event journal (ADR 0011); records to Archive stream 108.
+./gradlew :adbe-launcher:run -Dadbe.eventJournal=true
 ```
 
 ### Properties file (production)
@@ -408,3 +413,88 @@ failover after killing the followed member):
 ```bash
 bash docker/verify-read.sh
 ```
+
+---
+
+## 9. Domain Event Journal
+
+The write cluster can emit a deterministic stream of semantic domain events
+(balance changed, transfer, allowance changed, reservation, rejection) on a
+dedicated egress path, off the consensus hot path (ADR 0011). Downstream
+consumers - AI risk, audit, analytics - follow it without re-executing the
+engine.
+
+### Enabling the journal
+
+Journaling is opt-in. Off by default, so nodes that do not need it pay nothing.
+
+| Deployment | How to enable |
+|------------|---------------|
+| Gradle / manual | `-Dadbe.eventJournal=true` (optionally `-Dadbe.eventJournalCapacity=<power-of-two>`) |
+| Docker | `ADBE_EVENT_JOURNAL=true` in the service environment (set for all members in `docker-compose.yml`) |
+
+When enabled, each member records its own event stream to its Archive on stream
+id 108 via the `EventJournaler` agent, which runs on its own thread off the
+single-writer consensus thread. Because every member records independently, a
+consumer follows any reachable member and fails over to the next on failure,
+deduplicating by `(logPosition, eventIndex)` (reuses ADR 0008 failover).
+
+### Verifying the journal
+
+A standalone verifier follows the recorded event stream and checks it against the
+applied commands:
+
+```bash
+# Docker: follow the members' event journal and verify.
+docker compose run --rm event-verifier
+```
+
+The verifier ships in the `adbe-read` distribution (`EventJournalVerifier`); the
+Docker `event-verifier` target reuses that image.
+
+---
+
+## 10. AI Risk Service
+
+The AI risk service (`adbe-risk`) is an Edge consumer of the domain event journal
+(ADR 0012). It follows the members' recorded event stream, scores accounts live
+for transaction velocity and money-flow graph centrality, and serves a dashboard
+plus JSON over HTTP. Like the read replica, it is NOT a Raft member: it does not
+vote, does not affect quorum, and can be added, removed, or restarted
+independently. It requires the write cluster to run with the event journal
+enabled (Section 9).
+
+### Running the risk service
+
+```bash
+# Gradle (development): follow local member Archives, serve the dashboard.
+ADBE_ARCHIVE_CHANNELS="aeron:udp?endpoint=localhost:20104,aeron:udp?endpoint=localhost:20204,aeron:udp?endpoint=localhost:20304" \
+    ./gradlew :adbe-risk:run
+```
+
+Recognised environment variables (localhost defaults, mirroring `adbe-read`):
+
+| Variable                | Required | Default                              | Description                                            |
+|-------------------------|:--------:|--------------------------------------|--------------------------------------------------------|
+| `ADBE_ARCHIVE_CHANNELS` | no*      | `aeron:udp?endpoint=localhost:20104` | Comma-separated Archive control channels, one per member; fails over across them. |
+| `ADBE_ARCHIVE_CHANNEL`  | no*      | `aeron:udp?endpoint=localhost:20104` | Single Archive control channel (legacy fallback).      |
+| `ADBE_LOCAL_HOST`       | no       | `localhost`                          | Routable host for Archive call-backs. Set to the container address in Docker. |
+| `ADBE_AERON_DIR`        | no       | embedded                             | Aeron media driver directory; embedded when unset.     |
+| `ADBE_HTTP_PORT`        | no       | `8090`                               | Port for the dashboard and JSON endpoints.             |
+
+\* At least one Archive endpoint is required.
+
+### Endpoints
+
+```bash
+# Docker: adbe-risk-0 serves on host port 8090.
+open http://localhost:8090/            # dashboard (velocity heatmap + transfer graph)
+curl http://localhost:8090/risk/scores # per-account risk scores (JSON)
+curl http://localhost:8090/risk/graph  # money-flow graph (JSON)
+curl http://localhost:8090/healthz     # follower health
+curl http://localhost:8090/metrics     # follower + scoring counters
+```
+
+The follower delivers every event on one agent thread, so all feature state is
+updated single-threaded; the HTTP threads only read published snapshots and never
+perturb the follower.

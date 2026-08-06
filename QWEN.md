@@ -35,16 +35,18 @@
 ## Module Architecture
 
 ```
-adbe-protocol/     SBE schema + generated flyweight codecs (zero-dependency wire contract)
-adbe-core/         Deterministic state machine: engine, handlers, stores, dedup, snapshot, telemetry
-adbe-launcher/     Aeron bootstrap: Media Driver, Archive, Consensus Module, service container, optional Prometheus endpoint
+adbe-protocol/     SBE schema + generated flyweight codecs (zero-dependency wire contract; command, snapshot, domain event journal)
+adbe-core/         Deterministic state machine: engine, handlers, stores, dedup, snapshot, event journal ring, telemetry
+adbe-launcher/     Aeron bootstrap: Media Driver, Archive, Consensus Module, service container, event journaler, optional Prometheus endpoint
 adbe-client/       Edge-side SDK: leader-change handling, idempotent retry, async correlation, backpressure (depends only on adbe-protocol)
-adbe-read/         CQRS read side: read replica node (Aeron Archive replication), answers balance/allowance/supply queries over HTTP (Netty)
+adbe-read/         CQRS read side: read replica node (Aeron Archive replication + multi-archive failover), balance/allowance/supply queries over HTTP (Netty), domain event journal follower
+adbe-risk/         Edge AI risk substrate (ADR 0012): event-journal consumer, velocity + money-flow graph scoring, HTTP dashboard
 adbe-tests/        Unit, property, integration, cluster, fault, and soak tests + testFixtures toolkit
 adbe-examples/     Runnable examples (QuickStart, RemoteClient)
+adbe-bench/        Datastore benchmark harness (ADR 0013): ADBE vs PostgreSQL vs Redis behind a common interface
 ```
 
-The hot path lives entirely in `adbe-core`. Everything else (client, launcher, read side, examples) is outside the deterministic boundary.
+The hot path lives entirely in `adbe-core`. Everything else (client, launcher, read side, risk, examples, benchmark) is outside the deterministic boundary. The domain event journal (ADR 0011) is opt-in via `CoreConfig.eventJournalEnabled`; its Aeron I/O runs on the launcher's `EventJournaler` agent, never the consensus thread.
 
 ## Key Build / Test Commands
 

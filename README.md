@@ -48,9 +48,19 @@ double-applied command or a nondeterministic replay is a correctness failure.
   retry, asynchronous result correlation, explicit backpressure signalling, and
   end-to-end HdrHistogram latency, consuming only the wire contract.
 - **CQRS Read Side**: `adbe-read` serves eventually-consistent balance, allowance,
-  and total-supply reads over HTTP (Netty). Two modes: **read replica** (default, no
-  quorum impact, external Archive replication with sub-second live log following)
-  and **cluster** (legacy, full Raft voting member). See ADR 0006.
+  and total-supply reads over HTTP (Netty). A read replica node follows a cluster
+  member's Aeron Archive (no quorum impact, sub-second live log following) and
+  fails over across every member's Archive with no leader discovery (ADR 0006,
+  0008).
+- **Domain Event Journal**: an opt-in, deterministic stream of semantic facts
+  (balance changed, transfer, allowance changed, reservation, rejection) is
+  emitted off the consensus hot path and recorded per member, giving downstream
+  consumers a decoupled fan-out substrate without re-implementing the engine
+  (ADR 0011).
+- **AI Risk Substrate**: `adbe-risk` is an Edge consumer of the event journal that
+  scores accounts live for transaction velocity and money-flow graph centrality
+  and serves a dashboard over HTTP; it is not a Raft member and never touches the
+  hot path (ADR 0012).
 - **Off-Heap Telemetry**: core counters are mirrored to a standalone off-heap
   `CountersManager` so operators can read them from another thread without
   perturbing the single-writer hot path.
@@ -228,8 +238,9 @@ single-writer hot path.
 
 ## Running a Cluster with Docker
 
-A `docker-compose.yml` brings up a local three-node Raft write cluster plus one
-read replica node, each in its own container on a shared bridge network:
+A `docker-compose.yml` brings up a local three-node Raft write cluster, one read
+replica node, and one AI risk service, each in its own container on a shared
+bridge network:
 
 ```bash
 docker compose up --build
@@ -237,14 +248,27 @@ docker compose up --build
 
 Node 0 publishes its ingress port (`20100/udp`) to the host so an external client
 can connect, and each node exposes its Prometheus endpoint (`9100`, `9101`,
-`9102` on the host). The read replica node (`adbe-read-0`) connects to node 0's
-Aeron Archive, follows the consensus log, and serves eventually-consistent reads
+`9102` on the host). The write members run with the domain event journal enabled
+(`ADBE_EVENT_JOURNAL=true`), so each records its own semantic event stream to its
+Archive (ADR 0011). The read replica node (`adbe-read-0`) connects to the members'
+Aeron Archives, follows the consensus log, and serves eventually-consistent reads
 over HTTP on host port `8080`. It is not a Raft member: it does not vote, does
 not affect quorum, and can be restarted independently (see ADR 0006 and 0007).
 
 ```bash
 curl http://localhost:8080/balance/100
 curl http://localhost:8080/supply
+```
+
+The risk service (`adbe-risk-0`) follows the members' domain event journal, scores
+accounts for transaction velocity and money-flow graph centrality, and serves a
+live dashboard on host port `8090` (ADR 0012). Like the read node, it is not a
+Raft member and never affects quorum.
+
+```bash
+open http://localhost:8090/           # dashboard
+curl http://localhost:8090/risk/scores
+curl http://localhost:8090/risk/graph
 ```
 
 The topology is supplied entirely through environment variables in the compose
@@ -258,6 +282,13 @@ results do not arrive:
 
 ```bash
 docker compose run --rm client
+```
+
+A journal verifier follows the recorded domain event stream and checks it against
+the applied commands (neither is started by default):
+
+```bash
+docker compose run --rm event-verifier
 ```
 
 An operational verification script exercises the full topology end to end - cold
@@ -293,13 +324,15 @@ flowchart TB
 
 | Module          | Responsibility                                                        |
 |-----------------|-----------------------------------------------------------------------|
-| `adbe-protocol` | SBE schema and generated flyweight codecs (wire and snapshot)         |
-| `adbe-core`     | Deterministic engine, handlers, dedup, snapshot, telemetry            |
-| `adbe-launcher` | Aeron bootstrap: Media Driver, Archive, Consensus Module, Container   |
+| `adbe-protocol` | SBE schema and generated flyweight codecs (wire, snapshot, event journal) |
+| `adbe-core`     | Deterministic engine, handlers, dedup, snapshot, event journal ring, telemetry |
+| `adbe-launcher` | Aeron bootstrap: Media Driver, Archive, Consensus Module, Container, event journaler |
 | `adbe-client`   | Edge-side SDK: leader-change handling, idempotent retry, correlation  |
-| `adbe-read`     | CQRS read side: read replica node (Archive replication), HTTP query API (Netty) |
+| `adbe-read`     | CQRS read side: read replica node (Archive replication + failover), HTTP query API (Netty), event journal follower |
+| `adbe-risk`     | Edge AI risk substrate: event-journal consumer, velocity + graph scoring, HTTP dashboard (ADR 0012) |
 | `adbe-tests`    | Unit, property, integration, cluster, fault, soak tests and fixtures  |
 | `adbe-examples` | Runnable examples (QuickStart, RemoteClient)                          |
+| `adbe-bench`    | Datastore benchmark harness: ADBE vs PostgreSQL vs Redis (ADR 0013)   |
 
 Within `adbe-core`:
 
@@ -318,6 +351,7 @@ Within `adbe-core`:
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Component map, wire format, data flows, determinism rules |
 | [docs/API-REFERENCE.md](docs/API-REFERENCE.md) | Client SDK, commands, use cases, status codes, observability |
 | [docs/OPERATIONS.md](docs/OPERATIONS.md) | Snapshot management, node restart, deployment, Prometheus metrics |
+| [docs/BENCHMARKS-VS-DATASTORES.md](docs/BENCHMARKS-VS-DATASTORES.md) | ADBE vs PostgreSQL vs Redis datastore benchmark (ADR 0013) |
 | [docs/decisions/](docs/decisions/) | Architectural decision records |
 
 ## Performance

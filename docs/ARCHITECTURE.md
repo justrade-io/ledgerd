@@ -16,8 +16,11 @@
     - [adbe-launcher - Cluster Bootstrap](#adbe-launcher---cluster-bootstrap)
     - [adbe-client - Edge Client SDK](#adbe-client---edge-client-sdk)
     - [adbe-read - Read Side (CQRS Query)](#adbe-read---read-side-cqrs-query)
+    - [adbe-risk - AI Risk Substrate](#adbe-risk---ai-risk-substrate)
+    - [adbe-bench - Datastore Benchmark](#adbe-bench---datastore-benchmark)
     - [adbe-tests - Verification and Fixtures](#adbe-tests---verification-and-fixtures)
 - [Wire Format](#wire-format)
+- [Domain Event Journal](#domain-event-journal)
 - [Data Flows](#data-flows)
     - [Flow 1 - Command Dispatch and ACK](#flow-1---command-dispatch-and-ack)
     - [Flow 2 - Idempotent Retry](#flow-2---idempotent-retry)
@@ -60,13 +63,13 @@ audit storage, analytics, and - for now - sharding and cross-shard atomicity
 
 ```
 addendum/
-|-- settings.gradle.kts             Gradle multi-module (7 modules)
+|-- settings.gradle.kts             Gradle multi-module (9 modules)
 |-- build.gradle.kts                Shared conventions: JDK 21, spotless, checkstyle, -Werror
 |-- gradle/libs.versions.toml       Version catalog (Aeron, Agrona, SBE, JMH, Netty, ...)
 |
 |-- adbe-protocol/                  SBE schema + generated flyweight codecs
 |   |-- build.gradle.kts            SbeTool code generation task
-|   +-- src/main/resources/messages.xml   CommandEnvelope, CommandResult, snapshot records
+|   +-- src/main/resources/messages.xml   CommandEnvelope, CommandResult, snapshot + event-journal records
 |
 |-- adbe-core/                      Deterministic state machine (this is the hot path)
 |   |-- build.gradle.kts            Determinism checkstyle config, JMH source set
@@ -85,16 +88,21 @@ addendum/
 |       |   |-- CommandOutcome.java          Reusable result holder (no per-command allocation)
 |       |   +-- handlers/                    Credit, Debit, Transfer, Approve, DelegatedTransfer
 |       |-- persistence/SnapshotManager.java Streaming SBE snapshot write/load
+|       |-- pipeline/
+|       |   |-- EventJournalRing.java        Off-heap SPSC ring for domain events (ADR 0011)
+|       |   +-- EventJournalStreams.java     Event journal stream id (108) constant
 |       +-- telemetry/
 |           |-- CoreMetrics.java             Single-writer counters
 |           |-- CounterSink.java             Allocation-free counter sink interface (NOOP default)
 |           +-- AtomicCounterSink.java       Off-heap AtomicCounter-backed sink for cross-thread reads
-|   +-- src/jmh/java/com/adbe/bench/         BalanceEngineBenchmark (decode, lookup, dispatch)
+|   +-- src/jmh/java/com/adbe/bench/         BalanceEngineBenchmark, SnapshotBenchmark
 |
 |-- adbe-launcher/                  Aeron component bootstrap
 |   +-- src/main/java/com/adbe/launcher/
 |       |-- ClusterConfig.java              Endpoints and directories per node
 |       |-- ClusterNode.java                Media Driver + Archive + Consensus + Service Container
+|       |-- EventJournaler.java             Drains the event ring, records stream 108 (ADR 0011)
+|       |-- MetricsHttpServer.java          Optional Prometheus /metrics + /healthz endpoint
 |       +-- ClusterLauncher.java            main(): start one node, block until terminated
 |
 |-- adbe-client/                    Edge client SDK (depends only on adbe-protocol)
@@ -107,12 +115,31 @@ addendum/
 |   +-- src/main/java/com/adbe/read/
 |       |-- query/                            QueryCodec, QueryType, ReadCallback, ReadQueryGateway
 |       |-- http/QueryHttpServer.java         Netty HTTP boundary
+|       |-- journal/                          EventJournalFollower/Subscriber/Config, DomainEventListener, EventJournalVerifier
 |       |-- config/
 |       |   |-- ReadServiceConfig.java        Immutable read config (HTTP port, ring capacities)
-|       |   +-- ReadReplicaConfig.java            Read replica node config (Archive, snapshot, live log)
+|       |   +-- ReadReplicaConfig.java        Read replica node config (Archive channels, snapshot, live log)
+|       |-- ArchiveSource.java                Multi-archive endpoint with round-robin failover (ADR 0008)
+|       |-- ReadStreams.java                  Consensus log / snapshot stream id constants
+|       |-- ReplicationHealth.java            Volatile health published for /healthz and /metrics
 |       |-- ReadReplicaNode.java              Standalone read node: embedded driver, snapshot load, live log
 |       |-- LiveLogSubscriber.java            Subscribes consensus recording, applies to engine in real time
 |       +-- ReadServiceLauncher.java          Entry point: resolve env config, run the read replica node
+|
+|-- adbe-risk/                      Edge AI risk substrate (ADR 0012, event-journal consumer)
+|   +-- src/main/java/com/adbe/risk/
+|       |-- RiskScoringService.java           DomainEventListener: single-writer feature state
+|       |-- feature/VelocityTracker.java      Per-account EWMA velocity z-score
+|       |-- feature/TransferGraph.java        Money-flow graph, degree centrality + PageRank
+|       |-- model/RiskModel.java              Weighted score + flag threshold
+|       |-- http/RiskHttpServer.java          Netty dashboard + JSON (/risk/scores, /risk/graph)
+|       +-- RiskServiceLauncher.java          Entry point: env config, follow journal, serve dashboard
+|
+|-- adbe-bench/                     Datastore benchmark harness (ADR 0013)
+|   +-- src/main/java/com/adbe/bench/
+|       |-- BenchmarkHarness.java             Runs one workload against each backend
+|       |-- store/DataStore.java              Common interface: Adbe / Postgres / Redis / Threaded
+|       +-- Reporter.java                     Throughput + latency percentile table + CSV
 |
 |-- adbe-examples/                  Runnable examples (QuickStart, RemoteClient)
 |
@@ -211,6 +238,13 @@ intermediate objects. Little-endian, fixed field order.
 | `DedupEntry`     | 13          | One cached result (ascending clientId, clientSeq)  |
 | `SnapshotFooter` | 14          | Terminal record with integrity checksum            |
 | `AssetSupplyEntry`| 15         | Per-asset total supply (ascending assetId)         |
+| `BalanceChangedEvent` | 20     | Domain event: an account balance changed (ADR 0011) |
+| `ReservedEvent`  | 21          | Domain event: funds moved from available to reserved |
+| `CapturedEvent`  | 22          | Domain event: reserved funds settled               |
+| `ReleasedEvent`  | 23          | Domain event: reserved funds returned to available |
+| `TransferEvent`  | 24          | Domain event: transfer graph edge (balances carried by paired `BalanceChangedEvent`s) |
+| `AllowanceChangedEvent` | 25   | Domain event: an allowance changed                 |
+| `CommandRejectedEvent`  | 26   | Domain event: a command was rejected               |
 
 Schema version 2 adds an optional `assetId` to `CommandEnvelope`, `BalanceEntry`
 and `AllowanceEntry`, an optional `reserved` bucket to `BalanceEntry`, an
@@ -218,6 +252,12 @@ optional `resultReserved` to `CommandResult` / `DedupEntry`, and the
 `AssetSupplyEntry` record (ADR 0009, ADR 0010). Absent optional fields decode to
 the default asset (0) and zero reserved, so pre-2 snapshots and log records
 replay unchanged.
+
+Schema version 3 (additive) adds the domain event journal messages (templateIds
+20-26) and an `EventCause` enum (ADR 0011). Every event opens with a fixed prefix
+- `logPosition`, `timestamp`, `eventIndex` - so a consumer can peek the
+`(logPosition, eventIndex)` dedup key uniformly before dispatching on templateId.
+Each framed message is at most 64 bytes (one cache line).
 
 Optional fields (`presence="optional"`) prepare the schema for
 backward-compatible evolution, which SBE supports and which matters for reading
@@ -244,6 +284,7 @@ free of Aeron so it can run in tests; `BalanceService` adapts it to the cluster.
 | `DedupTable`        | Per-client `DedupRing`s providing 100% idempotency in the dedup window  |
 | `DedupRing`         | Power-of-two ring, O(1) lookup via `seq & (capacity - 1)`               |
 | `SnapshotManager`   | Streaming SBE snapshot writer/loader with deterministic key ordering    |
+| `EventJournalRing`  | Off-heap SPSC ring the service writes semantic events into; drained by the launcher's `EventJournaler` (ADR 0011) |
 | `CoreMetrics`       | Single-writer counters (ops, duplicates, backpressure, snapshot timing) |
 | `CounterSink`       | Allocation-free sink interface; NOOP default for tests, off-heap in cluster |
 | `AtomicCounterSink` | Off-heap `AtomicCounter`-backed sink so external threads can read counters |
@@ -258,6 +299,7 @@ channel; the Archive also exposes a UDP control channel for external tools.
 |------------------|----------------------------------------------------------------|
 | `ClusterConfig`  | Endpoints and directories; `singleNodeLocalhost`, `multiNodeLocalhost`, `fromProperties` |
 | `ClusterNode`    | Launches Media Driver + Archive + Consensus Module + Container; `cleanStart` controls state reuse on restart; mirrors core counters into a standalone off-heap `CountersManager` |
+| `EventJournaler` | Drains the core's off-heap event ring and records it to the local Archive on stream 108, on its own `AgentRunner` thread off the consensus path (ADR 0011); active only when `eventJournalEnabled` |
 | `ClusterLauncher`| Entry point: start a node (single-node or `--config` properties) and block until terminated |
 | `MetricsHttpServer` | Optional Prometheus `/metrics` (and `/healthz`) endpoint exporting the off-heap counters on a daemon thread |
 
@@ -289,18 +331,24 @@ by a read replica node:
   consensus log recording (stream 100) from the last loaded snapshot position -
   or from position 0 when no snapshot has loaded yet, so it builds state
   immediately on a fresh cluster. It also loads service snapshots (stream 106)
-  as they appear, restarting the live log from the snapshot position. Reads are
+  as they appear, restarting the live log from the snapshot position. Because
+  every member records the committed log to its own Archive, the node fails over
+  across an ordered list of member Archive endpoints (`ArchiveSource`) with no
+  leader discovery (ADR 0008). Reads are
   eventually consistent with bounded staleness and are answered on the single
   agent thread, reached over a lock-free ring from the HTTP boundary, so the
   single-writer discipline holds. Read replica nodes are NOT cluster members: they do
   not vote, do not affect quorum, and can be added, removed, or restarted
-  independently. See ADR 0006 and 0007.
+  independently. See ADR 0006, 0007, and 0008.
 
 | Component            | Purpose                                                                        |
 |----------------------|--------------------------------------------------------------------------------|
 | `ReadReplicaNode`    | Standalone read node: embedded driver, Agent loop, snapshot load, live log follow, HTTP server |
 | `LiveLogSubscriber`  | Subscribes consensus recording (stream 100), parses framing, applies to engine |
-| `ReadReplicaConfig`      | Immutable read replica config: Archive channel, local host, stream IDs, poll interval, live log |
+| `ArchiveSource`      | Owns the `AeronArchive` client; round-robin failover across member Archive endpoints (ADR 0008) |
+| `ReplicationHealth`  | Volatile health (connected, applied position, failovers) published for `/healthz` and `/metrics` |
+| `ReadStreams`        | Consensus log and service snapshot stream id constants                          |
+| `ReadReplicaConfig`      | Immutable read replica config: Archive channels, local host, stream IDs, poll interval, live log |
 | `ReadQueryGateway`   | Lock-free bridge: request `ManyToOneRingBuffer`, response `OneToOneRingBuffer`, correlation dispatcher |
 | `QueryCodec`         | Fixed little-endian request/response layout over the in-process rings           |
 | `QueryType`          | Enum of read kinds (BALANCE, BATCH_BALANCE, ALLOWANCE, TOTAL_SUPPLY)            |
@@ -308,6 +356,7 @@ by a read replica node:
 | `QueryHttpServer`    | Netty HTTP boundary: routes REST reads to the gateway, completes them as JSON    |
 | `ReadServiceConfig`  | Immutable read config (HTTP port, ring capacities, request timeout, batch size)  |
 | `ReadServiceLauncher`| Entry point configured from environment variables; runs the read replica node        |
+| `journal/*`          | Domain event journal follower: `EventJournalFollower`/`Subscriber`, `DomainEventListener`, `EventJournalConfig`, and the standalone `EventJournalVerifier` (ADR 0011) |
 
 ```mermaid
 flowchart LR
@@ -320,6 +369,41 @@ flowchart LR
     DISP -->|" complete by correlationId, JSON "| NETTY
     NETTY -->|" HTTP 200 "| USER
 ```
+
+### adbe-risk - AI Risk Substrate
+
+An Edge consumer bounded context (ADR 0012), like `adbe-read`: it may use the
+system clock, Netty, and heap allocation, and it MUST NOT link the deterministic
+core hot path or join Raft. It follows the members' recorded domain event journal
+(ADR 0011, stream 108) through `adbe-read`'s `EventJournalFollower` and scores
+accounts in real time. The follower delivers every event on one agent thread, so
+`RiskScoringService` owns all feature state single-threaded; the HTTP dashboard
+thread only reads published snapshots.
+
+| Component             | Purpose                                                                       |
+|-----------------------|-------------------------------------------------------------------------------|
+| `RiskScoringService`  | `DomainEventListener`: single-writer feature state updated per event          |
+| `VelocityTracker`     | Per-account transaction velocity as an EWMA z-score against the account's own baseline |
+| `TransferGraph`       | Incremental money-flow adjacency; live degree centrality plus on-demand PageRank |
+| `RiskModel`           | Weighted combination of velocity z-score and graph centrality with a flag threshold |
+| `RiskHttpServer`      | Netty dashboard and JSON: `GET /`, `/risk/scores`, `/risk/graph`, `/healthz`, `/metrics` |
+| `RiskServiceLauncher` | Entry point: env config, follow the journal, serve the dashboard              |
+
+### adbe-bench - Datastore Benchmark
+
+Illustrative Edge infrastructure (ADR 0013), like `adbe-examples`. It runs one
+identical seeded wallet workload (`CREDIT` / `DEBIT` / `TRANSFER`) against ADBE,
+PostgreSQL, and Redis behind a common `DataStore` interface and reports throughput
+and latency percentiles side by side. It is exempt from the core determinism rules
+(it may use the system clock, `HashMap`, threads, and blocking JDBC/Redis clients)
+but still formats and lints clean. See [BENCHMARKS-VS-DATASTORES.md](BENCHMARKS-VS-DATASTORES.md).
+
+| Component          | Purpose                                                             |
+|--------------------|---------------------------------------------------------------------|
+| `BenchmarkHarness` | Drives the workload against each selected backend, collects metrics |
+| `DataStore`        | Common interface with `AdbeDataStore`, `PostgresDataStore`, `RedisDataStore`, `ThreadedDataStore` implementations |
+| `WorkloadGenerator`| Seeded pseudo-random op stream, identical across backends            |
+| `Reporter`         | Prints the comparison table and writes `results.csv`                |
 
 ### adbe-tests - Verification and Fixtures
 
@@ -359,6 +443,48 @@ and idempotency possible without the core knowing any real user identity.
 The reply is a `CommandResult` carrying the original `commandId` and a
 `StatusCode`: SUCCESS, INSUFFICIENT_BALANCE, INSUFFICIENT_ALLOWANCE,
 INVALID_ACCOUNT, DUPLICATE, OVERFLOW, INVALID_AMOUNT, INSUFFICIENT_RESERVED.
+
+---
+
+## Domain Event Journal
+
+Beyond the single `CommandResult` ACK, the core can emit a durable, deterministic
+stream of *semantic facts* ("account A debited 100, new balance 400", "A
+transferred 150 to B") on a dedicated egress path, off the consensus hot path
+(ADR 0011). This gives a decoupled fan-out substrate - AI risk, audit, analytics -
+that does not have to re-execute the engine to derive state.
+
+- **Opt-in.** Journaling is a `CoreConfig` flag (`eventJournalEnabled`, default
+  off). When disabled, the hot path skips emission entirely (one predicted
+  branch), so the read replica and tests that do not need it pay nothing.
+- **Allocation-free emission.** Handlers record the events they produce into the
+  reused `CommandOutcome` (a preallocated descriptor array). After
+  `engine.process`, `BalanceService` encodes each descriptor as an SBE flyweight
+  into a preallocated buffer and writes it to an off-heap SPSC
+  `EventJournalRing`. Rejected commands emit a single `CommandRejectedEvent`;
+  dedup hits emit nothing.
+- **Deterministic ordering.** The dedup / ordering key is
+  `(logPosition, eventIndex)`, a pure function of the replicated log, so it is
+  identical on every member. A `TRANSFER` emits two `BalanceChangedEvent`s (debit
+  and credit side) plus one `TransferEvent`, ordered by `eventIndex` and joined by
+  shared `logPosition`.
+- **Off the consensus thread.** The launcher's `EventJournaler` agent drains the
+  ring in batches and offers each record to an `ExclusivePublication` recorded by
+  the local Archive on stream 108, so Aeron I/O never runs on the single-writer
+  consensus thread.
+- **Per-member recording + consumer dedup.** Every member records its own event
+  stream, exactly as it records the consensus log (ADR 0008). A consumer follows
+  the first reachable member and, on failure, fails over to the next, deduplicating
+  by `(logPosition, eventIndex)` so a re-followed prefix is idempotent.
+
+```mermaid
+flowchart LR
+    BS["BalanceService\n(consensus thread)"] -->|" encode event "| RING["EventJournalRing\n(off-heap SPSC)"]
+    RING -->|" drain in batches "| EJ["EventJournaler\n(own AgentRunner)"]
+    EJ -->|" offer (stream 108) "| AR["Archive\n(records event stream)"]
+    AR -->|" replay + dedup "| FOL["EventJournalFollower\n(adbe-read / adbe-risk)"]
+    FOL -->|" decoded events "| CONS["DomainEventListener\n(risk, audit, analytics)"]
+```
 
 ---
 
@@ -452,14 +578,18 @@ flowchart TD
     DISPATCH -->|" TRANSFER "| H3["TransferHandler"]
     DISPATCH -->|" APPROVE / INCREASE / DECREASE "| H4["ApproveHandler"]
     DISPATCH -->|" DELEGATED_TRANSFER "| H5["DelegatedTransferHandler"]
+    DISPATCH -->|" RESERVE / CAPTURE / RELEASE "| H6["ReserveHandler"]
     H1 --> STORE["store dedup result"]
     H2 --> STORE
     H3 --> STORE
     H4 --> STORE
     H5 --> STORE
-    STORE --> SEND["encode CommandResult"]
+    H6 --> STORE
+    STORE --> EVENTS["record domain events\n(if journal enabled)"]
+    EVENTS --> SEND["encode CommandResult"]
     CACHED --> SEND
     SEND --> EGRESS["offer to session\n(retry + idle on back-pressure)"]
+    EVENTS -.->|" encode + ring write "| JRING["EventJournalRing\n(stream 108, off-thread)"]
 ```
 
 ---
@@ -492,11 +622,12 @@ fixed, and keys within each section are sorted so two nodes produce identical
 bytes.
 
 ```
-[SnapshotHeader]   logPosition, schemaVersion, counts, totalSupply
-[BalanceEntry...]  sorted by accountId
-[AllowanceEntry..] sorted by (ownerId, delegateId)
-[DedupEntry...]    sorted by (clientId, clientSeq)   <-- idempotency survives recovery
-[SnapshotFooter]   checksum (sum of balances)
+[SnapshotHeader]     logPosition, schemaVersion, counts, totalSupply
+[BalanceEntry...]    sorted by (assetId, accountId), carrying available + reserved
+[AllowanceEntry...]  sorted by (assetId, ownerId, delegateId)
+[DedupEntry...]      sorted by (clientId, clientSeq)   <-- idempotency survives recovery
+[AssetSupplyEntry..] sorted by assetId
+[SnapshotFooter]     checksum (sum of balances)
 ```
 
 On load, records are fed to `SnapshotManager.onRecord` in the same order; the
@@ -531,13 +662,22 @@ JVM must run with `--add-opens java.base/jdk.internal.misc=ALL-UNNAMED` and
 | `DedupIdempotencyTest`      | Unit        | Duplicate command applied exactly once; distinct seqs all apply |
 | `OverflowTest`              | Unit        | 64-bit boundary returns OVERFLOW; negative amount rejected |
 | `HandlerBehaviourTest`      | Unit        | Credit/debit/transfer/allowance/delegated cases and status codes |
+| `HoldsTest`                 | Unit        | RESERVE / CAPTURE / RELEASE buckets and conserved supply (ADR 0010) |
+| `MultiAssetTest`            | Unit        | Per-asset isolation of balance, allowance, and supply (ADR 0009) |
+| `EventRecordingTest`        | Unit        | Domain events emitted per command, `(logPosition, eventIndex)` order (ADR 0011) |
 | `SnapshotRoundTripTest`     | Unit        | Write then load reproduces byte-identical state and invariant |
+| `SnapshotIntegrityTest`     | Unit        | Snapshot footer checksum detects corruption                |
 | `ReplayDeterminismTest`     | Unit        | Two engines replaying the same log produce identical snapshots |
 | `AmountsPropertyTest`       | Property    | Overflow detection matches `Math.addExact` (jqwik)         |
+| `EventJournalRingTest`      | Unit        | Off-heap event ring SPSC framing and batch drain           |
 | `ReadQueryGatewayTest`      | Unit        | Query-ring correlation, cancel/orphan handling, codec round-trip |
 | `MetricsHttpServerTest`     | Unit        | Prometheus metrics and healthz HTTP endpoint               |
+| Risk feature/model tests    | Unit        | `VelocityTracker`, `TransferGraph`, `RiskModel`, `RiskScoringService` (ADR 0012) |
 | `ClusterIntegrationTest`    | Integration | End-to-end over a real single-node cluster, idempotency verified |
 | `AdbeClientIntegrationTest` | Integration | Client SDK submit/poll, command-id correlation             |
+| `EventJournalIntegrationTest` | Integration | Event journal recorded and followed end-to-end (ADR 0011)  |
+| `EventJournalFollowerIntegrationTest` | Integration | Follower dedup and multi-archive failover               |
+| `RiskServiceIntegrationTest`| Integration | Risk service scores accounts from the live journal         |
 | `ReadReplicaQueryIntegrationTest`| Integration | Read-after-write over HTTP via read replica; both sides of a transfer, malformed requests |
 | `ReadReplicaReplicationIntegrationTest` | Integration | Read replica snapshot replication end-to-end            |
 | `ReadReplicaLiveLogIntegrationTest` | Integration | Read replica live log following, sub-second staleness       |
@@ -545,7 +685,9 @@ JVM must run with `--add-opens java.base/jdk.internal.misc=ALL-UNNAMED` and
 | `MultiNodeClusterTest`      | Cluster     | Three-node leader election and committed results           |
 | `CatchUpReplayTest`         | Cluster     | Restarted node recovers its log and rejoins consensus      |
 | `ClusterReplayDeterminismTest` | Cluster  | Identical command streams yield identical balances         |
+| `ReadReplicaArchiveModelClusterTest` / `ReadReplicaSnapshotLoadClusterTest` | Cluster | Read replica archive replication and snapshot load against a real cluster |
 | `FaultInjectionTest`        | Fault       | Leader killed mid-flight; retry applies exactly once       |
+| `ReadReplicaArchiveFailoverFaultTest` | Fault | Read replica fails over across member Archives (ADR 0008)  |
 | `ChaosSoakTest`             | Soak        | Sustained load within the tail-latency budget              |
 
 Test suites are grouped by JUnit tag and Gradle task: `test` (unit, no tag),
@@ -573,6 +715,12 @@ run in the default `check` gate.
 
 # Run a read node (eventually-consistent HTTP query API, default port 8080)
 ./gradlew :adbe-read:run
+
+# Run the AI risk service (dashboard + JSON, default port 8090)
+./gradlew :adbe-risk:run
+
+# Run the datastore benchmark (ADBE vs PostgreSQL vs Redis; needs Docker)
+./gradlew :adbe-bench:run
 ```
 
 Toolchain: JDK 21 LTS. Aeron 1.48, Agrona 2.2, SBE 1.35. The dependency chain
