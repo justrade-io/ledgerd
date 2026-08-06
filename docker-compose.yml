@@ -18,6 +18,15 @@
 #   curl http://localhost:8080/balance/100
 #   curl http://localhost:8080/supply
 #
+# The risk service (adbe-risk-0) is an Edge AI consumer (ADR 0012): like the read
+# node it is NOT a Raft member and does not affect quorum. It follows the members'
+# recorded domain event journal (ADR 0011), scores accounts for transaction
+# velocity and money-flow graph centrality, and serves a live dashboard on host
+# port 8090:
+#   open http://localhost:8090/
+#   curl http://localhost:8090/risk/scores
+#   curl http://localhost:8090/risk/graph
+#
 # A remote client smoke test is available on demand (not started by default):
 #   docker compose run --rm client
 #
@@ -112,6 +121,31 @@ services:
       ADBE_LIVE_LOG: "true"
     ports:
       - "8080:8080/tcp" # HTTP query API
+
+  # AI risk service (ADR 0012). Follows the cluster Archives' event journal (ADR
+  # 0011), failing over across members (ADR 0008), and serves the live risk
+  # dashboard over HTTP. Not a Raft member: no vote, no quorum impact, independent
+  # lifecycle - like the read replica node.
+  adbe-risk-0:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: risk
+    image: adbe-risk:local
+    hostname: adbe-risk-0
+    networks:
+      - adbe
+    shm_size: "512m"
+    restart: unless-stopped
+    depends_on:
+      - adbe-node-0
+      - adbe-node-1
+      - adbe-node-2
+    environment:
+      ADBE_ARCHIVE_CHANNELS: "aeron:udp?endpoint=adbe-node-0:20104,aeron:udp?endpoint=adbe-node-1:20204,aeron:udp?endpoint=adbe-node-2:20304"
+      ADBE_HTTP_PORT: "8090"
+    ports:
+      - "8090:8090/tcp" # HTTP risk dashboard + JSON API
 
   # Remote client smoke test. Not started by default; run on demand with:
   #   docker compose run --rm client

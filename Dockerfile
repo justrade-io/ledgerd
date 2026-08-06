@@ -1,8 +1,9 @@
 # Multi-stage, multi-target build.
 #
-#   * stage "build"          : produces the launcher, read, and examples install distributions.
+#   * stage "build"          : produces the launcher, read, risk, and examples install distributions.
 #   * target "node"          : slim JRE that runs one cluster node (default, BalanceService).
 #   * target "read"          : slim JRE that runs one read replica node (ReadReplicaNode + HTTP).
+#   * target "risk"          : slim JRE that runs the AI risk service (RiskServiceLauncher + dashboard, ADR 0012).
 #   * target "client"        : slim JRE that runs the remote client smoke test.
 #   * target "event-verifier": slim JRE that follows the domain event journal and verifies it (ADR 0011).
 #
@@ -12,7 +13,7 @@
 FROM eclipse-temurin:21-jdk AS build
 WORKDIR /src
 COPY . .
-RUN ./gradlew --no-daemon :adbe-launcher:installDist :adbe-read:installDist :adbe-examples:installDist
+RUN ./gradlew --no-daemon :adbe-launcher:installDist :adbe-read:installDist :adbe-risk:installDist :adbe-examples:installDist
 
 FROM eclipse-temurin:21-jre AS node
 LABEL org.opencontainers.image.title="adbe-launcher" \
@@ -51,6 +52,25 @@ RUN chmod +x /opt/adbe/read-entrypoint.sh /opt/adbe/bin/adbe-read \
 USER adbe
 WORKDIR /var/adbe
 ENTRYPOINT ["/opt/adbe/read-entrypoint.sh"]
+
+FROM eclipse-temurin:21-jre AS risk
+LABEL org.opencontainers.image.title="adbe-risk" \
+      org.opencontainers.image.description="ADBE AI risk service (RiskServiceLauncher + dashboard, ADR 0012)" \
+      org.opencontainers.image.licenses="MIT"
+
+# Run as a non-root user.
+RUN useradd --system --create-home --home-dir /home/adbe adbe \
+    && mkdir -p /var/adbe \
+    && chown -R adbe:adbe /var/adbe
+
+COPY --from=build /src/adbe-risk/build/install/adbe-risk /opt/adbe
+COPY docker/risk-entrypoint.sh /opt/adbe/risk-entrypoint.sh
+RUN chmod +x /opt/adbe/risk-entrypoint.sh /opt/adbe/bin/adbe-risk \
+    && chown -R adbe:adbe /opt/adbe
+
+USER adbe
+WORKDIR /var/adbe
+ENTRYPOINT ["/opt/adbe/risk-entrypoint.sh"]
 
 FROM eclipse-temurin:21-jre AS client
 LABEL org.opencontainers.image.title="adbe-client-example" \

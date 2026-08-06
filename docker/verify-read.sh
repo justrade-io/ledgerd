@@ -2,8 +2,8 @@
 #
 # Operational verification for the ADBE write cluster + read replica node,
 # driven entirely through docker compose. It builds the images, brings up the
-# full topology (3 write members + 1 read replica node), and exercises the
-# cases that occur in operation:
+# full topology (3 write members + 1 read replica node + 1 risk service), and
+# exercises the cases that occur in operation:
 #
 #   1. Cold start: all write nodes and the read node become healthy.
 #   2. Write path: the remote client smoke test commits a credit + transfer.
@@ -36,6 +36,11 @@
 #       member, a follower (the event-verifier) observes the recorded semantic
 #       event stream, failing over across members, proving the journal is
 #       recorded and consumable end to end.
+#   13. AI risk substrate (ADR 0012): the always-on risk service follows the same
+#       event journal (failing over across members) and turns it into live risk
+#       signals - it exposes per-account velocity scores, the money-flow graph
+#       edges, and the dashboard over HTTP, proving the fan-out consumer works in
+#       the deployment.
 # Usage:
 #   bash docker/verify-read.sh           # run and tear down on completion
 #   KEEP=1 bash docker/verify-read.sh    # leave the stack running afterwards
@@ -51,6 +56,7 @@ cd "${ROOT}"
 
 COMPOSE="docker compose"
 READ_BASE="http://localhost:8080"
+RISK_BASE="http://localhost:8090"
 KEEP="${KEEP:-0}"
 
 # --- Logging helpers ---------------------------------------------------------
@@ -58,8 +64,9 @@ log() { printf '\n\033[1;34m[verify]\033[0m %s\n' "$*"; }
 pass() { printf '\033[1;32m[ PASS ]\033[0m %s\n' "$*"; }
 die() {
     printf '\033[1;31m[ FAIL ]\033[0m %s\n' "$*" >&2
-    log "Dumping read node logs for diagnosis:"
+    log "Dumping read + risk node logs for diagnosis:"
     ${COMPOSE} logs --tail=80 adbe-read-0 >&2 || true
+    ${COMPOSE} logs --tail=80 adbe-risk-0 >&2 || true
     exit 1
 }
 
@@ -173,7 +180,7 @@ cleanup() {
 trap cleanup EXIT
 
 # =============================================================================
-log "Step 0: clean slate + build + up (3 write members + 1 read replica node)"
+log "Step 0: clean slate + build + up (3 write members + 1 read replica node + 1 risk service)"
 ${COMPOSE} down --remove-orphans >/dev/null 2>&1 || true
 ${COMPOSE} up -d --build
 # The client is profile-gated and started via 'compose run', which reuses a
@@ -322,5 +329,17 @@ out="$(run_event_verifier)"
 echo "${out}" | grep -q "EVENT JOURNAL VERIFIED" \
     || die "event journal verifier did not observe recorded events:\n${out}"
 pass "event journal follower observed recorded domain events"
+
+log "Step 13: AI risk substrate (ADR 0012) - the risk dashboard scores the event stream"
+# The always-on risk service follows the same event journal (failing over from
+# node 0, killed in Step 10) and scores accounts. It must become healthy, expose
+# the accounts touched above, surface the 100 -> 200 transfer as a graph edge, and
+# serve the dashboard HTML.
+await_health "${RISK_BASE}/healthz" 90
+await_contains "${RISK_BASE}/risk/scores" '"account":100' 60
+await_contains "${RISK_BASE}/risk/scores" '"account":200' 60
+await_contains "${RISK_BASE}/risk/graph" '"from":100,"to":200' 60
+await_contains "${RISK_BASE}/" 'ADBE Risk Substrate' 10
+pass "risk service is healthy and exposes scores, the transfer graph edge, and the dashboard"
 
 log "ALL OPERATIONAL CHECKS PASSED"
