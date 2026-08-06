@@ -38,7 +38,13 @@ public final class ClusterLauncher {
         }
 
         final boolean cleanStart = Boolean.parseBoolean(System.getProperty("adbe.cleanStart", "true"));
-        final CoreConfig coreConfig = CoreConfig.defaults();
+        CoreConfig coreConfig = CoreConfig.defaults();
+        // Opt-in domain event journal (ADR 0011), enabled with -Dadbe.eventJournal=true.
+        if (Boolean.getBoolean("adbe.eventJournal")) {
+            final int capacity =
+                    Integer.getInteger("adbe.eventJournalCapacity", CoreConfig.DEFAULT_EVENT_JOURNAL_CAPACITY);
+            coreConfig = coreConfig.withEventJournal(capacity);
+        }
 
         final ClusterNode node = new ClusterNode(clusterConfig, coreConfig, cleanStart);
         Runtime.getRuntime().addShutdownHook(new Thread(node::close, "adbe-shutdown"));

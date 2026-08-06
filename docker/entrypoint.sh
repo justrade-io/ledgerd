@@ -26,6 +26,14 @@ JAVA_OPTS="${JAVA_OPTS:-} -Dadbe.nodeId=${ADBE_NODE_ID} -Dadbe.cleanStart=${ADBE
 if [ -n "${ADBE_METRICS_PORT:-}" ]; then
     JAVA_OPTS="${JAVA_OPTS} -Dadbe.metricsPort=${ADBE_METRICS_PORT}"
 fi
+# Opt-in domain event journal (ADR 0011): every member records its own event
+# stream to its Archive when enabled.
+if [ "${ADBE_EVENT_JOURNAL:-false}" = "true" ]; then
+    JAVA_OPTS="${JAVA_OPTS} -Dadbe.eventJournal=true"
+    if [ -n "${ADBE_EVENT_JOURNAL_CAPACITY:-}" ]; then
+        JAVA_OPTS="${JAVA_OPTS} -Dadbe.eventJournalCapacity=${ADBE_EVENT_JOURNAL_CAPACITY}"
+    fi
+fi
 export JAVA_OPTS
 
 echo "Starting ADBE node ${ADBE_NODE_ID} as ${ADBE_HOST} (baseDir=${ADBE_BASE_DIR})"

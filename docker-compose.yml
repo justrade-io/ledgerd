@@ -21,6 +21,10 @@
 # A remote client smoke test is available on demand (not started by default):
 #   docker compose run --rm client
 #
+# The write members run with the domain event journal enabled (ADR 0011): each
+# records its own semantic event stream to its Archive. A verifier follows it:
+#   docker compose run --rm event-verifier
+#
 # Note: Aeron uses UDP unicast between members plus ephemeral replication ports.
 # Containers on this user-defined bridge network can reach each other on all
 # ports without publishing them; only host->container access needs "ports".
@@ -54,6 +58,7 @@ services:
       ADBE_HOST: adbe-node-0
       ADBE_CLUSTER_MEMBERS: *cluster_members
       ADBE_METRICS_PORT: "9100"
+      ADBE_EVENT_JOURNAL: "true"
     ports:
       - "20100:20100/udp" # ingress for an external client
       - "9100:9100/tcp" # Prometheus metrics / healthz
@@ -66,6 +71,7 @@ services:
       ADBE_HOST: adbe-node-1
       ADBE_CLUSTER_MEMBERS: *cluster_members
       ADBE_METRICS_PORT: "9100"
+      ADBE_EVENT_JOURNAL: "true"
     ports:
       - "9101:9100/tcp"
 
@@ -77,6 +83,7 @@ services:
       ADBE_HOST: adbe-node-2
       ADBE_CLUSTER_MEMBERS: *cluster_members
       ADBE_METRICS_PORT: "9100"
+      ADBE_EVENT_JOURNAL: "true"
     ports:
       - "9102:9100/tcp"
 
@@ -123,6 +130,26 @@ services:
     environment:
       ADBE_INGRESS_ENDPOINTS: "0=adbe-node-0:20100,1=adbe-node-1:20200,2=adbe-node-2:20300"
       ADBE_CLIENT_ID: "1"
+
+  # Domain event journal verifier (ADR 0011). Not started by default; run on
+  # demand with:
+  #   docker compose run --rm event-verifier
+  # It follows the members' recorded event streams (failing over across them) and
+  # exits non-zero unless it observes at least ADBE_EVENT_MIN recorded events.
+  event-verifier:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: event-verifier
+    image: adbe-event-verifier:local
+    profiles: ["verify"]
+    networks:
+      - adbe
+    shm_size: "512m"
+    environment:
+      ADBE_ARCHIVE_CHANNELS: "aeron:udp?endpoint=adbe-node-0:20104,aeron:udp?endpoint=adbe-node-1:20204,aeron:udp?endpoint=adbe-node-2:20304"
+      ADBE_EVENT_MIN: "2"
+      ADBE_EVENT_TIMEOUT_MS: "30000"
 
 networks:
   adbe:

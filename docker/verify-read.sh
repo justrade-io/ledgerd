@@ -26,11 +26,16 @@
 #      data, proving the snapshot load path end to end.
 #   10. Archive failover (ADR 0008): kill the write member whose Archive the read
 #      node follows (node 0); the cluster keeps committing (quorum 2 of 3) and
-#      the read node fails over to a surviving member's Archive and converges.#   11. Multi-asset + holds (ADR 0009, 0010): a scenario client writes on assets 1
+#      the read node fails over to a surviving member's Archive and converges.
+#   11. Multi-asset + holds (ADR 0009, 0010): a scenario client writes on assets 1
 #       and 2 (credit/transfer plus reserve/capture/release), and the read node
 #       serves the correct per-asset available balances and conserved supply via
 #       the ?asset= query parameter. Held funds are inferred from the drop in
-#       available balance together with conserved supply.#
+#       available balance together with conserved supply.
+#   12. Domain event journal (ADR 0011): with the journal enabled on every write
+#       member, a follower (the event-verifier) observes the recorded semantic
+#       event stream, failing over across members, proving the journal is
+#       recorded and consumable end to end.
 # Usage:
 #   bash docker/verify-read.sh           # run and tear down on completion
 #   KEEP=1 bash docker/verify-read.sh    # leave the stack running afterwards
@@ -119,6 +124,13 @@ run_client_scenario() {
     ${COMPOSE} run --rm -e ADBE_CLIENT_ID="$1" -e ADBE_SCENARIO="$2" client 2>&1 || true
 }
 
+# run_event_verifier - run the one-shot domain event journal follower verifier;
+# returns its output. It prints 'EVENT JOURNAL VERIFIED' and exits 0 once it
+# observes recorded events across the members' Archives (ADR 0011).
+run_event_verifier() {
+    ${COMPOSE} run --rm event-verifier 2>&1 || true
+}
+
 # trigger_snapshot - trigger a cluster snapshot via ClusterTool on every member.
 # Only the leader can take a snapshot; followers report 'not the leader' and are
 # ignored. The --add-opens flags are required by Agrona (matches the launcher).
@@ -166,7 +178,8 @@ ${COMPOSE} down --remove-orphans >/dev/null 2>&1 || true
 ${COMPOSE} up -d --build
 # The client is profile-gated and started via 'compose run', which reuses a
 # cached image; build it explicitly so scenario runs pick up the latest code.
-${COMPOSE} build client
+# The event-verifier is likewise profile-gated; build it too.
+${COMPOSE} build client event-verifier
 pass "stack started"
 
 log "Step 1: await health of all write nodes and the read node"
@@ -300,5 +313,14 @@ await_contains "${READ_BASE}/supply?asset=2" '"totalSupply":1000' 30
 await_contains "${READ_BASE}/balance/700?asset=0" '"exists":false' 30
 await_contains "${READ_BASE}/balance/700" '"exists":false' 30
 pass "multi-asset balances/supply and two-phase holds verified across assets 1 and 2"
+
+log "Step 12: domain event journal (ADR 0011) - a follower observes recorded events"
+# The event-verifier follows all three members' event streams (failing over from
+# node 0, which was killed in Step 10) and exits 0 once it observes recorded
+# domain events from the credits, transfers, and holds committed above.
+out="$(run_event_verifier)"
+echo "${out}" | grep -q "EVENT JOURNAL VERIFIED" \
+    || die "event journal verifier did not observe recorded events:\n${out}"
+pass "event journal follower observed recorded domain events"
 
 log "ALL OPERATIONAL CHECKS PASSED"

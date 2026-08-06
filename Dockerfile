@@ -1,9 +1,10 @@
 # Multi-stage, multi-target build.
 #
-#   * stage "build"  : produces the launcher, read, and examples install distributions.
-#   * target "node"  : slim JRE that runs one cluster node (default, BalanceService).
-#   * target "read"  : slim JRE that runs one read replica node (ReadReplicaNode + HTTP).
-#   * target "client": slim JRE that runs the remote client smoke test.
+#   * stage "build"          : produces the launcher, read, and examples install distributions.
+#   * target "node"          : slim JRE that runs one cluster node (default, BalanceService).
+#   * target "read"          : slim JRE that runs one read replica node (ReadReplicaNode + HTTP).
+#   * target "client"        : slim JRE that runs the remote client smoke test.
+#   * target "event-verifier": slim JRE that follows the domain event journal and verifies it (ADR 0011).
 #
 # The cluster topology is supplied at runtime via environment variables
 # (see docker-compose.yml).
@@ -65,3 +66,18 @@ USER adbe
 # RemoteClientExample reads ingress endpoints from ADBE_INGRESS_ENDPOINTS; the
 # entrypoint derives a routable egress endpoint from the container's own IP.
 ENTRYPOINT ["/opt/adbe/client-entrypoint.sh"]
+
+FROM eclipse-temurin:21-jre AS event-verifier
+LABEL org.opencontainers.image.title="adbe-event-verifier" \
+      org.opencontainers.image.description="ADBE domain event journal follower verifier (ADR 0011)" \
+      org.opencontainers.image.licenses="MIT"
+
+RUN useradd --system --create-home --home-dir /home/adbe adbe
+
+# Reuse the read distribution: EventJournalVerifier ships in the adbe-read jar.
+COPY --from=build /src/adbe-read/build/install/adbe-read/lib /opt/adbe/lib
+COPY docker/event-verifier-entrypoint.sh /opt/adbe/event-verifier-entrypoint.sh
+RUN chmod +x /opt/adbe/event-verifier-entrypoint.sh
+USER adbe
+WORKDIR /tmp
+ENTRYPOINT ["/opt/adbe/event-verifier-entrypoint.sh"]
