@@ -27,7 +27,7 @@ import org.agrona.concurrent.MessageHandler;
 public final class EventJournaler implements Agent, AutoCloseable {
 
     /** Aeron stream id for the recorded domain event journal. */
-    public static final int STREAM_ID = 108;
+    public static final int STREAM_ID = com.adbe.pipeline.EventJournalStreams.STREAM_ID;
 
     private static final String CHANNEL = "aeron:ipc?term-length=64k";
     private static final int FRAGMENT_LIMIT = 64;
