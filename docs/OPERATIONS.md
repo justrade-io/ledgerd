@@ -498,3 +498,44 @@ curl http://localhost:8090/metrics     # follower + scoring counters
 The follower delivers every event on one agent thread, so all feature state is
 updated single-threaded; the HTTP threads only read published snapshots and never
 perturb the follower.
+
+### Driving demo data
+
+An empty dashboard has nothing to show. The `risk` scenario of the remote client
+generates a realistic load - a population of accounts exchanging money (a dense
+money-flow graph), several accounts with a velocity anomaly (slow baseline then a
+fast burst), and several hubs fanning out to many counterparties (high graph
+centrality) - so the heatmap and transfer graph fill up and flag accounts.
+
+```bash
+# Docker: point the client image at the running cluster and run the risk scenario.
+docker compose run --rm risk-demo
+
+# Then open the dashboard and watch scores and the money-flow graph populate.
+open http://localhost:8090/
+```
+
+Scale and behaviour are env-tunable (defaults in parentheses):
+
+| Variable                  | Default | Description                                              |
+|---------------------------|:-------:|---------------------------------------------------------|
+| `ADBE_RISK_POPULATION`    | `120`   | Accounts seeded and traded between (graph nodes).        |
+| `ADBE_RISK_BACKGROUND_TX` | `400`   | Random transfers across the population (graph edges).    |
+| `ADBE_RISK_SPIKE_ACCOUNTS`| `4`     | Accounts driven with a velocity spike.                   |
+| `ADBE_RISK_SPIKE_EDGES`   | `20`    | Counterparties each spike account also fans out to.      |
+| `ADBE_RISK_BURST`         | `30`    | Fast back-to-back transactions per spike account.        |
+| `ADBE_RISK_HUBS`          | `3`     | Hub accounts that fan out to many counterparties.        |
+| `ADBE_RISK_HUB_SPOKES`    | `30`    | Distinct counterparties per hub (raises centrality).     |
+| `ADBE_SCENARIO_LOOP`      | `false` | Repeat the scenario forever for a live, evolving demo.   |
+
+The velocity z-score itself is transient - it peaks on the first fast transaction
+after a baseline and the moving average absorbs it within a couple of events - so
+the service publishes a decaying peak score (30s half-life): a spike raises a
+durable alert that fades over time instead of vanishing on the next event. Spike
+accounts are also given graph centrality, so their combined score clears the flag
+threshold with margin and they show as flagged (red) in the scores table. The
+pure hubs stay visibly hot in the money-flow graph on centrality alone without
+crossing the flag threshold. Use `ADBE_SCENARIO_LOOP=true` to keep spikes
+recurring while demoing.
+
+

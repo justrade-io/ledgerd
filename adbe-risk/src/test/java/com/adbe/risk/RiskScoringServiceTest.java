@@ -44,4 +44,70 @@ class RiskScoringServiceTest {
             assertTrue(top.get(i - 1).score() >= top.get(i).score(), "descending by score");
         }
     }
+
+    // Guards the RemoteClientExample "risk" demo scenario (ADR 0012): a slow
+    // baseline followed by one anomalously fast transaction must flag the account,
+    // otherwise the dashboard demo no longer lights up.
+    @Test
+    void velocityBaselineThenFastEventFlagsAccountLikeTheRiskDemo() {
+        final RiskScoringService service = new RiskScoringService();
+        final long account = 800L;
+        long ts = 1_000L;
+        for (int i = 0; i < 8; i++) {
+            service.onBalanceChanged(i, ts, 0, 0L, account, 10L, 10L, EventCause.CREDIT);
+            if (i < 7) {
+                ts += 300L;
+            }
+        }
+        service.onBalanceChanged(100L, ts + 1L, 0, 0L, account, 1L, 1L, EventCause.CREDIT);
+
+        final AccountRisk risk = service.risk(account);
+        assertNotNull(risk);
+        assertTrue(risk.zScore() >= 4.0, "burst peak yields a high velocity z-score: " + risk.zScore());
+        assertTrue(risk.flagged(), "the spiking account is flagged: " + risk.score());
+    }
+
+    // Guards the decaying-peak behaviour: a spiking, well-connected account stays
+    // flagged on the immediately following (quiet) event even though the
+    // instantaneous z-score has decayed, so the dashboard still shows the alert.
+    @Test
+    void velocityFlagPersistsAfterSpikeDecays() {
+        final RiskScoringService service = new RiskScoringService();
+        final long account = 800L;
+        long ts = 1_000L;
+        for (int e = 0; e < 20; e++) {
+            service.onTransfer(e, ts, 0, 0L, account, 1_000L + e, 100L);
+            ts += 1L;
+        }
+        for (int i = 0; i < 8; i++) {
+            service.onBalanceChanged(100 + i, ts, 0, 0L, account, 10L, 10L, EventCause.CREDIT);
+            if (i < 7) {
+                ts += 300L;
+            }
+        }
+        service.onBalanceChanged(200L, ts + 1L, 0, 0L, account, 1L, 1L, EventCause.CREDIT);
+        service.onBalanceChanged(201L, ts + 2L, 0, 0L, account, 1L, 1L, EventCause.CREDIT);
+
+        final AccountRisk risk = service.risk(account);
+        assertNotNull(risk);
+        assertTrue(risk.zScore() < 4.0, "the instantaneous z-score has decayed: " + risk.zScore());
+        assertTrue(risk.flagged(), "the peak keeps the account flagged: " + risk.score());
+    }
+
+    // Guards the demo's money-flow hub: fanning out to many counterparties keeps a
+    // persistent high graph centrality that dominates the hub's risk score.
+    @Test
+    void moneyFlowHubHasHighCentralityLikeTheRiskDemo() {
+        final RiskScoringService service = new RiskScoringService();
+        final long hub = 900L;
+        long ts = 1_000L;
+        for (int s = 0; s < 24; s++) {
+            service.onTransfer(s, ts, 0, 0L, hub, hub + 1L + s, 100L);
+            ts += 1L;
+        }
+        final AccountRisk risk = service.risk(hub);
+        assertNotNull(risk);
+        assertTrue(risk.centrality() >= 20.0, "hub centrality exceeds the model reference: " + risk.centrality());
+        assertTrue(risk.score() >= 0.4, "graph centrality dominates the hub score: " + risk.score());
+    }
 }

@@ -22,6 +22,9 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public final class RiskScoringService implements DomainEventListener {
 
+    // Half-life for the published peak score decay (see peakScore).
+    private static final double PEAK_HALF_LIFE_MS = 30_000.0;
+
     private final VelocityTracker velocity;
     private final TransferGraph graph;
     private final RiskModel model;
@@ -153,12 +156,26 @@ public final class RiskScoringService implements DomainEventListener {
     private void rescore(final long accountId, final long timestamp) {
         final double zScore = velocity.zScore(accountId);
         final double centrality = graph.degreeCentrality(accountId);
-        final double score = model.score(zScore, centrality);
+        final double instant = model.score(zScore, centrality);
         final AccountRisk previous = risks.get(accountId);
         final long txCount = (previous == null ? 0L : previous.txCount()) + 1L;
+        final double score = peakScore(instant, previous, timestamp);
         risks.put(
                 accountId,
                 new AccountRisk(accountId, score, zScore, centrality, txCount, timestamp, model.isFlagged(score)));
+    }
+
+    // A velocity anomaly is instantaneous - the EWMA absorbs it within a couple of
+    // events - so the published score is a decaying peak: it fades toward the
+    // instantaneous score over a half-life instead of vanishing on the next event,
+    // keeping a spike visible on the dashboard (ADR 0012, PoC).
+    private static double peakScore(final double instant, final AccountRisk previous, final long timestamp) {
+        if (previous == null) {
+            return instant;
+        }
+        final long dtMs = Math.max(0L, timestamp - previous.lastTimestamp());
+        final double decayed = previous.score() * Math.pow(2.0, -dtMs / PEAK_HALF_LIFE_MS);
+        return Math.max(instant, decayed);
     }
 
     /** The current risk snapshot for {@code accountId}, or {@code null} if unseen. */

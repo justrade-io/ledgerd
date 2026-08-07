@@ -5,6 +5,7 @@ import com.adbe.client.ResultHandler;
 import com.adbe.client.config.ClientConfig;
 import com.adbe.protocol.CommandType;
 import com.adbe.protocol.StatusCode;
+import java.util.Random;
 
 /**
  * Connects to an already-running ADBE cluster (for example the three-node
@@ -20,13 +21,41 @@ import com.adbe.protocol.StatusCode;
  * 0=adbe-node-0:20100,1=adbe-node-1:20200,2=adbe-node-2:20300
  * }</pre>
  *
- * <p>The client id defaults to {@code 1} and can be overridden with
- * {@code ADBE_CLIENT_ID}. Exits with a non-zero status if the expected results do
- * not arrive, so it can be used as a smoke test in CI or compose.
+ * <p>An optional {@code ADBE_SCENARIO} selects an alternate traffic pattern:
+ * {@code multiasset} exercises multi-asset and holds commands; {@code risk} drives
+ * a population of accounts exchanging money, plus transaction-velocity spikes and
+ * money-flow hubs, so the AI risk dashboard (ADR 0012) fills with data and flags
+ * accounts. Its scale is env-tunable ({@code ADBE_RISK_POPULATION},
+ * {@code ADBE_RISK_BACKGROUND_TX}, {@code ADBE_RISK_SPIKE_ACCOUNTS},
+ * {@code ADBE_RISK_HUBS}, {@code ADBE_RISK_HUB_SPOKES}, {@code ADBE_RISK_BURST});
+ * with {@code ADBE_SCENARIO_LOOP=true} it repeats until the process is stopped.
  */
 public final class RemoteClientExample {
 
     private static final long AWAIT_TIMEOUT_MS = 30_000L;
+
+    // Risk scenario (ADR 0012). A population of accounts exchanging money builds a
+    // dense money-flow graph; a few accounts get a slow baseline then a fast burst
+    // (velocity anomaly) and a few hubs fan out to many counterparties (high graph
+    // centrality). Scale knobs are env-overridable so the dashboard can be driven
+    // with as much data as wanted.
+    private static final long POPULATION_BASE = 1L;
+    private static final int POPULATION = 120;
+    private static final long POPULATION_SEED_BALANCE = 1_000_000L;
+    private static final int BACKGROUND_TX = 400;
+    private static final int BACKGROUND_MAX_AMOUNT = 50;
+    private static final long SPIKE_ACCOUNT = 800L;
+    private static final int SPIKE_ACCOUNTS = 4;
+    private static final int SPIKE_EDGES = 20;
+    private static final int WARMUP_TXNS = 8;
+    private static final long WARMUP_SPACING_MS = 300L;
+    private static final int BURST_TXNS = 30;
+    private static final long HUB_ACCOUNT = 900L;
+    private static final int HUBS = 3;
+    private static final int HUB_SPOKES = 30;
+    private static final long HUB_SPOKE_AMOUNT = 100L;
+    private static final long RANDOM_SEED = 42L;
+    private static final long LOOP_PAUSE_MS = 5_000L;
 
     private RemoteClientExample() {}
 
@@ -64,6 +93,10 @@ public final class RemoteClientExample {
         try (AdbeClient client = new AdbeClient(config, handler)) {
             if ("multiasset".equals(scenario)) {
                 runMultiAssetScenario(client, lastStatus, lastCommandIdLo);
+                return;
+            }
+            if ("risk".equals(scenario)) {
+                runRiskScenario(client, lastStatus, lastCommandIdLo);
                 return;
             }
 
@@ -108,6 +141,130 @@ public final class RemoteClientExample {
                 client.leaderChanges(), client.completed());
     }
 
+    /**
+     * Drives the AI risk dashboard (ADR 0012): a transaction-velocity spike on one
+     * account and a money-flow hub fanning out to many counterparties, so the
+     * follower's velocity z-score and graph centrality features flag those
+     * accounts. With {@code ADBE_SCENARIO_LOOP=true} it repeats until stopped so the
+     * dashboard keeps showing live spike-then-decay behaviour.
+     */
+    private static void runRiskScenario(final AdbeClient client, final StatusCode[] lastStatus, final long[] lastId) {
+        final boolean loop = Boolean.parseBoolean(envOrDefault("ADBE_SCENARIO_LOOP", "false"));
+        final int population = envInt("ADBE_RISK_POPULATION", POPULATION);
+        final int backgroundTx = envInt("ADBE_RISK_BACKGROUND_TX", BACKGROUND_TX);
+        final int spikeAccounts = envInt("ADBE_RISK_SPIKE_ACCOUNTS", SPIKE_ACCOUNTS);
+        final int spikeEdges = envInt("ADBE_RISK_SPIKE_EDGES", SPIKE_EDGES);
+        final int hubs = envInt("ADBE_RISK_HUBS", HUBS);
+        final int hubSpokes = envInt("ADBE_RISK_HUB_SPOKES", HUB_SPOKES);
+        final int burst = envInt("ADBE_RISK_BURST", BURST_TXNS);
+        final Random rnd = new Random(RANDOM_SEED);
+
+        // Seed the population once; balances persist across loop iterations.
+        System.out.println("-> risk: seeding " + population + " accounts");
+        for (int a = 0; a < population; a++) {
+            drive(client, lastStatus, lastId, CommandType.CREDIT, POPULATION_BASE + a, 0L, POPULATION_SEED_BALANCE);
+        }
+
+        do {
+            System.out.println("-> risk: " + backgroundTx + " background transfers across the population");
+            for (int t = 0; t < backgroundTx; t++) {
+                final long from = POPULATION_BASE + rnd.nextInt(population);
+                long to = POPULATION_BASE + rnd.nextInt(population);
+                if (to == from) {
+                    to = POPULATION_BASE + (from - POPULATION_BASE + 1) % population;
+                }
+                drive(
+                        client,
+                        lastStatus,
+                        lastId,
+                        CommandType.TRANSFER,
+                        from,
+                        to,
+                        1L + rnd.nextInt(BACKGROUND_MAX_AMOUNT));
+            }
+
+            System.out.println("-> risk: velocity spikes on " + spikeAccounts + " accounts");
+            for (int s = 0; s < spikeAccounts; s++) {
+                final long account = SPIKE_ACCOUNT + s;
+                // Give the spike account graph centrality too: a flagged account is
+                // both fast and well-connected, and the extra weight keeps the
+                // decaying peak above the flag threshold after the spike passes.
+                drive(
+                        client,
+                        lastStatus,
+                        lastId,
+                        CommandType.CREDIT,
+                        account,
+                        0L,
+                        (long) spikeEdges * HUB_SPOKE_AMOUNT * 2L);
+                for (int e = 0; e < spikeEdges; e++) {
+                    final long spoke = POPULATION_BASE + (s * spikeEdges + e) % population;
+                    drive(client, lastStatus, lastId, CommandType.TRANSFER, account, spoke, HUB_SPOKE_AMOUNT);
+                }
+                for (int i = 0; i < WARMUP_TXNS; i++) {
+                    drive(client, lastStatus, lastId, CommandType.CREDIT, account, 0L, 10L);
+                    if (i < WARMUP_TXNS - 1) {
+                        quietSleep(WARMUP_SPACING_MS);
+                    }
+                }
+                for (int i = 0; i < burst; i++) {
+                    drive(client, lastStatus, lastId, CommandType.CREDIT, account, 0L, 1L);
+                }
+            }
+
+            System.out.println("-> risk: " + hubs + " money-flow hubs x " + hubSpokes + " spokes");
+            for (int h = 0; h < hubs; h++) {
+                final long hub = HUB_ACCOUNT + h;
+                drive(
+                        client,
+                        lastStatus,
+                        lastId,
+                        CommandType.CREDIT,
+                        hub,
+                        0L,
+                        (long) hubSpokes * HUB_SPOKE_AMOUNT * 2L);
+                for (int k = 0; k < hubSpokes; k++) {
+                    final long spoke = POPULATION_BASE + (h * hubSpokes + k) % population;
+                    drive(client, lastStatus, lastId, CommandType.TRANSFER, hub, spoke, HUB_SPOKE_AMOUNT);
+                }
+            }
+
+            System.out.printf(
+                    "OK: risk scenario committed (accounts=%d, leaderChanges=%d, completed=%d). Watch :8090.%n",
+                    population, client.leaderChanges(), client.completed());
+            if (loop) {
+                quietSleep(LOOP_PAUSE_MS);
+            }
+        } while (loop);
+    }
+
+    // Submits one asset-0 command and blocks for its result, failing the scenario
+    // on any non-success status. Quiet (no per-command log) for high-volume runs.
+    private static void drive(
+            final AdbeClient client,
+            final StatusCode[] lastStatus,
+            final long[] lastId,
+            final CommandType type,
+            final long accountA,
+            final long accountB,
+            final long amount) {
+        final long id = client.submit(type, 0L, accountA, accountB, 0L, amount);
+        awaitResult(client, id, lastId);
+        if (lastStatus[0] != StatusCode.SUCCESS) {
+            throw new IllegalStateException("risk scenario " + type + " a=" + accountA + " b=" + accountB + " amount="
+                    + amount + " returned " + lastStatus[0]);
+        }
+    }
+
+    private static void quietSleep(final long millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("interrupted during risk scenario", e);
+        }
+    }
+
     private static void submitAndAwait(
             final AdbeClient client,
             final StatusCode[] lastStatus,
@@ -142,6 +299,11 @@ public final class RemoteClientExample {
     private static String envOrDefault(final String name, final String fallback) {
         final String value = System.getenv(name);
         return value == null || value.isBlank() ? fallback : value;
+    }
+
+    private static int envInt(final String name, final int fallback) {
+        final String value = System.getenv(name);
+        return value == null || value.isBlank() ? fallback : Integer.parseInt(value.trim());
     }
 
     private static void requireStatus(final StatusCode status, final long expectedBalance, final long actualBalance) {

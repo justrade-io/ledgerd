@@ -30,6 +30,10 @@
 # A remote client smoke test is available on demand (not started by default):
 #   docker compose run --rm client
 #
+# To make the risk dashboard light up, drive a velocity spike and a money-flow hub
+# against the cluster (not started by default), then watch http://localhost:8090:
+#   docker compose run --rm risk-demo
+#
 # The write members run with the domain event journal enabled (ADR 0011): each
 # records its own semantic event stream to its Archive. A verifier follows it:
 #   docker compose run --rm event-verifier
@@ -164,6 +168,30 @@ services:
     environment:
       ADBE_INGRESS_ENDPOINTS: "0=adbe-node-0:20100,1=adbe-node-1:20200,2=adbe-node-2:20300"
       ADBE_CLIENT_ID: "1"
+
+  # Risk demo driver (ADR 0012). Not started by default; run on demand with:
+  #   docker compose run --rm risk-demo
+  # It reuses the remote-client image with ADBE_SCENARIO=risk to drive a
+  # transaction-velocity spike and a money-flow hub against the cluster, so the
+  # adbe-risk-0 dashboard (http://localhost:8090) visibly flags those accounts.
+  # Set ADBE_SCENARIO_LOOP=true to keep it running for a live demo.
+  risk-demo:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: client
+    image: adbe-client-example:local
+    profiles: ["risk-demo"]
+    networks:
+      - adbe
+    shm_size: "512m"
+    depends_on:
+      - adbe-risk-0
+    environment:
+      ADBE_INGRESS_ENDPOINTS: "0=adbe-node-0:20100,1=adbe-node-1:20200,2=adbe-node-2:20300"
+      ADBE_CLIENT_ID: "2"
+      ADBE_SCENARIO: "risk"
+      ADBE_SCENARIO_LOOP: "false"
 
   # Domain event journal verifier (ADR 0011). Not started by default; run on
   # demand with:
