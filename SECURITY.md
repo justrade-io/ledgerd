@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-ADBE is pre-1.0 and under active development. Security fixes are applied to the
+LEDGERD is pre-1.0 and under active development. Security fixes are applied to the
 `main` branch only. There is no long-term-support branch yet.
 
 ## Reporting a vulnerability
@@ -19,8 +19,8 @@ Please include:
 
 - a description of the issue and its impact;
 - steps to reproduce (a minimal test case is ideal);
-- affected component (`adbe-protocol`, `adbe-core`, `adbe-launcher`,
-  `adbe-client`, `adbe-read`, `adbe-examples`) and commit or version;
+- affected component (`protocol`, `core`, `launcher`,
+  `write-client`, `read`, `examples`) and commit or version;
 - your environment: JDK version, Aeron/Agrona version, and OS.
 
 ## What to expect

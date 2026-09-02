@@ -26,9 +26,9 @@ acceptable for user-facing balance display.
 
 ## Decision
 
-- Introduce a new module `adbe-read`, a read (CQRS query) bounded context. It may
-  depend on `adbe-core` (unlike `adbe-client`, which ADR 0004 restricts to
-  `adbe-protocol`), because it must apply the same deterministic command logic to
+- Introduce a new module `read`, a read (CQRS query) bounded context. It may
+  depend on `core` (unlike `write-client`, which ADR 0004 restricts to
+  `protocol`), because it must apply the same deterministic command logic to
   reproduce state.
 - The read model is a cluster follower. `ReadModelService` implements
   `io.aeron.cluster.service.ClusteredService` and composes the core
@@ -54,8 +54,8 @@ acceptable for user-facing balance display.
 
 - Reads are eventually consistent with bounded staleness. `GET /supply` reflects
   the follower's applied position, not necessarily the leader's latest command.
-- The deterministic core (`adbe-core`) is unchanged. Read concerns live entirely
-  in `adbe-read`; the query drain runs in `doBackgroundWork`, which cannot affect
+- The deterministic core (`core`) is unchanged. Read concerns live entirely
+  in `read`; the query drain runs in `doBackgroundWork`, which cannot affect
   the replicated log or snapshots.
 - A missing account returns HTTP 200 with `exists=false` (not 404) so batch
   responses stay uniform.

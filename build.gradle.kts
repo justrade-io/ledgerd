@@ -92,7 +92,7 @@ subprojects {
         } else {
             options.errorprone {
                 disableWarningsInGeneratedCode.set(true)
-                option("NullAway:AnnotatedPackages", "com.adbe")
+                option("NullAway:AnnotatedPackages", "io.justrade.ledgerd")
             }
         }
     }
@@ -134,7 +134,7 @@ tasks.register<Javadoc>("aggregateJavadoc") {
     group = "documentation"
     description = "Generates a single aggregated Javadoc site across all modules."
     setDestinationDir(layout.buildDirectory.dir("docs/aggregateJavadoc").get().asFile)
-    title = "ADBE - Aeron Distributed Balance Engine API"
+    title = "LEDGERD - Aeron Distributed Balance Engine API"
     (options as StandardJavadocDocletOptions).apply {
         encoding = "UTF-8"
         addStringOption("Xdoclint:none", "-quiet")

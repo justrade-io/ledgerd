@@ -16,10 +16,10 @@ backpressure policy) into the deterministic core.
 
 ## Decision
 
-- Introduce a new module `adbe-client` that depends ONLY on `adbe-protocol`
+- Introduce a new module `write-client` that depends ONLY on `protocol`
   (the `CommandEnvelope` / `CommandResult` wire contract). It MUST NOT depend on
-  `adbe-core`.
-- `adbe-client` owns Edge-side concerns: leader-change handling, idempotent retry
+  `core`.
+- `write-client` owns Edge-side concerns: leader-change handling, idempotent retry
   that reuses the original command id, asynchronous request/response correlation
   by command id, explicit backpressure signalling to the caller, and end-to-end
   latency measurement (HdrHistogram).
@@ -33,11 +33,11 @@ backpressure policy) into the deterministic core.
 
 - The Core remains free of reconnect/retry/correlation logic and stays
   deterministic and Aeron-cluster-focused.
-- The dependency direction is one-way: `adbe-client -> adbe-protocol`. Any change
+- The dependency direction is one-way: `write-client -> protocol`. Any change
   to retry, backpressure, or correlation policy is isolated to the Edge context.
-- `adbe-client` is not a hot-path deterministic component; it may use the system
+- `write-client` is not a hot-path deterministic component; it may use the system
   clock for timeouts and latency measurement, which the Core may not.
-- The test-only `ClusterTestClient` (in `adbe-tests` fixtures) remains a separate,
+- The test-only `ClusterTestClient` (in `tests` fixtures) remains a separate,
   minimal harness and is not the shipped client.
 
 ## Out of scope

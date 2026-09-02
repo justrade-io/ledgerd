@@ -1,6 +1,6 @@
-# ADBE API Reference
+# LEDGERD API Reference
 
-ADBE (Aeron Distributed Balance Engine) is a replicated, allocation-free balance engine built on Aeron
+LEDGERD (Aeron Distributed Balance Engine) is a replicated, allocation-free balance engine built on Aeron
 Cluster. Every command is committed via Raft, applied in total order on a single thread, and acknowledged
 with a deterministic `StatusCode`. This document covers the complete client integration surface.
 
@@ -32,17 +32,17 @@ The fastest path: boot an in-process single-node cluster, connect a client, subm
 transfer, and drain results.
 
 ```java
-import com.adbe.client.AdbeClient;
-import com.adbe.client.config.ClientConfig;
-import com.adbe.config.CoreConfig;
-import com.adbe.launcher.ClusterConfig;
-import com.adbe.launcher.ClusterNode;
-import com.adbe.protocol.CommandType;
+import io.justrade.ledgerd.write.client.WriteClient;
+import io.justrade.ledgerd.write.client.config.ClientConfig;
+import io.justrade.ledgerd.config.CoreConfig;
+import io.justrade.ledgerd.launcher.ClusterConfig;
+import io.justrade.ledgerd.launcher.ClusterNode;
+import io.justrade.ledgerd.protocol.CommandType;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
 
-Path baseDir = Files.createTempDirectory("adbe-");
+Path baseDir = Files.createTempDirectory("ledgerd-");
 ClusterConfig clusterConfig = ClusterConfig.singleNodeLocalhost(0, baseDir);
 
 try (ClusterNode node = new ClusterNode(clusterConfig, CoreConfig.defaults())) {
@@ -54,7 +54,7 @@ try (ClusterNode node = new ClusterNode(clusterConfig, CoreConfig.defaults())) {
             .builder(1L, ClusterConfig.ingressEndpoints(1))
             .build();
 
-    try (AdbeClient client = new AdbeClient(config,
+    try (WriteClient client = new WriteClient(config,
             (idHi, idLo, status, balance, hasBalance, allowance, hasAllowance) -> {
                 lastIdLo[0] = idLo;
                 if (hasBalance) lastBalance[0] = balance;
@@ -71,7 +71,7 @@ try (ClusterNode node = new ClusterNode(clusterConfig, CoreConfig.defaults())) {
     }
 }
 
-static void awaitResult(AdbeClient client, long commandIdLo, long[] lastIdLo) {
+static void awaitResult(WriteClient client, long commandIdLo, long[] lastIdLo) {
     long deadline = System.currentTimeMillis() + 15_000L;
     while (System.currentTimeMillis() < deadline) {
         client.poll();
@@ -85,7 +85,7 @@ static void awaitResult(AdbeClient client, long commandIdLo, long[] lastIdLo) {
 Run the full version directly:
 
 ```bash
-./gradlew :adbe-examples:run
+./gradlew :examples:run
 ```
 
 ---
@@ -94,7 +94,7 @@ Run the full version directly:
 
 ### Embedded media driver (default)
 
-When `aeronDirectoryName` is not set, `AdbeClient` launches its own embedded `MediaDriver`. This is
+When `aeronDirectoryName` is not set, `WriteClient` launches its own embedded `MediaDriver`. This is
 correct for standalone processes and the examples. The driver is shut down when the client is closed.
 
 ```java
@@ -124,14 +124,14 @@ routable address to send results back. Override `egressChannel` with the client'
 
 ```bash
 # docker-compose environment variables
-ADBE_INGRESS_ENDPOINTS=0=adbe-node-0:20100,1=adbe-node-1:20200,2=adbe-node-2:20300
-ADBE_EGRESS_ENDPOINT=client-host:0          # ephemeral port; host must be reachable by nodes
-ADBE_CLIENT_ID=1
+LEDGERD_INGRESS_ENDPOINTS=0=ledgerd-node-0:20100,1=ledgerd-node-1:20200,2=ledgerd-node-2:20300
+LEDGERD_EGRESS_ENDPOINT=client-host:0          # ephemeral port; host must be reachable by nodes
+LEDGERD_CLIENT_ID=1
 ```
 
 ```java
-String ingressEndpoints = System.getenv("ADBE_INGRESS_ENDPOINTS");
-String egressEndpoint   = System.getenv("ADBE_EGRESS_ENDPOINT");  // may be null for co-located
+String ingressEndpoints = System.getenv("LEDGERD_INGRESS_ENDPOINTS");
+String egressEndpoint   = System.getenv("LEDGERD_EGRESS_ENDPOINT");  // may be null for co-located
 
 ClientConfig.Builder builder = ClientConfig.builder(clientId, ingressEndpoints);
 if (egressEndpoint != null && !egressEndpoint.isBlank()) {
@@ -140,7 +140,7 @@ if (egressEndpoint != null && !egressEndpoint.isBlank()) {
 ClientConfig config = builder.build();
 ```
 
-See `adbe-examples/RemoteClientExample.java` and `docker/client-entrypoint.sh` for a full example
+See `examples/RemoteClientExample.java` and `docker/client-entrypoint.sh` for a full example
 driving the three-node `docker-compose.yml` cluster.
 
 ---
@@ -216,7 +216,7 @@ acknowledgements via `poll()` and retry.
 
 ```java
 // Safe, allocation-free submit loop used under sustained load.
-void submitWithBackpressure(AdbeClient client, CommandType type,
+void submitWithBackpressure(WriteClient client, CommandType type,
         long a, long b, long c, long amount) {
     while (true) {
         try {
@@ -237,7 +237,7 @@ runtime allocation cost.
 
 ## 6. Submit / Poll Event Loop Patterns
 
-`AdbeClient` is not thread-safe. `submit()` and `poll()` must be called from the same thread.
+`WriteClient` is not thread-safe. `submit()` and `poll()` must be called from the same thread.
 
 ### Single-threaded drain loop
 
@@ -381,13 +381,13 @@ long seq1 = client.submit(CommandType.TRANSFER, 100L, 200L, 0L, 150L);
 // ResultHandler: status=SUCCESS, resultBalance=350
 
 // Network hiccup: retransmit the same logical command.
-// AdbeClient does this automatically by reusing the same commandIdLo.
+// WriteClient does this automatically by reusing the same commandIdLo.
 // If you drive the raw wire yourself:
 //   send same (clientId=1, clientSeq=1, commandIdHi=1, commandIdLo=seq1)
 // ResultHandler: status=DUPLICATE, resultBalance=350 (cached, not recomputed)
 ```
 
-`AdbeClient` handles retransmission automatically on leader change and timeout, reusing the original
+`WriteClient` handles retransmission automatically on leader change and timeout, reusing the original
 `commandIdLo`, which is the prerequisite for this guarantee. The application layer does not need to
 track duplicates.
 
@@ -588,7 +588,7 @@ from when the command first succeeded.
 
 ## 10. Observability
 
-### AdbeClient metrics
+### WriteClient metrics
 
 All counters are read from the poll thread. There is no synchronization cost.
 
@@ -621,8 +621,8 @@ measurement windows. Mean latency is not a contract metric; use p99.9 as the tai
 The launcher can expose off-heap counters over HTTP for Prometheus scraping:
 
 ```bash
-./gradlew :adbe-launcher:run -Dadbe.metricsPort=9100
-curl http://localhost:9100/metrics   # adbe_commands_processed, adbe_duplicates_detected, ...
+./gradlew :launcher:run -Dledgerd.metricsPort=9100
+curl http://localhost:9100/metrics   # ledgerd_commands_processed, ledgerd_duplicates_detected, ...
 curl http://localhost:9100/healthz   # ok
 ```
 
@@ -635,11 +635,11 @@ cluster or network stack. The SBE flyweight encodes into a reusable `UnsafeBuffe
 allocation occurs in steady state.
 
 ```java
-import com.adbe.config.CoreConfig;
-import com.adbe.core.BalanceEngine;
-import com.adbe.core.CommandOutcome;
-import com.adbe.protocol.*;
-import com.adbe.telemetry.CoreMetrics;
+import io.justrade.ledgerd.config.CoreConfig;
+import io.justrade.ledgerd.core.BalanceEngine;
+import io.justrade.ledgerd.core.CommandOutcome;
+import io.justrade.ledgerd.protocol.*;
+import io.justrade.ledgerd.telemetry.CoreMetrics;
 import org.agrona.concurrent.UnsafeBuffer;
 
 // Build engine with preallocated power-of-two capacities.
@@ -677,7 +677,7 @@ boolean duplicate = engine.process(decoder, outcome);
 boolean dup2 = engine.process(decoder, outcome); // dup2 = true
 ```
 
-In tests, use `CommandFixtures` from `adbe-tests` (`testFixtures` source set):
+In tests, use `CommandFixtures` from `tests` (`testFixtures` source set):
 
 ```java
 CommandFixtures fixtures = new CommandFixtures();
@@ -690,7 +690,7 @@ CommandEnvelopeDecoder cmd = fixtures.encode(
 engine.process(cmd, outcome);
 ```
 
-`CommandFixtures` is a test-only helper; it is not part of the shipped `adbe-client` SDK.
+`CommandFixtures` is a test-only helper; it is not part of the shipped `write-client` SDK.
 
 ---
 
@@ -711,7 +711,7 @@ engine.process(cmd, outcome);
 ## 13. Read API (HTTP)
 
 The command path (sections 1 - 12) is write-only: every result is a deterministic `CommandResult`
-committed through Raft. Reads are served separately by the `adbe-read` module, a CQRS read side.
+committed through Raft. Reads are served separately by the `read` module, a CQRS read side.
 Reads are served by a read replica node:
 
 - **Read replica mode** (the only mode): `ReadReplicaNode` runs as a standalone
@@ -742,15 +742,15 @@ single-writer discipline is preserved.
 ```bash
 # Gradle (development): standalone read replica. Configure every member's Archive
 # so the node can fail over (ADR 0008); a single channel also works (legacy).
-ADBE_ARCHIVE_CHANNELS="aeron:udp?endpoint=localhost:20104,aeron:udp?endpoint=localhost:20204,aeron:udp?endpoint=localhost:20304" \
-    ./gradlew :adbe-read:run
+LEDGERD_ARCHIVE_CHANNELS="aeron:udp?endpoint=localhost:20104,aeron:udp?endpoint=localhost:20204,aeron:udp?endpoint=localhost:20304" \
+    ./gradlew :read:run
 ```
 
 ```java
-import com.adbe.config.CoreConfig;
-import com.adbe.read.ReadReplicaNode;
-import com.adbe.read.config.ReadServiceConfig;
-import com.adbe.read.config.ReadReplicaConfig;
+import io.justrade.ledgerd.config.CoreConfig;
+import io.justrade.ledgerd.read.ReadReplicaNode;
+import io.justrade.ledgerd.read.config.ReadServiceConfig;
+import io.justrade.ledgerd.read.config.ReadReplicaConfig;
 
 ReadReplicaConfig replicaConfig = ReadReplicaConfig.builder()
         .archiveControlChannels(
@@ -766,13 +766,13 @@ try (ReadReplicaNode node = new ReadReplicaNode(replicaConfig, CoreConfig.defaul
 }
 ```
 
-Configured by environment variables via `com.adbe.read.ReadServiceLauncher`:
-`ADBE_ARCHIVE_CHANNELS` (comma-separated Archive control channels, one per
-member; the node fails over across them - ADR 0008), `ADBE_ARCHIVE_CHANNEL`
-(single channel, legacy fallback), `ADBE_LOCAL_HOST` (routable host for Archive
+Configured by environment variables via `io.justrade.ledgerd.read.ReadServiceLauncher`:
+`LEDGERD_ARCHIVE_CHANNELS` (comma-separated Archive control channels, one per
+member; the node fails over across them - ADR 0008), `LEDGERD_ARCHIVE_CHANNEL`
+(single channel, legacy fallback), `LEDGERD_LOCAL_HOST` (routable host for Archive
 call-backs, default `localhost`; set to the container address in Docker),
-`ADBE_HTTP_PORT` (default `8080`), `ADBE_SNAPSHOT_POLL_MS` (default `5000`),
-`ADBE_LIVE_LOG` (default `true`). See
+`LEDGERD_HTTP_PORT` (default `8080`), `LEDGERD_SNAPSHOT_POLL_MS` (default `5000`),
+`LEDGERD_LIVE_LOG` (default `true`). See
 [OPERATIONS.md - Read Service](OPERATIONS.md#8-read-service-http-query-api)
 for the full reference.
 

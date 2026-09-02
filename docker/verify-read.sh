@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Operational verification for the ADBE write cluster + read replica node,
+# Operational verification for the LEDGERD write cluster + read replica node,
 # driven entirely through docker compose. It builds the images, brings up the
 # full topology (3 write members + 1 read replica node + 1 risk service), and
 # exercises the cases that occur in operation:
@@ -65,8 +65,8 @@ pass() { printf '\033[1;32m[ PASS ]\033[0m %s\n' "$*"; }
 die() {
     printf '\033[1;31m[ FAIL ]\033[0m %s\n' "$*" >&2
     log "Dumping read + risk node logs for diagnosis:"
-    ${COMPOSE} logs --tail=80 adbe-read-0 >&2 || true
-    ${COMPOSE} logs --tail=80 adbe-risk-0 >&2 || true
+    ${COMPOSE} logs --tail=80 ledgerd-read-0 >&2 || true
+    ${COMPOSE} logs --tail=80 ledgerd-risk-0 >&2 || true
     exit 1
 }
 
@@ -122,13 +122,13 @@ await_health() {
 # built-in balance assertions assume a brand-new cluster), but the commands it
 # submits are still committed. Callers decide whether a non-zero exit is fatal.
 run_client() {
-    ${COMPOSE} run --rm -e ADBE_CLIENT_ID="$1" client 2>&1 || true
+    ${COMPOSE} run --rm -e LEDGERD_CLIENT_ID="$1" client 2>&1 || true
 }
 
 # run_client_scenario <client_id> <scenario> - run the remote client with a named
 # scenario (see RemoteClientExample). Used to drive multi-asset + holds commands.
 run_client_scenario() {
-    ${COMPOSE} run --rm -e ADBE_CLIENT_ID="$1" -e ADBE_SCENARIO="$2" client 2>&1 || true
+    ${COMPOSE} run --rm -e LEDGERD_CLIENT_ID="$1" -e LEDGERD_SCENARIO="$2" client 2>&1 || true
 }
 
 # run_event_verifier - run the one-shot domain event journal follower verifier;
@@ -145,10 +145,10 @@ run_event_verifier() {
 trigger_snapshot() {
     local out="" applied=""
     for n in 0 1 2; do
-        out="$(${COMPOSE} exec -T "adbe-node-${n}" java \
+        out="$(${COMPOSE} exec -T "ledgerd-node-${n}" java \
             --add-opens java.base/jdk.internal.misc=ALL-UNNAMED \
             --add-opens java.base/sun.nio.ch=ALL-UNNAMED \
-            -cp '/opt/adbe/lib/*' io.aeron.cluster.ClusterTool /var/adbe/cluster snapshot 2>&1 || true)"
+            -cp '/opt/ledgerd/lib/*' io.aeron.cluster.ClusterTool /var/ledgerd/cluster snapshot 2>&1 || true)"
         echo "${out}" | grep -q "SNAPSHOT applied successfully" && applied="yes"
     done
     [ -n "${applied}" ] || die "no cluster member applied a snapshot (leader trigger failed)"
@@ -225,13 +225,13 @@ log "Step 5: malformed HTTP requests are rejected without crashing the node"
 pass "malformed requests rejected (404/400); node still healthy"
 
 log "Step 6: restart the read node; it re-syncs from the log independently"
-${COMPOSE} restart adbe-read-0
+${COMPOSE} restart ledgerd-read-0
 await_health "${READ_BASE}/healthz" 90
 await_contains "${READ_BASE}/supply" '"totalSupply":1000' 30
 pass "read node restarted, re-synced, and serves correct data (supply=1000)"
 
 log "Step 7: restart a write node; the cluster keeps committing and reads keep serving"
-${COMPOSE} restart adbe-node-2
+${COMPOSE} restart ledgerd-node-2
 await_health "http://localhost:9102/healthz" 90
 # A third client commits one more credit (supply -> 1500) while node-2 is back;
 # quorum (nodes 0 and 1) was maintained throughout the restart.
@@ -240,12 +240,12 @@ await_contains "${READ_BASE}/supply" '"totalSupply":1500' 30
 pass "write node restarted; writes still commit and reads still serve (supply=1500)"
 
 log "Step 8: stop the read node; writes still commit (read node does not affect quorum)"
-${COMPOSE} stop adbe-read-0
+${COMPOSE} stop ledgerd-read-0
 out="$(run_client 4)"
 echo "${out}" | grep -q "status=SUCCESS" \
     || die "writes failed while read node was down (quorum should be unaffected):\n${out}"
 pass "writes commit with the read node down (supply should be 2000)"
-${COMPOSE} start adbe-read-0
+${COMPOSE} start ledgerd-read-0
 await_health "${READ_BASE}/healthz" 90
 await_contains "${READ_BASE}/supply" '"totalSupply":2000' 30
 pass "read node restarted and caught up (supply=2000)"
@@ -262,18 +262,18 @@ pass "cluster snapshot triggered on the leader"
 # service snapshot on the archive, loads it (advance-only, skipping the cluster
 # framing), and serves the snapshotted state. The 'snapshot loaded' log proves
 # the snapshot path was exercised, and the supply proves no clobber occurred.
-${COMPOSE} restart adbe-read-0
+${COMPOSE} restart ledgerd-read-0
 await_health "${READ_BASE}/healthz" 90
-await_log_contains adbe-read-0 "snapshot loaded" 30
+await_log_contains ledgerd-read-0 "snapshot loaded" 30
 await_contains "${READ_BASE}/supply" '"totalSupply":2500' 30
 pass "read node restarted, loaded the service snapshot, and serves correct data (supply=2500)"
 
 log "Step 10: archive failover (ADR 0008) - kill node 0, the read node's archive source"
-# node 0 is first in ADBE_ARCHIVE_CHANNELS, so the read node follows its Archive.
+# node 0 is first in LEDGERD_ARCHIVE_CHANNELS, so the read node follows its Archive.
 # Killing it (SIGKILL => a crash, not a graceful stop) breaks that source; the
 # write cluster keeps quorum (nodes 1 and 2) and the read node must fail over to
 # a surviving member's Archive and keep converging.
-${COMPOSE} kill adbe-node-0
+${COMPOSE} kill ledgerd-node-0
 # Commit one more credit (supply -> 3000) through the surviving quorum, retrying
 # across the leader change triggered by node 0's death (same client id => the
 # command is idempotent across retries).
@@ -339,7 +339,7 @@ await_health "${RISK_BASE}/healthz" 90
 await_contains "${RISK_BASE}/risk/scores" '"account":100' 60
 await_contains "${RISK_BASE}/risk/scores" '"account":200' 60
 await_contains "${RISK_BASE}/risk/graph" '"from":100,"to":200' 60
-await_contains "${RISK_BASE}/" 'ADBE Risk Substrate' 10
+await_contains "${RISK_BASE}/" 'LEDGERD Risk Substrate' 10
 pass "risk service is healthy and exposes scores, the transfer graph edge, and the dashboard"
 
 log "ALL OPERATIONAL CHECKS PASSED"

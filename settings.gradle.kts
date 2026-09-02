@@ -1,4 +1,4 @@
-rootProject.name = "adbe"
+rootProject.name = "ledgerd"
 
 dependencyResolutionManagement {
     repositories {
@@ -6,12 +6,12 @@ dependencyResolutionManagement {
     }
 }
 
-include("adbe-protocol")
-include("adbe-core")
-include("adbe-launcher")
-include("adbe-client")
-include("adbe-read")
-include("adbe-risk")
-include("adbe-tests")
-include("adbe-examples")
-include("adbe-bench")
+include("protocol")
+include("core")
+include("launcher")
+include("write-client")
+include("read")
+include("risk")
+include("tests")
+include("examples")
+include("bench")

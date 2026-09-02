@@ -1,6 +1,6 @@
-# ADBE - Aeron Distributed Balance Engine
+# LEDGERD - Aeron Distributed Balance Engine
 
-[![CI](https://github.com/brianpht/addendum/actions/workflows/ci.yml/badge.svg)](https://github.com/brianpht/addendum/actions/workflows/ci.yml)
+[![CI](https://github.com/justrade/ledgerd/actions/workflows/ci.yml/badge.svg)](https://github.com/justrade/ledgerd/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 A deterministic, replicated, in-memory balance and delegated-spending engine in
@@ -9,7 +9,7 @@ core ledger: the single source of truth for balances and allowances.
 
 ## Overview
 
-ADBE Core is a strongly consistent balance processing engine for low-latency,
+LEDGERD Core is a strongly consistent balance processing engine for low-latency,
 high-throughput workloads. It runs as a single Aeron `ClusteredService`
 replicated by Raft, and does exactly one thing well: execute deterministic state
 transitions on balance and allowance state. Every command is idempotent, every
@@ -44,10 +44,10 @@ double-applied command or a nondeterministic replay is a correctness failure.
 - **Fault-Tolerant Failover**: multi-node Raft cluster with leader election and
   catch-up recovery; in-flight commands are retried idempotently across leader
   changes with no double-apply.
-- **Edge Client SDK**: `adbe-client` adds leader-change handling, idempotent
+- **Edge Client SDK**: `write-client` adds leader-change handling, idempotent
   retry, asynchronous result correlation, explicit backpressure signalling, and
   end-to-end HdrHistogram latency, consuming only the wire contract.
-- **CQRS Read Side**: `adbe-read` serves eventually-consistent balance, allowance,
+- **CQRS Read Side**: `read` serves eventually-consistent balance, allowance,
   and total-supply reads over HTTP (Netty). A read replica node follows a cluster
   member's Aeron Archive (no quorum impact, sub-second live log following) and
   fails over across every member's Archive with no leader discovery (ADR 0006,
@@ -57,7 +57,7 @@ double-applied command or a nondeterministic replay is a correctness failure.
   emitted off the consensus hot path and recorded per member, giving downstream
   consumers a decoupled fan-out substrate without re-implementing the engine
   (ADR 0011).
-- **AI Risk Substrate**: `adbe-risk` is an Edge consumer of the event journal that
+- **AI Risk Substrate**: `risk` is an Edge consumer of the event journal that
   scores accounts live for transaction velocity and money-flow graph centrality
   and serves a dashboard over HTTP; it is not a Raft member and never touches the
   hot path (ADR 0012).
@@ -71,37 +71,37 @@ double-applied command or a nondeterministic replay is a correctness failure.
 
 ## Installation
 
-ADBE is a Gradle multi-module project. Build it from source:
+LEDGERD is a Gradle multi-module project. Build it from source:
 
 ```bash
-git clone <repo-url> adbe && cd adbe
+git clone <repo-url> ledgerd && cd ledgerd
 ./gradlew build
 ```
 
 To embed the engine in another Gradle build, depend on the core module (or on
-`adbe-client` for the Edge-side SDK):
+`write-client` for the Edge-side SDK):
 
 ```kotlin
 dependencies {
-    implementation(project(":adbe-core"))    // deterministic engine
-    implementation(project(":adbe-client"))  // Edge-side client SDK
+    implementation(project(":core"))    // deterministic engine
+    implementation(project(":write-client"))  // Edge-side client SDK
 }
 ```
 
 ## Quick Start
 
 The fastest way to see the engine work end to end is the runnable example. It
-boots an in-process single-node cluster, connects an `AdbeClient`, submits a
+boots an in-process single-node cluster, connects an `WriteClient`, submits a
 credit and a transfer, and prints the resulting balances:
 
 ```bash
-./gradlew :adbe-examples:run
+./gradlew :examples:run
 ```
 
 Run a single-node cluster:
 
 ```bash
-./gradlew :adbe-launcher:run
+./gradlew :launcher:run
 ```
 
 Run a specific node of a multi-node cluster, or load a deployment from a
@@ -109,21 +109,21 @@ properties file:
 
 ```bash
 # node 1 of a localhost cluster, preserving prior state across restarts
-./gradlew :adbe-launcher:run -Dadbe.nodeId=1 -Dadbe.cleanStart=false
+./gradlew :launcher:run -Dledgerd.nodeId=1 -Dledgerd.cleanStart=false
 
-# from a properties file (must define adbe.clusterMembers)
-./gradlew :adbe-launcher:run --args="--config=production.properties"
+# from a properties file (must define ledgerd.clusterMembers)
+./gradlew :launcher:run --args="--config=production.properties"
 ```
 
 Drive the deterministic engine directly (no cluster required), which is exactly
 how the unit tests exercise it:
 
 ```java
-import com.adbe.config.CoreConfig;
-import com.adbe.core.BalanceEngine;
-import com.adbe.core.CommandOutcome;
-import com.adbe.protocol.*;
-import com.adbe.telemetry.CoreMetrics;
+import io.justrade.ledgerd.config.CoreConfig;
+import io.justrade.ledgerd.core.BalanceEngine;
+import io.justrade.ledgerd.core.CommandOutcome;
+import io.justrade.ledgerd.protocol.*;
+import io.justrade.ledgerd.telemetry.CoreMetrics;
 import org.agrona.concurrent.UnsafeBuffer;
 
 // Build an engine with preallocated, power-of-two capacities.
@@ -160,18 +160,18 @@ does not re-apply the command (`duplicate == true`).
 
 ### Using the client SDK
 
-`adbe-client` is the Edge-side SDK. It depends only on the wire contract (never on
-`adbe-core`) and handles leader changes, idempotent retries, and result
+`write-client` is the Edge-side SDK. It depends only on the wire contract (never on
+`core`) and handles leader changes, idempotent retries, and result
 correlation for you:
 
 ```java
-import com.adbe.client.AdbeClient;
-import com.adbe.client.config.ClientConfig;
-import com.adbe.launcher.ClusterConfig;
-import com.adbe.protocol.CommandType;
+import io.justrade.ledgerd.write.client.WriteClient;
+import io.justrade.ledgerd.write.client.config.ClientConfig;
+import io.justrade.ledgerd.launcher.ClusterConfig;
+import io.justrade.ledgerd.protocol.CommandType;
 
 ClientConfig config = ClientConfig.builder(1L, ClusterConfig.ingressEndpoints(1)).build();
-try (AdbeClient client = new AdbeClient(config,
+try (WriteClient client = new WriteClient(config,
         (idHi, idLo, status, balance, hasBalance, allowance, hasAllowance) ->
             System.out.println(status + " balance=" + balance))) {
 
@@ -184,7 +184,7 @@ try (AdbeClient client = new AdbeClient(config,
 
 ## How It Works
 
-ADBE Core is a replicated state machine. Commands flow through Aeron Cluster and
+LEDGERD Core is a replicated state machine. Commands flow through Aeron Cluster and
 arrive at `BalanceService` in total order on a single thread:
 
 1. **Dispatch**: `onSessionMessage` decodes the SBE envelope. The dedup table is
@@ -217,7 +217,7 @@ public static final int DEFAULT_DEDUP_WINDOW              = 1 << 10; // commands
 Node endpoints and directories are described by `ClusterConfig`: `singleNodeLocalhost`
 for local runs and integration tests, `multiNodeLocalhost` for an in-process
 multi-node cluster, and `fromProperties` to load a node from a deployment
-properties file (`adbe.clusterMembers`, `adbe.baseDir`, `adbe.host`).
+properties file (`ledgerd.clusterMembers`, `ledgerd.baseDir`, `ledgerd.host`).
 
 ### Observability
 
@@ -225,8 +225,8 @@ The launcher can expose the off-heap counters over HTTP in Prometheus text forma
 for SRE scraping, enabled with a system property:
 
 ```bash
-./gradlew :adbe-launcher:run -Dadbe.metricsPort=9100
-curl http://localhost:9100/metrics   # adbe_commands_processed, adbe_duplicates_detected, ...
+./gradlew :launcher:run -Dledgerd.metricsPort=9100
+curl http://localhost:9100/metrics   # ledgerd_commands_processed, ledgerd_duplicates_detected, ...
 curl http://localhost:9100/healthz   # ok
 ```
 
@@ -249,8 +249,8 @@ docker compose up --build
 Node 0 publishes its ingress port (`20100/udp`) to the host so an external client
 can connect, and each node exposes its Prometheus endpoint (`9100`, `9101`,
 `9102` on the host). The write members run with the domain event journal enabled
-(`ADBE_EVENT_JOURNAL=true`), so each records its own semantic event stream to its
-Archive (ADR 0011). The read replica node (`adbe-read-0`) connects to the members'
+(`LEDGERD_EVENT_JOURNAL=true`), so each records its own semantic event stream to its
+Archive (ADR 0011). The read replica node (`ledgerd-read-0`) connects to the members'
 Aeron Archives, follows the consensus log, and serves eventually-consistent reads
 over HTTP on host port `8080`. It is not a Raft member: it does not vote, does
 not affect quorum, and can be restarted independently (see ADR 0006 and 0007).
@@ -260,7 +260,7 @@ curl http://localhost:8080/balance/100
 curl http://localhost:8080/supply
 ```
 
-The risk service (`adbe-risk-0`) follows the members' domain event journal, scores
+The risk service (`ledgerd-risk-0`) follows the members' domain event journal, scores
 accounts for transaction velocity and money-flow graph centrality, and serves a
 live dashboard on host port `8090` (ADR 0012). Like the read node, it is not a
 Raft member and never affects quorum.
@@ -324,17 +324,17 @@ flowchart TB
 
 | Module          | Responsibility                                                        |
 |-----------------|-----------------------------------------------------------------------|
-| `adbe-protocol` | SBE schema and generated flyweight codecs (wire, snapshot, event journal) |
-| `adbe-core`     | Deterministic engine, handlers, dedup, snapshot, event journal ring, telemetry |
-| `adbe-launcher` | Aeron bootstrap: Media Driver, Archive, Consensus Module, Container, event journaler |
-| `adbe-client`   | Edge-side SDK: leader-change handling, idempotent retry, correlation  |
-| `adbe-read`     | CQRS read side: read replica node (Archive replication + failover), HTTP query API (Netty), event journal follower |
-| `adbe-risk`     | Edge AI risk substrate: event-journal consumer, velocity + graph scoring, HTTP dashboard (ADR 0012) |
-| `adbe-tests`    | Unit, property, integration, cluster, fault, soak tests and fixtures  |
-| `adbe-examples` | Runnable examples (QuickStart, RemoteClient)                          |
-| `adbe-bench`    | Datastore benchmark harness: ADBE vs PostgreSQL vs Redis (ADR 0013)   |
+| `protocol` | SBE schema and generated flyweight codecs (wire, snapshot, event journal) |
+| `core`     | Deterministic engine, handlers, dedup, snapshot, event journal ring, telemetry |
+| `launcher` | Aeron bootstrap: Media Driver, Archive, Consensus Module, Container, event journaler |
+| `write-client`   | Edge-side SDK: leader-change handling, idempotent retry, correlation  |
+| `read`     | CQRS read side: read replica node (Archive replication + failover), HTTP query API (Netty), event journal follower |
+| `risk`     | Edge AI risk substrate: event-journal consumer, velocity + graph scoring, HTTP dashboard (ADR 0012) |
+| `tests`    | Unit, property, integration, cluster, fault, soak tests and fixtures  |
+| `examples` | Runnable examples (QuickStart, RemoteClient)                          |
+| `bench`    | Datastore benchmark harness: LEDGERD vs PostgreSQL vs Redis (ADR 0013)   |
 
-Within `adbe-core`:
+Within `core`:
 
 | Component         | Responsibility                                                    |
 |-------------------|-------------------------------------------------------------------|
@@ -351,7 +351,7 @@ Within `adbe-core`:
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Component map, wire format, data flows, determinism rules |
 | [docs/API-REFERENCE.md](docs/API-REFERENCE.md) | Client SDK, commands, use cases, status codes, observability |
 | [docs/OPERATIONS.md](docs/OPERATIONS.md) | Snapshot management, node restart, deployment, Prometheus metrics |
-| [docs/BENCHMARKS-VS-DATASTORES.md](docs/BENCHMARKS-VS-DATASTORES.md) | ADBE vs PostgreSQL vs Redis datastore benchmark (ADR 0013) |
+| [docs/BENCHMARKS-VS-DATASTORES.md](docs/BENCHMARKS-VS-DATASTORES.md) | LEDGERD vs PostgreSQL vs Redis datastore benchmark (ADR 0013) |
 | [docs/decisions/](docs/decisions/) | Architectural decision records |
 
 ## Performance
@@ -423,7 +423,7 @@ principles. Key architectural decisions include:
 | `ReadQueryGatewayTest`   | Unit        | Query-ring correlation, cancel/orphan handling, codec |
 | `MetricsHttpServerTest`  | Unit        | Prometheus metrics and healthz HTTP endpoint          |
 | `ClusterIntegrationTest` | Integration | End-to-end over a real cluster, idempotency verified  |
-| `AdbeClientIntegrationTest` | Integration | Client SDK submit/poll, command-id correlation     |
+| `WriteClientIntegrationTest` | Integration | Client SDK submit/poll, command-id correlation     |
 | `ReadReplicaQueryIntegrationTest` | Integration | Read-after-write over HTTP via read replica; both sides of transfer, malformed requests |
 | `ReadReplicaReplicationIntegrationTest` | Integration | Read replica snapshot replication end-to-end    |
 | `ReadReplicaLiveLogIntegrationTest` | Integration | Read replica live log following, sub-second staleness |
@@ -437,14 +437,14 @@ principles. Key architectural decisions include:
 ## Benchmarks
 
 ```bash
-./gradlew :adbe-core:jmh                 # full run
-./gradlew :adbe-core:jmh -PquickBench    # fast smoke run (CI gate)
+./gradlew :core:jmh                 # full run
+./gradlew :core:jmh -PquickBench    # fast smoke run (CI gate)
 ```
 
 Run with the GC profiler to confirm zero steady-state allocation:
 
 ```bash
-./gradlew :adbe-core:jmh -Pjmh.profilers=gc
+./gradlew :core:jmh -Pjmh.profilers=gc
 ```
 
 Baseline numbers a reviewer can diff against are committed in

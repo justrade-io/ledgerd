@@ -44,10 +44,10 @@ jobs:
         run: ./gradlew --no-daemon compileJava
 
       - name: Unit and integration tests
-        run: ./gradlew --no-daemon test integrationTest :adbe-tests:jacocoTestReport
+        run: ./gradlew --no-daemon test integrationTest :tests:jacocoTestReport
 
       - name: JMH smoke run and latency budget check
-        run: ./gradlew --no-daemon :adbe-core:jmhBudgetCheck -PquickBench
+        run: ./gradlew --no-daemon :core:jmhBudgetCheck -PquickBench
 
       - name: Upload test reports
         if: always()
@@ -65,6 +65,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: coverage-report
-          path: adbe-tests/build/reports/jacoco/
+          path: tests/build/reports/jacoco/
           if-no-files-found: ignore
           retention-days: 7

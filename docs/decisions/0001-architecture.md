@@ -5,7 +5,7 @@ Date: 2026-07-26
 
 ## Context
 
-ADBE Core must be a strongly consistent, ultra-low-latency balance and
+LEDGERD Core must be a strongly consistent, ultra-low-latency balance and
 delegated-spending engine. Traditional RDBMS ledgers suffer lock contention and
 latency growth under load; single-node in-memory engines are fast but not fault
 tolerant. See tmp/PRD.md and tmp/TDD.md.
@@ -16,7 +16,7 @@ tolerant. See tmp/PRD.md and tmp/TDD.md.
   running on one `ClusteredServiceAgent` thread (single-writer, no locks).
 - Keep all business logic in a cluster-independent `BalanceEngine` so it can be
   unit and replay tested without Aeron.
-- Wire format and snapshots use SBE (module `adbe-protocol`), little-endian,
+- Wire format and snapshots use SBE (module `protocol`), little-endian,
   fixed field order. Optional fields (`presence="optional"`) enable
   backward-compatible schema evolution, including snapshots.
 - Idempotency is intrinsic: a per-client `DedupTable` of ring buffers caches the
@@ -24,16 +24,16 @@ tolerant. See tmp/PRD.md and tmp/TDD.md.
 - Money and allowances are 64-bit signed `long` with overflow checks that return
   `StatusCode.OVERFLOW` (no exceptions for control flow).
 - Determinism is enforced by convention and a Checkstyle rule set
-  (`adbe-core/config/checkstyle/determinism.xml`) banning clocks, randomness,
+  (`core/config/checkstyle/determinism.xml`) banning clocks, randomness,
   unordered maps, `Optional`, `BigDecimal`, streams, and blocking primitives in
   the core.
 
 ## Module layout (hybrid)
 
-- `adbe-protocol` - SBE schema and generated codecs (dependency-only).
-- `adbe-core` - engine, handlers, dedup, snapshot, telemetry.
-- `adbe-launcher` - Aeron component bootstrap.
-- `adbe-tests` - unit, integration, and test fixtures (test-only cluster client).
+- `protocol` - SBE schema and generated codecs (dependency-only).
+- `core` - engine, handlers, dedup, snapshot, telemetry.
+- `launcher` - Aeron component bootstrap.
+- `tests` - unit, integration, and test fixtures (test-only cluster client).
 
 Each module organises sources by the copilot-instructions package structure
 (`config`, `codec`, `core`, `collections`, `persistence`, `telemetry`, `util`).

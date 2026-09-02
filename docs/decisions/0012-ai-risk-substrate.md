@@ -19,15 +19,15 @@ deterministic core.
 
 ## Decision
 
-A new Edge module `adbe-risk` consumes the event journal and scores accounts in
+A new Edge module `risk` consumes the event journal and scores accounts in
 real time.
 
-1. **Bounded context: Edge, not core.** `adbe-risk` is a read-side / Edge module
-   like `adbe-read`. It may use the system clock, heap allocation, `HashMap`,
+1. **Bounded context: Edge, not core.** `risk` is a read-side / Edge module
+   like `read`. It may use the system clock, heap allocation, `HashMap`,
    streams, and Netty. It MUST NOT link the deterministic core hot path and MUST
    NOT join Raft or affect quorum. It only reads.
 
-2. **Consumes the journal via `adbe-read`.** It follows the recorded event stream
+2. **Consumes the journal via `read`.** It follows the recorded event stream
    (ADR 0011, stream 108) with `EventJournalFollower` and a
    `DomainEventListener`, reusing the multi-archive failover and
    `(logPosition, eventIndex)` dedup already built for Phase 2. No new transport
@@ -57,20 +57,20 @@ real time.
    baseline is enough to demonstrate the substrate end to end.
 
 6. **Dashboard.** A Netty HTTP boundary (`RiskHttpServer`, mirroring
-   `adbe-read`'s `QueryHttpServer`) serves a static dashboard plus JSON:
+   `read`'s `QueryHttpServer`) serves a static dashboard plus JSON:
    `GET /` (HTML + JS heatmap and transfer-graph view), `GET /risk/scores`,
    `GET /risk/graph`, `GET /healthz`, `GET /metrics`. JSON is built by hand at the
    Edge, never on the follower thread.
 
 7. **Entry point + config.** `RiskServiceLauncher` reads environment variables
    with localhost defaults, exactly as `ReadServiceLauncher` /
-   `EventJournalVerifier` do (`ADBE_ARCHIVE_CHANNELS` / `ADBE_ARCHIVE_CHANNEL`,
-   `ADBE_LOCAL_HOST`, `ADBE_AERON_DIR`, `ADBE_HTTP_PORT`).
+   `EventJournalVerifier` do (`LEDGERD_ARCHIVE_CHANNELS` / `LEDGERD_ARCHIVE_CHANNEL`,
+   `LEDGERD_LOCAL_HOST`, `LEDGERD_AERON_DIR`, `LEDGERD_HTTP_PORT`).
 
 ```mermaid
 flowchart LR
     JR["Cluster Archives<br/>event journal (stream 108)"]
-    FOL["EventJournalFollower<br/>(adbe-read, single agent thread)"]
+    FOL["EventJournalFollower<br/>(read, single agent thread)"]
     SVC["RiskScoringService<br/>(DomainEventListener)"]
     VEL["VelocityTracker<br/>EWMA z-score"]
     GRAPH["TransferGraph<br/>degree centrality + PageRank"]

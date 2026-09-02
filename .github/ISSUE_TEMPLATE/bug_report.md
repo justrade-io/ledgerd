@@ -11,11 +11,11 @@ A clear and concise description of the bug.
 
 ## Affected component
 
-- [ ] `adbe-protocol` (SBE schema / codecs)
-- [ ] `adbe-core` (engine, handlers, dedup, snapshot, telemetry)
-- [ ] `adbe-launcher` (cluster bootstrap)
-- [ ] `adbe-client` (Edge SDK)
-- [ ] `adbe-examples`
+- [ ] `protocol` (SBE schema / codecs)
+- [ ] `core` (engine, handlers, dedup, snapshot, telemetry)
+- [ ] `launcher` (cluster bootstrap)
+- [ ] `write-client` (Edge SDK)
+- [ ] `examples`
 - [ ] build / CI / docs
 
 ## Environment (required)

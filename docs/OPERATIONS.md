@@ -1,7 +1,7 @@
-# ADBE Operations Guide
+# LEDGERD Operations Guide
 
 This guide covers cluster deployment, snapshot management, node recovery, capacity tuning, and
-observability for ADBE operators and SREs. For the client integration surface see
+observability for LEDGERD operators and SREs. For the client integration surface see
 [API-REFERENCE.md](API-REFERENCE.md). For system internals see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ---
@@ -50,38 +50,38 @@ must set them explicitly.
 
 ```bash
 # Fresh single-node cluster; state cleared on each start.
-./gradlew :adbe-launcher:run
+./gradlew :launcher:run
 
 # Preserve state across restarts.
-./gradlew :adbe-launcher:run -Dadbe.nodeId=0 -Dadbe.cleanStart=false
+./gradlew :launcher:run -Dledgerd.nodeId=0 -Dledgerd.cleanStart=false
 
 # Custom base directory.
-./gradlew :adbe-launcher:run -Dadbe.baseDir=/var/adbe/node-0
+./gradlew :launcher:run -Dledgerd.baseDir=/var/ledgerd/node-0
 
 # Expose Prometheus metrics on port 9100.
-./gradlew :adbe-launcher:run -Dadbe.metricsPort=9100
+./gradlew :launcher:run -Dledgerd.metricsPort=9100
 
 # Enable the opt-in domain event journal (ADR 0011); records to Archive stream 108.
-./gradlew :adbe-launcher:run -Dadbe.eventJournal=true
+./gradlew :launcher:run -Dledgerd.eventJournal=true
 ```
 
 ### Properties file (production)
 
 ```bash
-./gradlew :adbe-launcher:run --args="--config=production.properties"
+./gradlew :launcher:run --args="--config=production.properties"
 # or
-java -jar adbe-launcher.jar --config=production.properties
+java -jar launcher.jar --config=production.properties
 ```
 
 Recognised properties:
 
 | Key                  | Required | Default                          | Description                                    |
 |----------------------|:--------:|----------------------------------|------------------------------------------------|
-| `adbe.clusterMembers`| yes      | -                                | Aeron member string (see Section 3).           |
-| `adbe.baseDir`       | no       | `build/adbe-node-<id>`           | Root directory for archive and cluster state.  |
-| `adbe.host`          | no       | `localhost`                      | This node's advertised host for ingress.       |
+| `ledgerd.clusterMembers`| yes      | -                                | Aeron member string (see Section 3).           |
+| `ledgerd.baseDir`       | no       | `build/ledgerd-node-<id>`           | Root directory for archive and cluster state.  |
+| `ledgerd.host`          | no       | `localhost`                      | This node's advertised host for ingress.       |
 
-Node id is supplied via `adbe.nodeId` system property or defaults to `0`.
+Node id is supplied via `ledgerd.nodeId` system property or defaults to `0`.
 
 ---
 
@@ -89,7 +89,7 @@ Node id is supplied via `adbe.nodeId` system property or defaults to `0`.
 
 ### Aeron member string format
 
-Each node in `adbe.clusterMembers` has six comma-separated fields:
+Each node in `ledgerd.clusterMembers` has six comma-separated fields:
 
 ```
 <id>,<ingress>,<consensus>,<log>,<catchup>,<archive>
@@ -105,17 +105,17 @@ For a three-node cluster on `localhost` (ports follow `PORT_BASE=20100`, `PORT_S
 
 ```bash
 # Terminal 0
-./gradlew :adbe-launcher:run -Dadbe.nodeId=0 -Dadbe.config=local-3node.properties
+./gradlew :launcher:run -Dledgerd.nodeId=0 -Dledgerd.config=local-3node.properties
 
 # Terminal 1
-./gradlew :adbe-launcher:run -Dadbe.nodeId=1 -Dadbe.config=local-3node.properties
+./gradlew :launcher:run -Dledgerd.nodeId=1 -Dledgerd.config=local-3node.properties
 
 # Terminal 2
-./gradlew :adbe-launcher:run -Dadbe.nodeId=2 -Dadbe.config=local-3node.properties
+./gradlew :launcher:run -Dledgerd.nodeId=2 -Dledgerd.config=local-3node.properties
 ```
 
-All three nodes share the same `adbe.clusterMembers` string in `local-3node.properties`; each
-supplies its own `adbe.nodeId` on the command line.
+All three nodes share the same `ledgerd.clusterMembers` string in `local-3node.properties`; each
+supplies its own `ledgerd.nodeId` on the command line.
 
 ### Docker Compose
 
@@ -130,7 +130,7 @@ docker compose run --rm client
 Node 0 exposes ingress port `20100/udp` to the host. Prometheus endpoints are available at
 `localhost:9100`, `localhost:9101`, `localhost:9102`.
 
-The `ADBE_INGRESS_ENDPOINTS` and `ADBE_EGRESS_ENDPOINT` environment variables in the compose file
+The `LEDGERD_INGRESS_ENDPOINTS` and `LEDGERD_EGRESS_ENDPOINT` environment variables in the compose file
 configure which host the client connects to and which address it advertises for egress delivery.
 
 ---
@@ -150,9 +150,9 @@ through the Raft log so every node takes the snapshot at the same log position, 
 byte-identical output.
 
 ```bash
-# clusterDir is the node's cluster state directory (adbe.baseDir/cluster by default).
+# clusterDir is the node's cluster state directory (ledgerd.baseDir/cluster by default).
 java -cp aeron-all.jar io.aeron.cluster.ClusterTool \
-    build/adbe-node-0/cluster \
+    build/ledgerd-node-0/cluster \
     snapshot
 ```
 
@@ -194,7 +194,7 @@ corruption or truncation.
 
 ```bash
 # Preserve and recover.
-./gradlew :adbe-launcher:run -Dadbe.nodeId=0 -Dadbe.cleanStart=false
+./gradlew :launcher:run -Dledgerd.nodeId=0 -Dledgerd.cleanStart=false
 
 # Programmatically.
 ClusterNode node = new ClusterNode(clusterConfig, CoreConfig.defaults(), /*cleanStart=*/ false);
@@ -224,7 +224,7 @@ sequenceDiagram
 | Account balances                   | yes       | All accounts and their exact balances.                            |
 | Allowances                         | yes       | All (owner, delegate, allowance) triples.                         |
 | Dedup table                        | yes       | Cached results within the dedup window. Idempotency holds.        |
-| Pending in-flight commands (client)| no        | `AdbeClient` retransmits automatically via `onNewLeader` callback.|
+| Pending in-flight commands (client)| no        | `WriteClient` retransmits automatically via `onNewLeader` callback.|
 
 ---
 
@@ -265,11 +265,11 @@ CoreConfig config = CoreConfig.of(
 
 ## 7. Prometheus Metrics
 
-Enable the HTTP endpoint with `-Dadbe.metricsPort=<port>`. The server binds `0.0.0.0:<port>` on a
+Enable the HTTP endpoint with `-Dledgerd.metricsPort=<port>`. The server binds `0.0.0.0:<port>` on a
 daemon thread and reads off-heap counters with acquire ordering, never touching the service thread.
 
 ```bash
-./gradlew :adbe-launcher:run -Dadbe.metricsPort=9100
+./gradlew :launcher:run -Dledgerd.metricsPort=9100
 curl http://localhost:9100/metrics
 curl http://localhost:9100/healthz   # returns "ok"
 ```
@@ -278,54 +278,54 @@ curl http://localhost:9100/healthz   # returns "ok"
 
 | Metric name                    | Description                                                        |
 |--------------------------------|--------------------------------------------------------------------|
-| `adbe_commands_processed`      | Total commands applied (excluding duplicates).                     |
-| `adbe_duplicates_detected`     | Commands returned from dedup cache without re-applying.            |
-| `adbe_insufficient_balance`    | Commands rejected with `INSUFFICIENT_BALANCE`.                     |
-| `adbe_insufficient_allowance`  | Commands rejected with `INSUFFICIENT_ALLOWANCE`.                   |
-| `adbe_invalid_account`         | Commands rejected with `INVALID_ACCOUNT`.                          |
-| `adbe_overflow`                | Commands rejected with `OVERFLOW`.                                 |
-| `adbe_invalid_amount`          | Commands rejected with `INVALID_AMOUNT`.                           |
-| `adbe_backpressure_events`     | Egress back-pressure events on the service thread.                 |
-| `adbe_leader_elections`        | Leader elections observed by this node since start.                |
+| `ledgerd_commands_processed`      | Total commands applied (excluding duplicates).                     |
+| `ledgerd_duplicates_detected`     | Commands returned from dedup cache without re-applying.            |
+| `ledgerd_insufficient_balance`    | Commands rejected with `INSUFFICIENT_BALANCE`.                     |
+| `ledgerd_insufficient_allowance`  | Commands rejected with `INSUFFICIENT_ALLOWANCE`.                   |
+| `ledgerd_invalid_account`         | Commands rejected with `INVALID_ACCOUNT`.                          |
+| `ledgerd_overflow`                | Commands rejected with `OVERFLOW`.                                 |
+| `ledgerd_invalid_amount`          | Commands rejected with `INVALID_AMOUNT`.                           |
+| `ledgerd_backpressure_events`     | Egress back-pressure events on the service thread.                 |
+| `ledgerd_leader_elections`        | Leader elections observed by this node since start.                |
 
 ### Gauge metrics (current value)
 
 | Metric name                    | Description                                                        |
 |--------------------------------|--------------------------------------------------------------------|
-| `adbe_snapshot_write_nanos`    | Duration of the last snapshot write in nanoseconds.                |
-| `adbe_snapshot_read_nanos`     | Duration of the last snapshot load in nanoseconds.                 |
-| `adbe_balance_count`           | Current number of distinct accounts in the balance map.            |
-| `adbe_allowance_owner_count`   | Current number of distinct allowance owners.                       |
-| `adbe_dedup_client_count`      | Current number of distinct clients tracked by the dedup table.     |
+| `ledgerd_snapshot_write_nanos`    | Duration of the last snapshot write in nanoseconds.                |
+| `ledgerd_snapshot_read_nanos`     | Duration of the last snapshot load in nanoseconds.                 |
+| `ledgerd_balance_count`           | Current number of distinct accounts in the balance map.            |
+| `ledgerd_allowance_owner_count`   | Current number of distinct allowance owners.                       |
+| `ledgerd_dedup_client_count`      | Current number of distinct clients tracked by the dedup table.     |
 
 ### Prometheus scrape config example
 
 ```yaml
 scrape_configs:
-  - job_name: adbe
+  - job_name: ledgerd
     static_configs:
       - targets:
-          - adbe-node-0:9100
-          - adbe-node-1:9101
-          - adbe-node-2:9102
+          - ledgerd-node-0:9100
+          - ledgerd-node-1:9101
+          - ledgerd-node-2:9102
 ```
 
 ### Alerting recommendations
 
-- **`adbe_commands_processed` growth rate drops to zero**: cluster has stalled; check leader
+- **`ledgerd_commands_processed` growth rate drops to zero**: cluster has stalled; check leader
   election and ingress connectivity.
-- **`adbe_backpressure_events` rising**: egress channel to a client is slow; check client-side
+- **`ledgerd_backpressure_events` rising**: egress channel to a client is slow; check client-side
   `poll()` rate and network.
-- **`adbe_balance_count` approaching `accountCapacity`**: resize before the map load factor
+- **`ledgerd_balance_count` approaching `accountCapacity`**: resize before the map load factor
   degrades; plan a rolling restart with a larger `CoreConfig`.
-- **`adbe_snapshot_write_nanos` suddenly large**: snapshot took longer than expected; check I/O on
+- **`ledgerd_snapshot_write_nanos` suddenly large**: snapshot took longer than expected; check I/O on
   the archive directory.
 
 ---
 
 ## 8. Read Service (HTTP Query API)
 
-The read service (`adbe-read`) serves eventually-consistent balance, allowance,
+The read service (`read`) serves eventually-consistent balance, allowance,
 and total-supply reads over HTTP via a read replica node. `ReadReplicaNode` runs
 as a standalone process, independent of the Raft cluster: it connects to the
 write cluster members' Aeron Archives, follows the consensus log recording (from
@@ -341,29 +341,29 @@ restarted independently. See ADR 0006, 0007, and 0008.
 ```bash
 # Gradle (development): standalone read replica. Configure every member's Archive
 # so the node can fail over (ADR 0008); a single channel also works (legacy).
-ADBE_ARCHIVE_CHANNELS="aeron:udp?endpoint=localhost:20104,aeron:udp?endpoint=localhost:20204,aeron:udp?endpoint=localhost:20304" \
-    ./gradlew :adbe-read:run
+LEDGERD_ARCHIVE_CHANNELS="aeron:udp?endpoint=localhost:20104,aeron:udp?endpoint=localhost:20204,aeron:udp?endpoint=localhost:20304" \
+    ./gradlew :read:run
 
 # Standalone process with live log following.
 java \
     --add-opens java.base/jdk.internal.misc=ALL-UNNAMED \
     --add-opens java.base/sun.nio.ch=ALL-UNNAMED \
-    -cp 'adbe-read/build/libs/*' com.adbe.read.ReadServiceLauncher
+    -cp 'read/build/libs/*' io.justrade.ledgerd.read.ReadServiceLauncher
 ```
 
 Recognised environment variables:
 
 | Variable                  | Required | Default                               | Description                                           |
 |---------------------------|:--------:|---------------------------------------|-------------------------------------------------------|
-| `ADBE_ARCHIVE_CHANNELS`   | no*      | `aeron:udp?endpoint=localhost:20104`  | Comma-separated Archive control channels, one per cluster member; the node fails over across them (ADR 0008). |
-| `ADBE_ARCHIVE_CHANNEL`    | no*      | `aeron:udp?endpoint=localhost:20104`  | Single Archive control channel (legacy fallback when `ADBE_ARCHIVE_CHANNELS` is unset). |
-| `ADBE_LOCAL_HOST`         | no       | `localhost`                           | Routable host for Archive call-backs (control response + replays). Set to the container address in Docker. |
-| `ADBE_HTTP_PORT`          | no       | `8080`                                | Port for the HTTP query API.                          |
-| `ADBE_SNAPSHOT_POLL_MS`   | no       | `5000`                                | Interval (ms) between snapshot polls on the Archive.  |
-| `ADBE_LIVE_LOG`           | no       | `true`                                | Follow the consensus log for sub-second staleness.    |
+| `LEDGERD_ARCHIVE_CHANNELS`   | no*      | `aeron:udp?endpoint=localhost:20104`  | Comma-separated Archive control channels, one per cluster member; the node fails over across them (ADR 0008). |
+| `LEDGERD_ARCHIVE_CHANNEL`    | no*      | `aeron:udp?endpoint=localhost:20104`  | Single Archive control channel (legacy fallback when `LEDGERD_ARCHIVE_CHANNELS` is unset). |
+| `LEDGERD_LOCAL_HOST`         | no       | `localhost`                           | Routable host for Archive call-backs (control response + replays). Set to the container address in Docker. |
+| `LEDGERD_HTTP_PORT`          | no       | `8080`                                | Port for the HTTP query API.                          |
+| `LEDGERD_SNAPSHOT_POLL_MS`   | no       | `5000`                                | Interval (ms) between snapshot polls on the Archive.  |
+| `LEDGERD_LIVE_LOG`           | no       | `true`                                | Follow the consensus log for sub-second staleness.    |
 
-\* At least one Archive endpoint is required: set `ADBE_ARCHIVE_CHANNELS`
-(preferred) or `ADBE_ARCHIVE_CHANNEL`.
+\* At least one Archive endpoint is required: set `LEDGERD_ARCHIVE_CHANNELS`
+(preferred) or `LEDGERD_ARCHIVE_CHANNEL`.
 
 ### Consistency and health
 
@@ -385,12 +385,12 @@ Recognised environment variables:
 ### Deployment
 
 `docker-compose.yml` brings up the 3-node write cluster plus one read replica read
-node (`adbe-read-0`) on a shared network:
+node (`ledgerd-read-0`) on a shared network:
 
 ```bash
 docker compose up --build
 
-# Write via AdbeClient to localhost:20100.
+# Write via WriteClient to localhost:20100.
 # Read from the read replica node:
 curl http://localhost:8080/balance/100
 curl "http://localhost:8080/balance/100?asset=1"   # optional ?asset= (default 0)
@@ -399,9 +399,9 @@ curl http://localhost:8080/healthz
 ```
 
 The read node is configured with all three member Archives
-(`ADBE_ARCHIVE_CHANNELS`): it follows the first reachable one and fails over to a
+(`LEDGERD_ARCHIVE_CHANNELS`): it follows the first reachable one and fails over to a
 survivor if that member dies (ADR 0008). It advertises its own container address
-for Archive call-backs (`ADBE_LOCAL_HOST`, derived automatically by the
+for Archive call-backs (`LEDGERD_LOCAL_HOST`, derived automatically by the
 entrypoint). Read replica nodes are NOT cluster members: they do not vote, do not
 affect quorum, and can be added, removed, or restarted independently.
 
@@ -430,8 +430,8 @@ Journaling is opt-in. Off by default, so nodes that do not need it pay nothing.
 
 | Deployment | How to enable |
 |------------|---------------|
-| Gradle / manual | `-Dadbe.eventJournal=true` (optionally `-Dadbe.eventJournalCapacity=<power-of-two>`) |
-| Docker | `ADBE_EVENT_JOURNAL=true` in the service environment (set for all members in `docker-compose.yml`) |
+| Gradle / manual | `-Dledgerd.eventJournal=true` (optionally `-Dledgerd.eventJournalCapacity=<power-of-two>`) |
+| Docker | `LEDGERD_EVENT_JOURNAL=true` in the service environment (set for all members in `docker-compose.yml`) |
 
 When enabled, each member records its own event stream to its Archive on stream
 id 108 via the `EventJournaler` agent, which runs on its own thread off the
@@ -449,14 +449,14 @@ applied commands:
 docker compose run --rm event-verifier
 ```
 
-The verifier ships in the `adbe-read` distribution (`EventJournalVerifier`); the
+The verifier ships in the `read` distribution (`EventJournalVerifier`); the
 Docker `event-verifier` target reuses that image.
 
 ---
 
 ## 10. AI Risk Service
 
-The AI risk service (`adbe-risk`) is an Edge consumer of the domain event journal
+The AI risk service (`risk`) is an Edge consumer of the domain event journal
 (ADR 0012). It follows the members' recorded event stream, scores accounts live
 for transaction velocity and money-flow graph centrality, and serves a dashboard
 plus JSON over HTTP. Like the read replica, it is NOT a Raft member: it does not
@@ -468,26 +468,26 @@ enabled (Section 9).
 
 ```bash
 # Gradle (development): follow local member Archives, serve the dashboard.
-ADBE_ARCHIVE_CHANNELS="aeron:udp?endpoint=localhost:20104,aeron:udp?endpoint=localhost:20204,aeron:udp?endpoint=localhost:20304" \
-    ./gradlew :adbe-risk:run
+LEDGERD_ARCHIVE_CHANNELS="aeron:udp?endpoint=localhost:20104,aeron:udp?endpoint=localhost:20204,aeron:udp?endpoint=localhost:20304" \
+    ./gradlew :risk:run
 ```
 
-Recognised environment variables (localhost defaults, mirroring `adbe-read`):
+Recognised environment variables (localhost defaults, mirroring `read`):
 
 | Variable                | Required | Default                              | Description                                            |
 |-------------------------|:--------:|--------------------------------------|--------------------------------------------------------|
-| `ADBE_ARCHIVE_CHANNELS` | no*      | `aeron:udp?endpoint=localhost:20104` | Comma-separated Archive control channels, one per member; fails over across them. |
-| `ADBE_ARCHIVE_CHANNEL`  | no*      | `aeron:udp?endpoint=localhost:20104` | Single Archive control channel (legacy fallback).      |
-| `ADBE_LOCAL_HOST`       | no       | `localhost`                          | Routable host for Archive call-backs. Set to the container address in Docker. |
-| `ADBE_AERON_DIR`        | no       | embedded                             | Aeron media driver directory; embedded when unset.     |
-| `ADBE_HTTP_PORT`        | no       | `8090`                               | Port for the dashboard and JSON endpoints.             |
+| `LEDGERD_ARCHIVE_CHANNELS` | no*      | `aeron:udp?endpoint=localhost:20104` | Comma-separated Archive control channels, one per member; fails over across them. |
+| `LEDGERD_ARCHIVE_CHANNEL`  | no*      | `aeron:udp?endpoint=localhost:20104` | Single Archive control channel (legacy fallback).      |
+| `LEDGERD_LOCAL_HOST`       | no       | `localhost`                          | Routable host for Archive call-backs. Set to the container address in Docker. |
+| `LEDGERD_AERON_DIR`        | no       | embedded                             | Aeron media driver directory; embedded when unset.     |
+| `LEDGERD_HTTP_PORT`        | no       | `8090`                               | Port for the dashboard and JSON endpoints.             |
 
 \* At least one Archive endpoint is required.
 
 ### Endpoints
 
 ```bash
-# Docker: adbe-risk-0 serves on host port 8090.
+# Docker: ledgerd-risk-0 serves on host port 8090.
 open http://localhost:8090/            # dashboard (velocity heatmap + transfer graph)
 curl http://localhost:8090/risk/scores # per-account risk scores (JSON)
 curl http://localhost:8090/risk/graph  # money-flow graph (JSON)
@@ -519,14 +519,14 @@ Scale and behaviour are env-tunable (defaults in parentheses):
 
 | Variable                  | Default | Description                                              |
 |---------------------------|:-------:|---------------------------------------------------------|
-| `ADBE_RISK_POPULATION`    | `120`   | Accounts seeded and traded between (graph nodes).        |
-| `ADBE_RISK_BACKGROUND_TX` | `400`   | Random transfers across the population (graph edges).    |
-| `ADBE_RISK_SPIKE_ACCOUNTS`| `4`     | Accounts driven with a velocity spike.                   |
-| `ADBE_RISK_SPIKE_EDGES`   | `20`    | Counterparties each spike account also fans out to.      |
-| `ADBE_RISK_BURST`         | `30`    | Fast back-to-back transactions per spike account.        |
-| `ADBE_RISK_HUBS`          | `3`     | Hub accounts that fan out to many counterparties.        |
-| `ADBE_RISK_HUB_SPOKES`    | `30`    | Distinct counterparties per hub (raises centrality).     |
-| `ADBE_SCENARIO_LOOP`      | `false` | Repeat the scenario forever for a live, evolving demo.   |
+| `LEDGERD_RISK_POPULATION`    | `120`   | Accounts seeded and traded between (graph nodes).        |
+| `LEDGERD_RISK_BACKGROUND_TX` | `400`   | Random transfers across the population (graph edges).    |
+| `LEDGERD_RISK_SPIKE_ACCOUNTS`| `4`     | Accounts driven with a velocity spike.                   |
+| `LEDGERD_RISK_SPIKE_EDGES`   | `20`    | Counterparties each spike account also fans out to.      |
+| `LEDGERD_RISK_BURST`         | `30`    | Fast back-to-back transactions per spike account.        |
+| `LEDGERD_RISK_HUBS`          | `3`     | Hub accounts that fan out to many counterparties.        |
+| `LEDGERD_RISK_HUB_SPOKES`    | `30`    | Distinct counterparties per hub (raises centrality).     |
+| `LEDGERD_SCENARIO_LOOP`      | `false` | Repeat the scenario forever for a live, evolving demo.   |
 
 The velocity z-score itself is transient - it peaks on the first fast transaction
 after a baseline and the moving average absorbs it within a couple of events - so
@@ -535,7 +535,7 @@ durable alert that fades over time instead of vanishing on the next event. Spike
 accounts are also given graph centrality, so their combined score clears the flag
 threshold with margin and they show as flagged (red) in the scores table. The
 pure hubs stay visibly hot in the money-flow graph on centrality alone without
-crossing the flag threshold. Use `ADBE_SCENARIO_LOOP=true` to keep spikes
+crossing the flag threshold. Use `LEDGERD_SCENARIO_LOOP=true` to keep spikes
 recurring while demoing.
 
 

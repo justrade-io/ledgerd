@@ -13,91 +13,91 @@
 FROM eclipse-temurin:21-jdk AS build
 WORKDIR /src
 COPY . .
-RUN ./gradlew --no-daemon :adbe-launcher:installDist :adbe-read:installDist :adbe-risk:installDist :adbe-examples:installDist
+RUN ./gradlew --no-daemon :launcher:installDist :read:installDist :risk:installDist :examples:installDist
 
 FROM eclipse-temurin:21-jre AS node
-LABEL org.opencontainers.image.title="adbe-launcher" \
-      org.opencontainers.image.description="ADBE - Aeron Distributed Balance Engine cluster node" \
+LABEL org.opencontainers.image.title="ledgerd-launcher" \
+      org.opencontainers.image.description="LEDGERD - Aeron Distributed Balance Engine cluster node" \
       org.opencontainers.image.licenses="MIT"
 
 # Run as a non-root user.
-RUN useradd --system --create-home --home-dir /home/adbe adbe \
-    && mkdir -p /var/adbe \
-    && chown -R adbe:adbe /var/adbe
+RUN useradd --system --create-home --home-dir /home/ledgerd ledgerd \
+    && mkdir -p /var/ledgerd \
+    && chown -R ledgerd:ledgerd /var/ledgerd
 
-COPY --from=build /src/adbe-launcher/build/install/adbe-launcher /opt/adbe
-COPY docker/entrypoint.sh /opt/adbe/entrypoint.sh
-RUN chmod +x /opt/adbe/entrypoint.sh /opt/adbe/bin/adbe-launcher \
-    && chown -R adbe:adbe /opt/adbe
+COPY --from=build /src/launcher/build/install/launcher /opt/ledgerd
+COPY docker/entrypoint.sh /opt/ledgerd/entrypoint.sh
+RUN chmod +x /opt/ledgerd/entrypoint.sh /opt/ledgerd/bin/launcher \
+    && chown -R ledgerd:ledgerd /opt/ledgerd
 
-USER adbe
-WORKDIR /var/adbe
-ENTRYPOINT ["/opt/adbe/entrypoint.sh"]
+USER ledgerd
+WORKDIR /var/ledgerd
+ENTRYPOINT ["/opt/ledgerd/entrypoint.sh"]
 
 FROM eclipse-temurin:21-jre AS read
-LABEL org.opencontainers.image.title="adbe-read" \
-      org.opencontainers.image.description="ADBE read replica node (ReadReplicaNode + HTTP query API)" \
+LABEL org.opencontainers.image.title="ledgerd-read" \
+      org.opencontainers.image.description="LEDGERD read replica node (ReadReplicaNode + HTTP query API)" \
       org.opencontainers.image.licenses="MIT"
 
 # Run as a non-root user.
-RUN useradd --system --create-home --home-dir /home/adbe adbe \
-    && mkdir -p /var/adbe \
-    && chown -R adbe:adbe /var/adbe
+RUN useradd --system --create-home --home-dir /home/ledgerd ledgerd \
+    && mkdir -p /var/ledgerd \
+    && chown -R ledgerd:ledgerd /var/ledgerd
 
-COPY --from=build /src/adbe-read/build/install/adbe-read /opt/adbe
-COPY docker/read-entrypoint.sh /opt/adbe/read-entrypoint.sh
-RUN chmod +x /opt/adbe/read-entrypoint.sh /opt/adbe/bin/adbe-read \
-    && chown -R adbe:adbe /opt/adbe
+COPY --from=build /src/read/build/install/read /opt/ledgerd
+COPY docker/read-entrypoint.sh /opt/ledgerd/read-entrypoint.sh
+RUN chmod +x /opt/ledgerd/read-entrypoint.sh /opt/ledgerd/bin/read \
+    && chown -R ledgerd:ledgerd /opt/ledgerd
 
-USER adbe
-WORKDIR /var/adbe
-ENTRYPOINT ["/opt/adbe/read-entrypoint.sh"]
+USER ledgerd
+WORKDIR /var/ledgerd
+ENTRYPOINT ["/opt/ledgerd/read-entrypoint.sh"]
 
 FROM eclipse-temurin:21-jre AS risk
-LABEL org.opencontainers.image.title="adbe-risk" \
-      org.opencontainers.image.description="ADBE AI risk service (RiskServiceLauncher + dashboard, ADR 0012)" \
+LABEL org.opencontainers.image.title="ledgerd-risk" \
+      org.opencontainers.image.description="LEDGERD AI risk service (RiskServiceLauncher + dashboard, ADR 0012)" \
       org.opencontainers.image.licenses="MIT"
 
 # Run as a non-root user.
-RUN useradd --system --create-home --home-dir /home/adbe adbe \
-    && mkdir -p /var/adbe \
-    && chown -R adbe:adbe /var/adbe
+RUN useradd --system --create-home --home-dir /home/ledgerd ledgerd \
+    && mkdir -p /var/ledgerd \
+    && chown -R ledgerd:ledgerd /var/ledgerd
 
-COPY --from=build /src/adbe-risk/build/install/adbe-risk /opt/adbe
-COPY docker/risk-entrypoint.sh /opt/adbe/risk-entrypoint.sh
-RUN chmod +x /opt/adbe/risk-entrypoint.sh /opt/adbe/bin/adbe-risk \
-    && chown -R adbe:adbe /opt/adbe
+COPY --from=build /src/risk/build/install/risk /opt/ledgerd
+COPY docker/risk-entrypoint.sh /opt/ledgerd/risk-entrypoint.sh
+RUN chmod +x /opt/ledgerd/risk-entrypoint.sh /opt/ledgerd/bin/risk \
+    && chown -R ledgerd:ledgerd /opt/ledgerd
 
-USER adbe
-WORKDIR /var/adbe
-ENTRYPOINT ["/opt/adbe/risk-entrypoint.sh"]
+USER ledgerd
+WORKDIR /var/ledgerd
+ENTRYPOINT ["/opt/ledgerd/risk-entrypoint.sh"]
 
 FROM eclipse-temurin:21-jre AS client
-LABEL org.opencontainers.image.title="adbe-client-example" \
-      org.opencontainers.image.description="ADBE remote client smoke test" \
+LABEL org.opencontainers.image.title="ledgerd-client-example" \
+      org.opencontainers.image.description="LEDGERD remote client smoke test" \
       org.opencontainers.image.licenses="MIT"
 
-RUN useradd --system --create-home --home-dir /home/adbe adbe
+RUN useradd --system --create-home --home-dir /home/ledgerd ledgerd
 
-COPY --from=build /src/adbe-examples/build/install/adbe-examples/lib /opt/adbe/lib
-COPY docker/client-entrypoint.sh /opt/adbe/client-entrypoint.sh
-RUN chmod +x /opt/adbe/client-entrypoint.sh
-USER adbe
-# RemoteClientExample reads ingress endpoints from ADBE_INGRESS_ENDPOINTS; the
+COPY --from=build /src/examples/build/install/examples/lib /opt/ledgerd/lib
+COPY docker/client-entrypoint.sh /opt/ledgerd/client-entrypoint.sh
+RUN chmod +x /opt/ledgerd/client-entrypoint.sh
+USER ledgerd
+# RemoteClientExample reads ingress endpoints from LEDGERD_INGRESS_ENDPOINTS; the
 # entrypoint derives a routable egress endpoint from the container's own IP.
-ENTRYPOINT ["/opt/adbe/client-entrypoint.sh"]
+ENTRYPOINT ["/opt/ledgerd/client-entrypoint.sh"]
 
 FROM eclipse-temurin:21-jre AS event-verifier
-LABEL org.opencontainers.image.title="adbe-event-verifier" \
-      org.opencontainers.image.description="ADBE domain event journal follower verifier (ADR 0011)" \
+LABEL org.opencontainers.image.title="ledgerd-event-verifier" \
+      org.opencontainers.image.description="LEDGERD domain event journal follower verifier (ADR 0011)" \
       org.opencontainers.image.licenses="MIT"
 
-RUN useradd --system --create-home --home-dir /home/adbe adbe
+RUN useradd --system --create-home --home-dir /home/ledgerd ledgerd
 
-# Reuse the read distribution: EventJournalVerifier ships in the adbe-read jar.
-COPY --from=build /src/adbe-read/build/install/adbe-read/lib /opt/adbe/lib
-COPY docker/event-verifier-entrypoint.sh /opt/adbe/event-verifier-entrypoint.sh
-RUN chmod +x /opt/adbe/event-verifier-entrypoint.sh
-USER adbe
+# Reuse the read distribution: EventJournalVerifier ships in the read jar.
+COPY --from=build /src/read/build/install/read/lib /opt/ledgerd/lib
+COPY docker/event-verifier-entrypoint.sh /opt/ledgerd/event-verifier-entrypoint.sh
+RUN chmod +x /opt/ledgerd/event-verifier-entrypoint.sh
+USER ledgerd
 WORKDIR /tmp
-ENTRYPOINT ["/opt/adbe/event-verifier-entrypoint.sh"]
+ENTRYPOINT ["/opt/ledgerd/event-verifier-entrypoint.sh"]

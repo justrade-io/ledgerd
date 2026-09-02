@@ -1,16 +1,16 @@
-ADBE JMH benchmark baseline
+LEDGERD JMH benchmark baseline
 ===========================
 
 Purpose
 -------
 Reference numbers a reviewer can diff a PR against. The CI gate runs
-`./gradlew :adbe-core:jmh -PquickBench` as a smoke check. Per the project budget
+`./gradlew :core:jmh -PquickBench` as a smoke check. Per the project budget
 (docs/decisions/0002-core-budget.md), a regression greater than 10% on any hot-
 path benchmark requires a rollback or a new ADR justifying the change.
 
 This baseline is a smoke run (-PquickBench: 1 warmup, 1 measurement iteration,
 1 fork). It is indicative, not statistically rigorous. For a rigorous comparison,
-run the full suite (`./gradlew :adbe-core:jmh`) on quiescent, frequency-pinned
+run the full suite (`./gradlew :core:jmh`) on quiescent, frequency-pinned
 hardware and record min/mean/p99. Absolute numbers vary with hardware; compare
 relative deltas on the same machine.
 
@@ -58,6 +58,6 @@ steady-state hot-path latency; they are reported separately and not summed.
 
 Reproduce
 ---------
-./gradlew :adbe-core:jmh -PquickBench          # smoke run (this baseline)
-./gradlew :adbe-core:jmh                        # full run (rigorous)
-./gradlew :adbe-core:jmh -Pjmh.profilers=gc     # confirm zero steady-state allocation
+./gradlew :core:jmh -PquickBench          # smoke run (this baseline)
+./gradlew :core:jmh                        # full run (rigorous)
+./gradlew :core:jmh -Pjmh.profilers=gc     # confirm zero steady-state allocation

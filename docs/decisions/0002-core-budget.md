@@ -23,7 +23,7 @@ The engine targets low-latency, high-throughput workloads. Latency variance
 
 ## Verification
 
-- JMH micro-benchmarks in `adbe-core/src/jmh` cover decode, map lookup, and
+- JMH micro-benchmarks in `core/src/jmh` cover decode, map lookup, and
   dispatch. Run with `-prof gc` to confirm zero steady-state allocation.
 - The CI gate runs `./gradlew jmh -PquickBench` as a smoke check; a > 10%
   regression on any percentile requires rollback or a new ADR.

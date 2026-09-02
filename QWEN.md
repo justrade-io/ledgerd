@@ -8,9 +8,9 @@
 
 ## Project Identity
 
-**ADBE** (Aeron Distributed Balance Engine) - a deterministic, replicated, in-memory balance and delegated-spending engine in Java, built on Aeron Cluster. Strong consistency and ultra-low latency for a core ledger: the single source of truth for balances and allowances.
+**LEDGERD** (Aeron Distributed Balance Engine) - a deterministic, replicated, in-memory balance and delegated-spending engine in Java, built on Aeron Cluster. Strong consistency and ultra-low latency for a core ledger: the single source of truth for balances and allowances.
 
-- **Repository:** `brianpht/addendum` on GitHub
+- **Repository:** `justrade/ledgerd` on GitHub
 - **License:** MIT
 - **Primary language:** Java
 - **Toolchain:** JDK 21 LTS (Temurin), Linux only
@@ -35,18 +35,18 @@
 ## Module Architecture
 
 ```
-adbe-protocol/     SBE schema + generated flyweight codecs (zero-dependency wire contract; command, snapshot, domain event journal)
-adbe-core/         Deterministic state machine: engine, handlers, stores, dedup, snapshot, event journal ring, telemetry
-adbe-launcher/     Aeron bootstrap: Media Driver, Archive, Consensus Module, service container, event journaler, optional Prometheus endpoint
-adbe-client/       Edge-side SDK: leader-change handling, idempotent retry, async correlation, backpressure (depends only on adbe-protocol)
-adbe-read/         CQRS read side: read replica node (Aeron Archive replication + multi-archive failover), balance/allowance/supply queries over HTTP (Netty), domain event journal follower
-adbe-risk/         Edge AI risk substrate (ADR 0012): event-journal consumer, velocity + money-flow graph scoring, HTTP dashboard
-adbe-tests/        Unit, property, integration, cluster, fault, and soak tests + testFixtures toolkit
-adbe-examples/     Runnable examples (QuickStart, RemoteClient)
-adbe-bench/        Datastore benchmark harness (ADR 0013): ADBE vs PostgreSQL vs Redis behind a common interface
+protocol/     SBE schema + generated flyweight codecs (zero-dependency wire contract; command, snapshot, domain event journal)
+core/         Deterministic state machine: engine, handlers, stores, dedup, snapshot, event journal ring, telemetry
+launcher/     Aeron bootstrap: Media Driver, Archive, Consensus Module, service container, event journaler, optional Prometheus endpoint
+write-client/       Edge-side SDK: leader-change handling, idempotent retry, async correlation, backpressure (depends only on protocol)
+read/         CQRS read side: read replica node (Aeron Archive replication + multi-archive failover), balance/allowance/supply queries over HTTP (Netty), domain event journal follower
+risk/         Edge AI risk substrate (ADR 0012): event-journal consumer, velocity + money-flow graph scoring, HTTP dashboard
+tests/        Unit, property, integration, cluster, fault, and soak tests + testFixtures toolkit
+examples/     Runnable examples (QuickStart, RemoteClient)
+bench/        Datastore benchmark harness (ADR 0013): LEDGERD vs PostgreSQL vs Redis behind a common interface
 ```
 
-The hot path lives entirely in `adbe-core`. Everything else (client, launcher, read side, risk, examples, benchmark) is outside the deterministic boundary. The domain event journal (ADR 0011) is opt-in via `CoreConfig.eventJournalEnabled`; its Aeron I/O runs on the launcher's `EventJournaler` agent, never the consensus thread.
+The hot path lives entirely in `core`. Everything else (client, launcher, read side, risk, examples, benchmark) is outside the deterministic boundary. The domain event journal (ADR 0011) is opt-in via `CoreConfig.eventJournalEnabled`; its Aeron I/O runs on the launcher's `EventJournaler` agent, never the consensus thread.
 
 ## Key Build / Test Commands
 
@@ -56,7 +56,7 @@ The hot path lives entirely in `adbe-core`. Everything else (client, launcher, r
 ./gradlew checkstyleMain checkstyleTest              # zero violations required
 ./gradlew compileJava                                # compiles with -Werror
 ./gradlew test integrationTest                       # unit + single-node integration tests
-./gradlew :adbe-core:jmh -PquickBench                # benchmark smoke run (no regression > 10%)
+./gradlew :core:jmh -PquickBench                # benchmark smoke run (no regression > 10%)
 
 # Opt-in heavier test suites
 ./gradlew clusterTest    # multi-node: leader election, catch-up replay, determinism
@@ -82,16 +82,16 @@ Every change must pass, in order, with **zero errors and zero warnings:**
 2. `./gradlew checkstyleMain checkstyleTest`
 3. `./gradlew compileJava` (warnings are errors via `-Werror`)
 4. `./gradlew test integrationTest`
-5. `./gradlew :adbe-core:jmh -PquickBench`
+5. `./gradlew :core:jmh -PquickBench`
 6. If any step fails: fix and re-run from step 1.
 
 **Never push** commits, tags, or refs to any remote. All changes remain local.
 
 ## Coding Conventions
 
-### Determinism (adbe-core only)
+### Determinism (core only)
 
-The `adbe-core` module is checked by a dedicated determinism ruleset (`adbe-core/config/checkstyle/determinism.xml`). The following are **forbidden** on the hot path and enforced by Checkstyle:
+The `core` module is checked by a dedicated determinism ruleset (`core/config/checkstyle/determinism.xml`). The following are **forbidden** on the hot path and enforced by Checkstyle:
 
 - `System.currentTimeMillis()` / `System.nanoTime()` - the only time source is the leader-assigned `timestamp` parameter
 - `Math.random()` / `UUID.randomUUID()` - identifiers are minted at the Edge
@@ -99,7 +99,7 @@ The `adbe-core` module is checked by a dedicated determinism ruleset (`adbe-core
 - `Optional<T>`, `BigDecimal`, Java streams, `String.format`, blocking primitives
 - Exceptions for control flow - use status codes or sentinel values
 
-### Hot-Path Rules (adbe-core)
+### Hot-Path Rules (core)
 
 - **Zero heap allocation** in steady state: no `new`, no boxing, no `StringBuilder.toString()`, no streams
 - **Single-writer principle:** one thread owns all mutable state; no `synchronized`, `ReentrantLock`, or atomics on the hot path
@@ -132,7 +132,7 @@ The `adbe-core` module is checked by a dedicated determinism ruleset (`adbe-core
 | Property tests | `test` | (none) | jqwik: overflow matches `Math.addExact`, sequence arithmetic |
 | JMH benchmarks | `jmh` | (none) | Hot-path micro-benchmarks with GC profiler |
 
-Only `test` and `integrationTest` run in the default `check` gate. Use `testFixtures` from `adbe-tests` for test-only helpers (never depend on it from production modules).
+Only `test` and `integrationTest` run in the default `check` gate. Use `testFixtures` from `tests` for test-only helpers (never depend on it from production modules).
 
 ## Performance Budget
 
@@ -155,7 +155,7 @@ Priority order: **Correctness > Determinism > Tail Latency > Mean Latency > Thro
 | `docs/decisions/` | Architectural Decision Records (source of truth) |
 | `CONTRIBUTING.md` | CI gate, determinism rules, benchmark process, PR template |
 | `.github/copilot-instructions.md` | Machine-parseable coding directives (hot path, memory, concurrency, testing) |
-| `adbe-core/config/checkstyle/determinism.xml` | Forbidden-constructs ruleset for the hot path |
+| `core/config/checkstyle/determinism.xml` | Forbidden-constructs ruleset for the hot path |
 | `benchmark-baseline.txt` | Committed baseline numbers for JMH diff comparison |
 
 ## Docker

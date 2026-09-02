@@ -72,7 +72,7 @@ byte-identical across nodes.
   `AssetSupplyEntry` records -> the header's aggregate supply is the asset-`0`
   supply. Replaying a pre-2 Raft log is safe because SBE decodes appended
   fields via the acting block length.
-- The read model (`adbe-read`) becomes asset-aware: queries carry an `assetId`
+- The read model (`read`) becomes asset-aware: queries carry an `assetId`
   (default `0`), exposed over HTTP as an optional `?asset=` parameter so
   existing routes keep working.
 

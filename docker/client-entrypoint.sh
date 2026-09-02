@@ -5,11 +5,11 @@
 set -eu
 
 CONTAINER_IP="$(hostname -i | awk '{print $1}')"
-export ADBE_EGRESS_ENDPOINT="${ADBE_EGRESS_ENDPOINT:-${CONTAINER_IP}:0}"
-echo "Client egress endpoint: ${ADBE_EGRESS_ENDPOINT}"
+export LEDGERD_EGRESS_ENDPOINT="${LEDGERD_EGRESS_ENDPOINT:-${CONTAINER_IP}:0}"
+echo "Client egress endpoint: ${LEDGERD_EGRESS_ENDPOINT}"
 
 exec java \
     --add-opens java.base/jdk.internal.misc=ALL-UNNAMED \
     --add-opens java.base/sun.nio.ch=ALL-UNNAMED \
-    -cp '/opt/adbe/lib/*' \
-    com.adbe.examples.RemoteClientExample
+    -cp '/opt/ledgerd/lib/*' \
+    io.justrade.ledgerd.examples.RemoteClientExample

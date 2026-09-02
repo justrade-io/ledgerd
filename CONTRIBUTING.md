@@ -1,6 +1,6 @@
-# Contributing to ADBE
+# Contributing to LEDGERD
 
-Thanks for your interest in contributing. ADBE is a deterministic, allocation-
+Thanks for your interest in contributing. LEDGERD is a deterministic, allocation-
 conscious, lock-free balance engine, so the bar for changes on the hot path is
 high: correctness and tail-latency stability come before everything else.
 
@@ -31,7 +31,7 @@ and zero warnings before it is committed. This is exactly what CI enforces
 ./gradlew checkstyleMain checkstyleTest   # 2. zero violations
 ./gradlew compileJava            # 3. compiles with -Werror (warnings are errors)
 ./gradlew test integrationTest   # 4. unit + single-node integration tests
-./gradlew :adbe-core:jmh -PquickBench     # 5. benchmark smoke run
+./gradlew :core:jmh -PquickBench     # 5. benchmark smoke run
 ```
 
 If any step fails, fix it and re-run from step 1. CI runs `spotlessCheck` (non-
@@ -60,7 +60,7 @@ Any change that touches a hot-path operation (`decode`, `dispatch`, `lookup`,
 - Confirm zero steady-state allocation with the GC profiler:
 
   ```bash
-  ./gradlew :adbe-core:jmh -Pjmh.profilers=gc
+  ./gradlew :core:jmh -Pjmh.profilers=gc
   ```
 
 See [docs/decisions/0002-core-budget.md](docs/decisions/0002-core-budget.md) for
@@ -69,8 +69,8 @@ Latency > Throughput.
 
 ## The determinism gate
 
-The core (`adbe-core`) is checked by a dedicated ruleset,
-[adbe-core/config/checkstyle/determinism.xml](adbe-core/config/checkstyle/determinism.xml),
+The core (`core`) is checked by a dedicated ruleset,
+[core/config/checkstyle/determinism.xml](core/config/checkstyle/determinism.xml),
 which fails the build if the state machine uses anything non-deterministic or
 allocation-heavy on the hot path. It bans, among other things:
 
@@ -83,8 +83,8 @@ allocation-heavy on the hot path. It bans, among other things:
   the hot path.
 
 If your change legitimately needs one of these, it almost certainly belongs
-outside `adbe-core` (for example in `adbe-client`, `adbe-launcher`, `adbe-read`,
-or `adbe-examples`, which are not deterministic hot-path modules).
+outside `core` (for example in `write-client`, `launcher`, `read`,
+or `examples`, which are not deterministic hot-path modules).
 
 ## Coding conventions
 

@@ -31,7 +31,7 @@ journal is now justified. See tmp/ROADMAP.md sections 3.2-3.4.
 The core emits a durable, deterministic stream of semantic domain events on a
 dedicated egress path, off the consensus hot path.
 
-1. **Schema (adbe-protocol, schema version 2 -> 3, additive).** New SBE flyweight
+1. **Schema (protocol, schema version 2 -> 3, additive).** New SBE flyweight
    messages, one template per event kind (templateIds 20-26): `BalanceChangedEvent`,
    `ReservedEvent`, `CapturedEvent`, `ReleasedEvent`, `TransferEvent`,
    `AllowanceChangedEvent`, `CommandRejectedEvent`, plus an `EventCause` enum.

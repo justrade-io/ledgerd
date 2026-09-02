@@ -9,7 +9,7 @@ ADR 0006 made read replica nodes standalone processes that replicate state
 through a cluster member's Aeron Archive instead of joining Raft, so they never
 affect quorum. ADR 0007 standardized on that single topology. Both ADRs
 explicitly deferred multi-archive failover: a read replica connects to ONE
-statically configured Archive endpoint (`ADBE_ARCHIVE_CHANNEL`, hard-wired to
+statically configured Archive endpoint (`LEDGERD_ARCHIVE_CHANNEL`, hard-wired to
 node 0 in the Docker topology) and `ReadReplicaNode` opens that connection once
 in its constructor with no reconnection logic.
 
@@ -41,7 +41,7 @@ this design relies on:
 - **(A)** Every member records the committed consensus log (stream 100) to its
   own Archive, so live-log following works from ANY member, not just the pinned
   one. This is the core enabler: failover needs no leader discovery.
-- **(B)** The leader holds a valid ADBE service snapshot at a real log position.
+- **(B)** The leader holds a valid LEDGERD service snapshot at a real log position.
 - **(C)** Followers ALSO carry a service snapshot, and its `logPosition` is
   EQUAL across all members (observed 672 on leader and both followers). The
   snapshot `logPosition` is written from `cluster.logPosition()`, so it is
@@ -54,9 +54,9 @@ The same investigation corrected an inaccuracy in ADR 0006, which stated a
 snapshot trigger produces two recordings on the snapshot stream. The actual
 layout, verified by replaying the recordings:
 
-- The ADBE **service snapshot** is on **stream 106**, prefixed with three
-  cluster-schema framing records (schema 111) before the ADBE `SnapshotHeader`
-  (ADBE schema, template 10), then the balance / allowance / dedup / footer
+- The LEDGERD **service snapshot** is on **stream 106**, prefixed with three
+  cluster-schema framing records (schema 111) before the LEDGERD `SnapshotHeader`
+  (LEDGERD schema, template 10), then the balance / allowance / dedup / footer
   records.
 - The **consensus-module snapshot** is a separate, all-cluster-schema recording
   on **stream 107**.
@@ -81,10 +81,10 @@ fails over between them, so the loss of any single member's Archive no longer
 freezes reads.
 
 1. **Multi-endpoint configuration.** `ReadReplicaConfig` takes an ordered list
-   of Archive control channels (env `ADBE_ARCHIVE_CHANNELS`, comma-separated),
-   staying backward compatible with the single `ADBE_ARCHIVE_CHANNEL`. The
+   of Archive control channels (env `LEDGERD_ARCHIVE_CHANNELS`, comma-separated),
+   staying backward compatible with the single `LEDGERD_ARCHIVE_CHANNEL`. The
    Docker read service is configured with all three member Archive endpoints
-   (`adbe-node-0:20104`, `adbe-node-1:20204`, `adbe-node-2:20304`).
+   (`ledgerd-node-0:20104`, `ledgerd-node-1:20204`, `ledgerd-node-2:20304`).
 
 2. **Failover, not leader-following.** No leader discovery is performed. By
    Phase 0 fact (A) every member's Archive has the committed log, so the replica

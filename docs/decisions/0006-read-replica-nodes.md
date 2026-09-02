@@ -57,8 +57,8 @@ Specifically:
    read latency is the live log replay delay (microseconds to low
    milliseconds), comparable to a cluster follower.
 
-6. **New launcher mode**: `ReadServiceLauncher` gains an `ADBE_MODE=read-replica`
-   mode (the default for read deployments). The legacy `ADBE_MODE=cluster` mode
+6. **New launcher mode**: `ReadServiceLauncher` gains an `LEDGERD_MODE=read-replica`
+   mode (the default for read deployments). The legacy `LEDGERD_MODE=cluster` mode
    is preserved for homogeneous read clusters when that topology is preferred.
 
 ### Architecture (Phase 2)
@@ -180,7 +180,7 @@ sequenceDiagram
 
 - **Positive**: Read nodes no longer affect quorum. They can be added, removed,
   or restarted independently. Write availability is decoupled from read scaling.
-- **Positive**: The deterministic core (`adbe-core`) is unchanged. All consensus
+- **Positive**: The deterministic core (`core`) is unchanged. All consensus
   and snapshot logic is reused unmodified.
 - **Positive**: With live log following (Phase 2), read latency is comparable to
   a cluster follower (milliseconds), not bounded by the snapshot interval.

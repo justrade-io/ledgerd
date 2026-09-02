@@ -1,0 +1,39 @@
+package io.justrade.ledgerd.core.handlers;
+
+import io.justrade.ledgerd.collections.BalanceStore;
+import io.justrade.ledgerd.core.CommandOutcome;
+import io.justrade.ledgerd.protocol.EventCause;
+import io.justrade.ledgerd.protocol.StatusCode;
+import io.justrade.ledgerd.util.Amounts;
+
+/**
+ * Increases an account balance and the total supply. Creates the account on
+ * first credit. Overflow is reported via {@link StatusCode#OVERFLOW}.
+ */
+public final class CreditHandler {
+
+    private final BalanceStore balances;
+
+    public CreditHandler(final BalanceStore balances) {
+        this.balances = balances;
+    }
+
+    public void handle(final long assetId, final long accountId, final long amount, final CommandOutcome out) {
+        if (Amounts.isNegative(amount)) {
+            out.status(StatusCode.INVALID_AMOUNT);
+            return;
+        }
+        final long raw = balances.rawGet(assetId, accountId);
+        final long base = raw == BalanceStore.MISSING ? 0L : raw;
+        if (Amounts.addOverflows(base, amount)) {
+            out.status(StatusCode.OVERFLOW);
+            return;
+        }
+        final long updated = base + amount;
+        balances.set(assetId, accountId, updated);
+        balances.adjustTotalSupply(assetId, amount);
+        out.balance(updated);
+        out.addBalanceChanged(assetId, accountId, updated, amount, EventCause.CREDIT);
+        out.status(StatusCode.SUCCESS);
+    }
+}

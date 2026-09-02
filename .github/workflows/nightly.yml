@@ -42,7 +42,7 @@ jobs:
         run: ./gradlew --no-daemon soakTest
 
       - name: JMH full run and latency budget check
-        run: ./gradlew --no-daemon :adbe-core:jmhBudgetCheck
+        run: ./gradlew --no-daemon :core:jmhBudgetCheck
 
       - name: Upload reports
         if: always()
@@ -52,7 +52,7 @@ jobs:
           path: |
             **/build/reports/tests/
             **/build/test-results/
-            adbe-core/build/results/jmh/
+            core/build/results/jmh/
           if-no-files-found: ignore
           retention-days: 14
 

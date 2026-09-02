@@ -14,8 +14,8 @@ Aeron Archive without participating in consensus, precisely because a follower
 read node increases the quorum threshold and can bring the write cluster down if
 lost.
 
-Since ADR 0006, two read topologies shipped side by side: `ADBE_MODE=cluster`
-(the follower) and `ADBE_MODE=read-replica` (the default). Maintaining both doubles
+Since ADR 0006, two read topologies shipped side by side: `LEDGERD_MODE=cluster`
+(the follower) and `LEDGERD_MODE=read-replica` (the default). Maintaining both doubles
 the read-side surface area, and the cluster mode keeps the very quorum coupling
 that ADR 0006 was designed to remove. The follower mode is not used by any
 deployment in this repository (the compose topology runs read replica nodes only).
@@ -23,7 +23,7 @@ deployment in this repository (the compose topology runs read replica nodes only
 Separately, the read replica node only began following the live consensus log *after*
 loading a snapshot (`snapshotLogPosition > 0`). Because the write cluster takes
 no periodic snapshots by default (Aeron's `snapshotInterval` defaults to
-`Long.MAX_VALUE`) and Docker starts clean (`ADBE_CLEAN_START=true`), a freshly
+`Long.MAX_VALUE`) and Docker starts clean (`LEDGERD_CLEAN_START=true`), a freshly
 started cluster produced no snapshot recording, so a read replica node served
 empty reads indefinitely. The read replica read path was therefore not functional in
 a running Docker deployment without an externally triggered snapshot.
@@ -32,9 +32,9 @@ a running Docker deployment without an externally triggered snapshot.
 
 1. **Standardize on the read replica node.** Remove the cluster-follower read
    mode entirely: delete `ReadNode` and `projection/ReadModelService`, the
-   `ADBE_MODE=cluster` branch of `ReadServiceLauncher`, and the cluster-mode
-   documentation, environment variables, and Docker entrypoint path. `adbe-read`
-   no longer depends on `adbe-launcher` (the Aeron Cluster codecs it still uses
+   `LEDGERD_MODE=cluster` branch of `ReadServiceLauncher`, and the cluster-mode
+   documentation, environment variables, and Docker entrypoint path. `read`
+   no longer depends on `launcher` (the Aeron Cluster codecs it still uses
    come from the `aeron` bundle). This supersedes the cluster-follower portion
    of ADR 0005; the rest of ADR 0005 (the HTTP query boundary, the lock-free
    `ReadQueryGateway`, the eventually-consistent contract) is unchanged.
@@ -61,7 +61,7 @@ a running Docker deployment without an externally triggered snapshot.
    for its egress endpoint.
 
 5. **Single Docker Compose topology.** `docker-compose.yml` now brings up the
-   3-node write cluster plus one read replica node (`adbe-read-0`) on one
+   3-node write cluster plus one read replica node (`ledgerd-read-0`) on one
    network. The separate `docker-compose.read.yml` is removed.
 
 ## Consequences
@@ -71,7 +71,7 @@ a running Docker deployment without an externally triggered snapshot.
 - **Positive**: The read replica read path works on a fresh cluster with no snapshot
   tooling, so the Docker deployment serves real reads out of the box.
 - **Positive**: Smaller read-side surface and one fewer module dependency
-  (`adbe-read` no longer depends on `adbe-launcher`).
+  (`read` no longer depends on `launcher`).
 - **Negative**: A read replica that starts late replays the consensus log from
   position 0 until a snapshot bounds it. Snapshots, when present, still cap the
   replay; this is acceptable for the bounded-staleness contract of ADR 0005.

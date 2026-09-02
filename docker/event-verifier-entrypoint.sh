@@ -5,27 +5,27 @@
 # timeout. Profile-gated in docker-compose; invoked by docker/verify-read.sh.
 #
 # Recognised environment variables (see EventJournalVerifier):
-#   ADBE_ARCHIVE_CHANNELS  comma-separated Archive control channels (preferred)
-#   ADBE_ARCHIVE_CHANNEL   single Archive control channel (fallback)
-#   ADBE_LOCAL_HOST        routable host for Archive call-backs (default: own IP)
-#   ADBE_AERON_DIR         embedded media driver directory
-#   ADBE_EVENT_MIN         minimum events to observe (default 1)
-#   ADBE_EVENT_TIMEOUT_MS  wait budget in milliseconds (default 30000)
+#   LEDGERD_ARCHIVE_CHANNELS  comma-separated Archive control channels (preferred)
+#   LEDGERD_ARCHIVE_CHANNEL   single Archive control channel (fallback)
+#   LEDGERD_LOCAL_HOST        routable host for Archive call-backs (default: own IP)
+#   LEDGERD_AERON_DIR         embedded media driver directory
+#   LEDGERD_EVENT_MIN         minimum events to observe (default 1)
+#   LEDGERD_EVENT_TIMEOUT_MS  wait budget in milliseconds (default 30000)
 set -eu
 
-if [ -z "${ADBE_ARCHIVE_CHANNELS:-}" ] && [ -z "${ADBE_ARCHIVE_CHANNEL:-}" ]; then
-    echo "ADBE_ARCHIVE_CHANNELS (comma-separated) or ADBE_ARCHIVE_CHANNEL is required" >&2
+if [ -z "${LEDGERD_ARCHIVE_CHANNELS:-}" ] && [ -z "${LEDGERD_ARCHIVE_CHANNEL:-}" ]; then
+    echo "LEDGERD_ARCHIVE_CHANNELS (comma-separated) or LEDGERD_ARCHIVE_CHANNEL is required" >&2
     exit 1
 fi
 
 # Advertise an address routable from the Archive (this container's own IP); the
 # Archive connects back to the follower's control-response and replay streams.
 CONTAINER_IP="$(hostname -i | awk '{print $1}')"
-export ADBE_LOCAL_HOST="${ADBE_LOCAL_HOST:-${CONTAINER_IP}}"
-export ADBE_AERON_DIR="${ADBE_AERON_DIR:-/tmp/aeron-adbe-event-verifier}"
+export LEDGERD_LOCAL_HOST="${LEDGERD_LOCAL_HOST:-${CONTAINER_IP}}"
+export LEDGERD_AERON_DIR="${LEDGERD_AERON_DIR:-/tmp/aeron-ledgerd-event-verifier}"
 
 exec java \
     --add-opens java.base/jdk.internal.misc=ALL-UNNAMED \
     --add-opens java.base/sun.nio.ch=ALL-UNNAMED \
-    -cp '/opt/adbe/lib/*' \
-    com.adbe.read.journal.EventJournalVerifier
+    -cp '/opt/ledgerd/lib/*' \
+    io.justrade.ledgerd.read.journal.EventJournalVerifier

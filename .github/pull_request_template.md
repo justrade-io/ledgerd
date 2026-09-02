@@ -20,7 +20,7 @@ Confirm the full local gate passed, in order (see [CONTRIBUTING.md](../CONTRIBUT
 - [ ] `./gradlew checkstyleMain checkstyleTest`
 - [ ] `./gradlew compileJava` (with `-Werror`)
 - [ ] `./gradlew test integrationTest`
-- [ ] `./gradlew :adbe-core:jmh -PquickBench`
+- [ ] `./gradlew :core:jmh -PquickBench`
 
 If clustering, failover, or snapshots are affected, also:
 
@@ -48,8 +48,8 @@ against `benchmark-baseline.txt`.
 
 - [ ] The change preserves byte-identical state across nodes and reruns.
 - [ ] No clocks, randomness, unordered maps, `Optional`, `BigDecimal`, streams,
-      or blocking primitives were introduced into `adbe-core`.
-- [ ] N/A - this PR does not touch `adbe-core`.
+      or blocking primitives were introduced into `core`.
+- [ ] N/A - this PR does not touch `core`.
 
 ## Notes for reviewers
 

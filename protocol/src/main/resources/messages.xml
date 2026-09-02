@@ -1,0 +1,201 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<sbe:messageSchema xmlns:sbe="http://fixprotocol.io/2016/sbe"
+                   package="io.justrade.ledgerd.protocol"
+                   id="1"
+                   version="3"
+                   semanticVersion="1.2"
+                   byteOrder="littleEndian"
+                   description="LEDGERD Core Service wire and snapshot messages.">
+
+    <types>
+        <composite name="messageHeader" description="Message identifiers and length of message root.">
+            <type name="blockLength" primitiveType="uint16"/>
+            <type name="templateId" primitiveType="uint16"/>
+            <type name="schemaId" primitiveType="uint16"/>
+            <type name="version" primitiveType="uint16"/>
+        </composite>
+
+        <enum name="CommandType" encodingType="uint8">
+            <validValue name="CREDIT">0</validValue>
+            <validValue name="DEBIT">1</validValue>
+            <validValue name="TRANSFER">2</validValue>
+            <validValue name="APPROVE">3</validValue>
+            <validValue name="INCREASE_ALLOWANCE">4</validValue>
+            <validValue name="DECREASE_ALLOWANCE">5</validValue>
+            <validValue name="DELEGATED_TRANSFER">6</validValue>
+            <validValue name="RESERVE">7</validValue>
+            <validValue name="CAPTURE">8</validValue>
+            <validValue name="RELEASE">9</validValue>
+        </enum>
+
+        <enum name="StatusCode" encodingType="uint8">
+            <validValue name="SUCCESS">0</validValue>
+            <validValue name="INSUFFICIENT_BALANCE">1</validValue>
+            <validValue name="INSUFFICIENT_ALLOWANCE">2</validValue>
+            <validValue name="INVALID_ACCOUNT">3</validValue>
+            <validValue name="DUPLICATE">4</validValue>
+            <validValue name="OVERFLOW">5</validValue>
+            <validValue name="INVALID_AMOUNT">6</validValue>
+            <validValue name="INSUFFICIENT_RESERVED">7</validValue>
+        </enum>
+
+        <enum name="EventCause" encodingType="uint8" description="Why a balance changed, for the domain event journal.">
+            <validValue name="CREDIT">0</validValue>
+            <validValue name="DEBIT">1</validValue>
+            <validValue name="TRANSFER_DEBIT">2</validValue>
+            <validValue name="TRANSFER_CREDIT">3</validValue>
+            <validValue name="DELEGATED_DEBIT">4</validValue>
+            <validValue name="DELEGATED_CREDIT">5</validValue>
+        </enum>
+    </types>
+
+    <!-- ============================ Wire messages ============================ -->
+
+    <sbe:message name="CommandEnvelope" id="1" description="Command submitted by the Edge on behalf of a client.">
+        <field name="clientId"      id="1" type="uint64"/>
+        <field name="clientSeq"     id="2" type="uint64"/>
+        <field name="commandIdHi"   id="3" type="uint64"/>
+        <field name="commandIdLo"   id="4" type="uint64"/>
+        <field name="commandType"   id="5" type="CommandType"/>
+        <field name="accountA"      id="6" type="uint64"/>
+        <field name="accountB"      id="7" type="uint64" presence="optional"/>
+        <field name="amount"        id="8" type="int64"/>
+        <field name="correlationId" id="9" type="uint64" presence="optional"/>
+        <field name="accountC"      id="10" type="uint64" presence="optional"/>
+        <field name="assetId"       id="11" type="uint64" presence="optional" sinceVersion="2"/>
+    </sbe:message>
+
+    <sbe:message name="CommandResult" id="2" description="Deterministic result returned for exactly one command.">
+        <field name="commandIdHi"     id="1" type="uint64"/>
+        <field name="commandIdLo"     id="2" type="uint64"/>
+        <field name="status"          id="3" type="StatusCode"/>
+        <field name="resultBalance"   id="4" type="int64" presence="optional"/>
+        <field name="resultAllowance" id="5" type="int64" presence="optional"/>
+        <field name="resultReserved"  id="6" type="int64" presence="optional" sinceVersion="2"/>
+    </sbe:message>
+
+    <!-- ============================ Snapshot messages ============================ -->
+    <!-- Optional fields prepare the snapshot for backward-compatible schema evolution. -->
+
+    <sbe:message name="SnapshotHeader" id="10" description="First record in a snapshot stream.">
+        <field name="logPosition"       id="1" type="uint64"/>
+        <field name="snapshotSchemaVer" id="2" type="uint32"/>
+        <field name="balanceCount"      id="3" type="uint32"/>
+        <field name="allowanceCount"    id="4" type="uint32"/>
+        <field name="dedupCount"        id="5" type="uint32"/>
+        <field name="totalSupply"       id="6" type="int64"/>
+        <field name="assetCount"        id="7" type="uint32" presence="optional" sinceVersion="2"/>
+    </sbe:message>
+
+    <sbe:message name="BalanceEntry" id="11" description="One account balance, emitted ascending by (assetId, accountId).">
+        <field name="accountId" id="1" type="uint64"/>
+        <field name="balance"   id="2" type="int64"/>
+        <field name="assetId"   id="3" type="uint64" presence="optional" sinceVersion="2"/>
+        <field name="reserved"  id="4" type="int64" presence="optional" sinceVersion="2"/>
+    </sbe:message>
+
+    <sbe:message name="AllowanceEntry" id="12" description="One allowance, emitted ascending by (assetId, owner, delegate).">
+        <field name="ownerId"    id="1" type="uint64"/>
+        <field name="delegateId" id="2" type="uint64"/>
+        <field name="allowance"  id="3" type="int64"/>
+        <field name="assetId"    id="4" type="uint64" presence="optional" sinceVersion="2"/>
+    </sbe:message>
+
+    <sbe:message name="DedupEntry" id="13" description="One cached command result, emitted in ascending (clientId, clientSeq) order.">
+        <field name="clientId"        id="1" type="uint64"/>
+        <field name="clientSeq"       id="2" type="uint64"/>
+        <field name="commandIdHi"     id="3" type="uint64"/>
+        <field name="commandIdLo"     id="4" type="uint64"/>
+        <field name="status"          id="5" type="StatusCode"/>
+        <field name="resultBalance"   id="6" type="int64" presence="optional"/>
+        <field name="resultAllowance" id="7" type="int64" presence="optional"/>
+        <field name="resultReserved"  id="8" type="int64" presence="optional" sinceVersion="2"/>
+    </sbe:message>
+
+    <sbe:message name="SnapshotFooter" id="14" description="Terminal record; carries an integrity checksum.">
+        <field name="checksum" id="1" type="int64"/>
+    </sbe:message>
+
+    <sbe:message name="AssetSupplyEntry" id="15" description="Per-asset total supply, emitted in ascending assetId order.">
+        <field name="assetId"     id="1" type="uint64"/>
+        <field name="totalSupply" id="2" type="int64"/>
+    </sbe:message>
+
+    <!-- ============================ Domain event journal messages (ADR 0011) ============================ -->
+    <!-- Semantic facts emitted on a dedicated egress stream. Every event opens with the same
+         (logPosition, timestamp, eventIndex) prefix so a consumer can peek the dedup key uniformly.
+         Each framed message is <= 64 bytes (one cache line). -->
+
+    <sbe:message name="BalanceChangedEvent" id="20" description="An account balance changed. Framed 59 bytes.">
+        <field name="logPosition" id="1" type="uint64"/>
+        <field name="timestamp"   id="2" type="int64"/>
+        <field name="eventIndex"  id="3" type="uint16"/>
+        <field name="assetId"     id="4" type="uint64"/>
+        <field name="accountId"   id="5" type="uint64"/>
+        <field name="newBalance"  id="6" type="int64"/>
+        <field name="delta"       id="7" type="int64"/>
+        <field name="cause"       id="8" type="EventCause"/>
+    </sbe:message>
+
+    <sbe:message name="ReservedEvent" id="21" description="Funds moved from available to reserved. Framed 58 bytes.">
+        <field name="logPosition"  id="1" type="uint64"/>
+        <field name="timestamp"    id="2" type="int64"/>
+        <field name="eventIndex"   id="3" type="uint16"/>
+        <field name="assetId"      id="4" type="uint64"/>
+        <field name="accountId"    id="5" type="uint64"/>
+        <field name="newAvailable" id="6" type="int64"/>
+        <field name="newReserved"  id="7" type="int64"/>
+    </sbe:message>
+
+    <sbe:message name="CapturedEvent" id="22" description="Reserved funds settled. Framed 58 bytes.">
+        <field name="logPosition"  id="1" type="uint64"/>
+        <field name="timestamp"    id="2" type="int64"/>
+        <field name="eventIndex"   id="3" type="uint16"/>
+        <field name="assetId"      id="4" type="uint64"/>
+        <field name="accountId"    id="5" type="uint64"/>
+        <field name="newAvailable" id="6" type="int64"/>
+        <field name="newReserved"  id="7" type="int64"/>
+    </sbe:message>
+
+    <sbe:message name="ReleasedEvent" id="23" description="Reserved funds returned to available. Framed 58 bytes.">
+        <field name="logPosition"  id="1" type="uint64"/>
+        <field name="timestamp"    id="2" type="int64"/>
+        <field name="eventIndex"   id="3" type="uint16"/>
+        <field name="assetId"      id="4" type="uint64"/>
+        <field name="accountId"    id="5" type="uint64"/>
+        <field name="newAvailable" id="6" type="int64"/>
+        <field name="newReserved"  id="7" type="int64"/>
+    </sbe:message>
+
+    <sbe:message name="TransferEvent" id="24" description="Transfer graph edge; balances carried by paired BalanceChangedEvents. Framed 58 bytes.">
+        <field name="logPosition" id="1" type="uint64"/>
+        <field name="timestamp"   id="2" type="int64"/>
+        <field name="eventIndex"  id="3" type="uint16"/>
+        <field name="assetId"     id="4" type="uint64"/>
+        <field name="fromAccount" id="5" type="uint64"/>
+        <field name="toAccount"   id="6" type="uint64"/>
+        <field name="amount"      id="7" type="int64"/>
+    </sbe:message>
+
+    <sbe:message name="AllowanceChangedEvent" id="25" description="An allowance changed. Framed 58 bytes.">
+        <field name="logPosition"   id="1" type="uint64"/>
+        <field name="timestamp"     id="2" type="int64"/>
+        <field name="eventIndex"    id="3" type="uint16"/>
+        <field name="assetId"       id="4" type="uint64"/>
+        <field name="ownerId"       id="5" type="uint64"/>
+        <field name="delegateId"    id="6" type="uint64"/>
+        <field name="newAllowance"  id="7" type="int64"/>
+    </sbe:message>
+
+    <sbe:message name="CommandRejectedEvent" id="26" description="A command was rejected. Framed 52 bytes.">
+        <field name="logPosition"  id="1" type="uint64"/>
+        <field name="timestamp"    id="2" type="int64"/>
+        <field name="eventIndex"   id="3" type="uint16"/>
+        <field name="assetId"      id="4" type="uint64"/>
+        <field name="accountId"    id="5" type="uint64"/>
+        <field name="amount"       id="6" type="int64"/>
+        <field name="commandType"  id="7" type="CommandType"/>
+        <field name="reason"       id="8" type="StatusCode"/>
+    </sbe:message>
+
+</sbe:messageSchema>

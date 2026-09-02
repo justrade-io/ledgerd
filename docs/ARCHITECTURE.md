@@ -11,14 +11,14 @@
 - [Workspace Layout](#workspace-layout)
 - [System Diagram](#system-diagram)
 - [Module Structure](#module-structure)
-    - [adbe-protocol - Wire and Snapshot Codecs](#adbe-protocol---wire-and-snapshot-codecs)
-    - [adbe-core - Deterministic State Machine](#adbe-core---deterministic-state-machine)
-    - [adbe-launcher - Cluster Bootstrap](#adbe-launcher---cluster-bootstrap)
-    - [adbe-client - Edge Client SDK](#adbe-client---edge-client-sdk)
-    - [adbe-read - Read Side (CQRS Query)](#adbe-read---read-side-cqrs-query)
-    - [adbe-risk - AI Risk Substrate](#adbe-risk---ai-risk-substrate)
-    - [adbe-bench - Datastore Benchmark](#adbe-bench---datastore-benchmark)
-    - [adbe-tests - Verification and Fixtures](#adbe-tests---verification-and-fixtures)
+    - [protocol - Wire and Snapshot Codecs](#protocol---wire-and-snapshot-codecs)
+    - [core - Deterministic State Machine](#core---deterministic-state-machine)
+    - [launcher - Cluster Bootstrap](#launcher---cluster-bootstrap)
+    - [write-client - Edge Client SDK](#write-client---edge-client-sdk)
+    - [read - Read Side (CQRS Query)](#read---read-side-cqrs-query)
+    - [risk - AI Risk Substrate](#risk---ai-risk-substrate)
+    - [bench - Datastore Benchmark](#bench---datastore-benchmark)
+    - [tests - Verification and Fixtures](#tests---verification-and-fixtures)
 - [Wire Format](#wire-format)
 - [Domain Event Journal](#domain-event-journal)
 - [Data Flows](#data-flows)
@@ -37,7 +37,7 @@
 
 ## Overview
 
-ADBE Core is the single source of truth for account balances and delegated
+LEDGERD Core is the single source of truth for account balances and delegated
 allowances. It runs as one Aeron `ClusteredService` replicated by Raft, and does
 exactly one thing: execute deterministic state transitions on balance and
 allowance state.
@@ -62,19 +62,19 @@ audit storage, analytics, and - for now - sharding and cross-shard atomicity
 ## Workspace Layout
 
 ```
-addendum/
+ledgerd/
 |-- settings.gradle.kts             Gradle multi-module (9 modules)
 |-- build.gradle.kts                Shared conventions: JDK 21, spotless, checkstyle, -Werror
 |-- gradle/libs.versions.toml       Version catalog (Aeron, Agrona, SBE, JMH, Netty, ...)
 |
-|-- adbe-protocol/                  SBE schema + generated flyweight codecs
+|-- protocol/                  SBE schema + generated flyweight codecs
 |   |-- build.gradle.kts            SbeTool code generation task
 |   +-- src/main/resources/messages.xml   CommandEnvelope, CommandResult, snapshot + event-journal records
 |
-|-- adbe-core/                      Deterministic state machine (this is the hot path)
+|-- core/                      Deterministic state machine (this is the hot path)
 |   |-- build.gradle.kts            Determinism checkstyle config, JMH source set
 |   |-- config/checkstyle/determinism.xml   Bans clocks, randomness, unordered maps, streams
-|   +-- src/main/java/com/adbe/
+|   +-- src/main/java/com/ledgerd/
 |       |-- config/CoreConfig.java          Preallocated, power-of-two capacities
 |       |-- util/Amounts.java               Overflow-checked 64-bit arithmetic
 |       |-- collections/
@@ -95,24 +95,24 @@ addendum/
 |           |-- CoreMetrics.java             Single-writer counters
 |           |-- CounterSink.java             Allocation-free counter sink interface (NOOP default)
 |           +-- AtomicCounterSink.java       Off-heap AtomicCounter-backed sink for cross-thread reads
-|   +-- src/jmh/java/com/adbe/bench/         BalanceEngineBenchmark, SnapshotBenchmark
+|   +-- src/jmh/java/com/ledgerd/bench/         BalanceEngineBenchmark, SnapshotBenchmark
 |
-|-- adbe-launcher/                  Aeron component bootstrap
-|   +-- src/main/java/com/adbe/launcher/
+|-- launcher/                  Aeron component bootstrap
+|   +-- src/main/java/com/ledgerd/launcher/
 |       |-- ClusterConfig.java              Endpoints and directories per node
 |       |-- ClusterNode.java                Media Driver + Archive + Consensus + Service Container
 |       |-- EventJournaler.java             Drains the event ring, records stream 108 (ADR 0011)
 |       |-- MetricsHttpServer.java          Optional Prometheus /metrics + /healthz endpoint
 |       +-- ClusterLauncher.java            main(): start one node, block until terminated
 |
-|-- adbe-client/                    Edge client SDK (depends only on adbe-protocol)
-|   +-- src/main/java/com/adbe/client/
-|       |-- AdbeClient.java                 Async submit/poll, leader-change resend, correlation
+|-- write-client/                    Edge client SDK (depends only on protocol)
+|   +-- src/main/java/com/ledgerd/client/
+|       |-- WriteClient.java                 Async submit/poll, leader-change resend, correlation
 |       |-- config/ClientConfig.java        Immutable client configuration
 |       +-- ResultHandler.java              Result callback correlated by command id
 |
-|-- adbe-read/                      Read side (CQRS query, HTTP over Netty)
-|   +-- src/main/java/com/adbe/read/
+|-- read/                      Read side (CQRS query, HTTP over Netty)
+|   +-- src/main/java/com/ledgerd/read/
 |       |-- query/                            QueryCodec, QueryType, ReadCallback, ReadQueryGateway
 |       |-- http/QueryHttpServer.java         Netty HTTP boundary
 |       |-- journal/                          EventJournalFollower/Subscriber/Config, DomainEventListener, EventJournalVerifier
@@ -126,8 +126,8 @@ addendum/
 |       |-- LiveLogSubscriber.java            Subscribes consensus recording, applies to engine in real time
 |       +-- ReadServiceLauncher.java          Entry point: resolve env config, run the read replica node
 |
-|-- adbe-risk/                      Edge AI risk substrate (ADR 0012, event-journal consumer)
-|   +-- src/main/java/com/adbe/risk/
+|-- risk/                      Edge AI risk substrate (ADR 0012, event-journal consumer)
+|   +-- src/main/java/com/ledgerd/risk/
 |       |-- RiskScoringService.java           DomainEventListener: single-writer feature state
 |       |-- feature/VelocityTracker.java      Per-account EWMA velocity z-score
 |       |-- feature/TransferGraph.java        Money-flow graph, degree centrality + PageRank
@@ -135,21 +135,21 @@ addendum/
 |       |-- http/RiskHttpServer.java          Netty dashboard + JSON (/risk/scores, /risk/graph)
 |       +-- RiskServiceLauncher.java          Entry point: env config, follow journal, serve dashboard
 |
-|-- adbe-bench/                     Datastore benchmark harness (ADR 0013)
-|   +-- src/main/java/com/adbe/bench/
+|-- bench/                     Datastore benchmark harness (ADR 0013)
+|   +-- src/main/java/com/ledgerd/bench/
 |       |-- BenchmarkHarness.java             Runs one workload against each backend
-|       |-- store/DataStore.java              Common interface: Adbe / Postgres / Redis / Threaded
+|       |-- store/DataStore.java              Common interface: Ledgerd / Postgres / Redis / Threaded
 |       +-- Reporter.java                     Throughput + latency percentile table + CSV
 |
-|-- adbe-examples/                  Runnable examples (QuickStart, RemoteClient)
+|-- examples/                  Runnable examples (QuickStart, RemoteClient)
 |
-|-- adbe-tests/                     Unit, property, and integration tests
-|   +-- src/testFixtures/java/com/adbe/testkit/   Test-only helpers (NOT the Edge SDK)
+|-- tests/                     Unit, property, and integration tests
+|   +-- src/testFixtures/java/com/ledgerd/testkit/   Test-only helpers (NOT the Edge SDK)
 |   |   |-- CommandFixtures.java             Encode envelopes, wrap decoders
 |   |   |-- InMemorySnapshot.java            Snapshot to/from an in-memory buffer
 |   |   |-- WorkloadGenerator.java           Deterministic pseudo-random workload
 |   |   +-- ClusterTestClient.java           Minimal AeronCluster client for integration tests
-|   +-- src/test/java/com/adbe/              Test suites (see Test Coverage)
+|   +-- src/test/java/com/ledgerd/              Test suites (see Test Coverage)
 |
 +-- docs/
     |-- ARCHITECTURE.md             This document
@@ -171,7 +171,7 @@ flowchart TB
         GW["Gateway\nAuthN / AuthZ, rate-limit, retry policy"]
     end
 
-    subgraph NODE["Cluster Node (adbe-launcher)"]
+    subgraph NODE["Cluster Node (launcher)"]
         direction TB
         MD["Media Driver\n(transport)"]
         CM["Consensus Module\n(Raft leader / follower)"]
@@ -190,7 +190,7 @@ flowchart TB
         AR -->|" snapshot image "| BS
     end
 
-    subgraph READ["Read Replica Node (adbe-read, read replica mode)"]
+    subgraph READ["Read Replica Node (read, read replica mode)"]
         direction TB
         MD2["Media Driver\n(embedded)"]
         SB["ReadReplicaNode"]
@@ -221,9 +221,9 @@ single thread.
 
 ## Module Structure
 
-### adbe-protocol - Wire and Snapshot Codecs
+### protocol - Wire and Snapshot Codecs
 
-A dependency-only module (no dependency on `adbe-core`) holding the SBE schema
+A dependency-only module (no dependency on `core`) holding the SBE schema
 and the codecs generated from it. SBE produces type-safe flyweight encoders and
 decoders that operate directly on buffers, with no reflection and no
 intermediate objects. Little-endian, fixed field order.
@@ -263,7 +263,7 @@ Optional fields (`presence="optional"`) prepare the schema for
 backward-compatible evolution, which SBE supports and which matters for reading
 older snapshots.
 
-### adbe-core - Deterministic State Machine
+### core - Deterministic State Machine
 
 The allocation-conscious heart of the engine. `BalanceEngine` is deliberately
 free of Aeron so it can run in tests; `BalanceService` adapts it to the cluster.
@@ -289,7 +289,7 @@ free of Aeron so it can run in tests; `BalanceService` adapts it to the cluster.
 | `CounterSink`       | Allocation-free sink interface; NOOP default for tests, off-heap in cluster |
 | `AtomicCounterSink` | Off-heap `AtomicCounter`-backed sink so external threads can read counters |
 
-### adbe-launcher - Cluster Bootstrap
+### launcher - Cluster Bootstrap
 
 Launches and owns the Aeron components for one node and hosts a single
 `BalanceService`. Internal components reach the Archive over an IPC local-control
@@ -303,23 +303,23 @@ channel; the Archive also exposes a UDP control channel for external tools.
 | `ClusterLauncher`| Entry point: start a node (single-node or `--config` properties) and block until terminated |
 | `MetricsHttpServer` | Optional Prometheus `/metrics` (and `/healthz`) endpoint exporting the off-heap counters on a daemon thread |
 
-### adbe-client - Edge Client SDK
+### write-client - Edge Client SDK
 
-The Edge-side SDK. It depends only on the `adbe-protocol` wire contract, never on
-`adbe-core`: the Edge is a separate bounded context (see ADR 0004). It adds
+The Edge-side SDK. It depends only on the `protocol` wire contract, never on
+`core`: the Edge is a separate bounded context (see ADR 0004). It adds
 leader-change handling, idempotent retry (reusing the original `commandId`),
 asynchronous request/response correlation, explicit backpressure signalling, and
 HdrHistogram latency measurement on top of an Aeron cluster client.
 
 | Component         | Purpose                                                        |
 |-------------------|----------------------------------------------------------------|
-| `AdbeClient`      | Async submit/poll client: resend on leader change, correlate results by command id, record end-to-end latency |
+| `WriteClient`      | Async submit/poll client: resend on leader change, correlate results by command id, record end-to-end latency |
 | `ClientConfig`    | Immutable client configuration (endpoints, timeouts, retry, in-flight window) |
 | `ResultHandler`   | Callback invoked when a `CommandResult` is correlated to a request |
 | `PendingCommand`  | Pooled holder of an in-flight command's encoded bytes for verbatim resend |
 | `BackpressureException` | Signals a full in-flight window rather than silently dropping a command |
 
-### adbe-read - Read Side (CQRS Query)
+### read - Read Side (CQRS Query)
 
 The read (query) bounded context. Unlike the deterministic core, it may use the
 system clock, Netty, and heap allocation at the HTTP boundary. Reads are served
@@ -370,12 +370,12 @@ flowchart LR
     NETTY -->|" HTTP 200 "| USER
 ```
 
-### adbe-risk - AI Risk Substrate
+### risk - AI Risk Substrate
 
-An Edge consumer bounded context (ADR 0012), like `adbe-read`: it may use the
+An Edge consumer bounded context (ADR 0012), like `read`: it may use the
 system clock, Netty, and heap allocation, and it MUST NOT link the deterministic
 core hot path or join Raft. It follows the members' recorded domain event journal
-(ADR 0011, stream 108) through `adbe-read`'s `EventJournalFollower` and scores
+(ADR 0011, stream 108) through `read`'s `EventJournalFollower` and scores
 accounts in real time. The follower delivers every event on one agent thread, so
 `RiskScoringService` owns all feature state single-threaded; the HTTP dashboard
 thread only reads published snapshots.
@@ -389,10 +389,10 @@ thread only reads published snapshots.
 | `RiskHttpServer`      | Netty dashboard and JSON: `GET /`, `/risk/scores`, `/risk/graph`, `/healthz`, `/metrics` |
 | `RiskServiceLauncher` | Entry point: env config, follow the journal, serve the dashboard              |
 
-### adbe-bench - Datastore Benchmark
+### bench - Datastore Benchmark
 
-Illustrative Edge infrastructure (ADR 0013), like `adbe-examples`. It runs one
-identical seeded wallet workload (`CREDIT` / `DEBIT` / `TRANSFER`) against ADBE,
+Illustrative Edge infrastructure (ADR 0013), like `examples`. It runs one
+identical seeded wallet workload (`CREDIT` / `DEBIT` / `TRANSFER`) against LEDGERD,
 PostgreSQL, and Redis behind a common `DataStore` interface and reports throughput
 and latency percentiles side by side. It is exempt from the core determinism rules
 (it may use the system clock, `HashMap`, threads, and blocking JDBC/Redis clients)
@@ -401,11 +401,11 @@ but still formats and lints clean. See [BENCHMARKS-VS-DATASTORES.md](BENCHMARKS-
 | Component          | Purpose                                                             |
 |--------------------|---------------------------------------------------------------------|
 | `BenchmarkHarness` | Drives the workload against each selected backend, collects metrics |
-| `DataStore`        | Common interface with `AdbeDataStore`, `PostgresDataStore`, `RedisDataStore`, `ThreadedDataStore` implementations |
+| `DataStore`        | Common interface with `LedgerdDataStore`, `PostgresDataStore`, `RedisDataStore`, `ThreadedDataStore` implementations |
 | `WorkloadGenerator`| Seeded pseudo-random op stream, identical across backends            |
 | `Reporter`         | Prints the comparison table and writes `results.csv`                |
 
-### adbe-tests - Verification and Fixtures
+### tests - Verification and Fixtures
 
 Unit, property, integration, cluster, fault, and soak tests plus a `testFixtures`
 toolkit. The cluster client here is a test harness only, never the shipped Edge SDK.
@@ -482,7 +482,7 @@ flowchart LR
     BS["BalanceService\n(consensus thread)"] -->|" encode event "| RING["EventJournalRing\n(off-heap SPSC)"]
     RING -->|" drain in batches "| EJ["EventJournaler\n(own AgentRunner)"]
     EJ -->|" offer (stream 108) "| AR["Archive\n(records event stream)"]
-    AR -->|" replay + dedup "| FOL["EventJournalFollower\n(adbe-read / adbe-risk)"]
+    AR -->|" replay + dedup "| FOL["EventJournalFollower\n(read / risk)"]
     FOL -->|" decoded events "| CONS["DomainEventListener\n(risk, audit, analytics)"]
 ```
 
@@ -597,8 +597,8 @@ flowchart TD
 ## Determinism Rules
 
 The state machine must produce byte-identical results on every node. The
-following are forbidden in `adbe-core` and enforced by a Checkstyle rule set
-([adbe-core/config/checkstyle/determinism.xml](../adbe-core/config/checkstyle/determinism.xml)):
+following are forbidden in `core` and enforced by a Checkstyle rule set
+([core/config/checkstyle/determinism.xml](../core/config/checkstyle/determinism.xml)):
 
 - No `System.currentTimeMillis()` / `System.nanoTime()`. The only time source is
   the leader-assigned `timestamp` parameter.
@@ -674,7 +674,7 @@ JVM must run with `--add-opens java.base/jdk.internal.misc=ALL-UNNAMED` and
 | `MetricsHttpServerTest`     | Unit        | Prometheus metrics and healthz HTTP endpoint               |
 | Risk feature/model tests    | Unit        | `VelocityTracker`, `TransferGraph`, `RiskModel`, `RiskScoringService` (ADR 0012) |
 | `ClusterIntegrationTest`    | Integration | End-to-end over a real single-node cluster, idempotency verified |
-| `AdbeClientIntegrationTest` | Integration | Client SDK submit/poll, command-id correlation             |
+| `WriteClientIntegrationTest` | Integration | Client SDK submit/poll, command-id correlation             |
 | `EventJournalIntegrationTest` | Integration | Event journal recorded and followed end-to-end (ADR 0011)  |
 | `EventJournalFollowerIntegrationTest` | Integration | Follower dedup and multi-archive failover               |
 | `RiskServiceIntegrationTest`| Integration | Risk service scores accounts from the live journal         |
@@ -707,22 +707,22 @@ run in the default `check` gate.
 ./gradlew test integrationTest
 
 # Micro-benchmarks (add -PquickBench for a fast smoke run)
-./gradlew :adbe-core:jmh -PquickBench
-./gradlew :adbe-read:jmh -PquickBench
+./gradlew :core:jmh -PquickBench
+./gradlew :read:jmh -PquickBench
 
 # Run a single-node cluster
-./gradlew :adbe-launcher:run
+./gradlew :launcher:run
 
 # Run a read node (eventually-consistent HTTP query API, default port 8080)
-./gradlew :adbe-read:run
+./gradlew :read:run
 
 # Run the AI risk service (dashboard + JSON, default port 8090)
-./gradlew :adbe-risk:run
+./gradlew :risk:run
 
-# Run the datastore benchmark (ADBE vs PostgreSQL vs Redis; needs Docker)
-./gradlew :adbe-bench:run
+# Run the datastore benchmark (LEDGERD vs PostgreSQL vs Redis; needs Docker)
+./gradlew :bench:run
 ```
 
 Toolchain: JDK 21 LTS. Aeron 1.48, Agrona 2.2, SBE 1.35. The dependency chain
-for changes: a schema change in `adbe-protocol` regenerates codecs used by
-`adbe-core`, `adbe-launcher`, and `adbe-tests`, so all layers rebuild together.
+for changes: a schema change in `protocol` regenerates codecs used by
+`core`, `launcher`, and `tests`, so all layers rebuild together.
