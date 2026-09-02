@@ -2,16 +2,16 @@ package io.justrade.ledgerd.read;
 
 import io.justrade.ledgerd.config.CoreConfig;
 import io.justrade.ledgerd.read.config.ReadReplicaConfig;
-import io.justrade.ledgerd.read.config.ReadServiceConfig;
 import java.util.concurrent.CountDownLatch;
 
 /**
  * Entry point for a read-service process. Runs a read replica node: it connects
  * to the write cluster's Aeron Archive, follows the consensus log (from the
  * latest snapshot when one exists, otherwise from the start of the log), loads
- * snapshots as they appear, and serves reads over HTTP. The read replica node does
- * NOT appear in {@code clusterMembers} and does not vote or affect quorum. See
- * ADR 0006 and 0007.
+ * snapshots as they appear, and serves reads over a plain Aeron query protocol
+ * ({@code QueryRequest} / {@code QueryResponse}). The read replica node does NOT
+ * appear in {@code clusterMembers} and does not vote or affect quorum. See ADR
+ * 0006 and 0007.
  *
  * <p>Configuration is read from environment variables with sensible localhost
  * defaults:
@@ -23,7 +23,8 @@ import java.util.concurrent.CountDownLatch;
  *   LEDGERD_ARCHIVE_CHANNEL  single Archive control channel (default localhost:20104)
  *   LEDGERD_LOCAL_HOST       routable host for Archive call-backs (default localhost)
  *   LEDGERD_AERON_DIR        embedded media driver directory (default build/read-replica/driver)
- *   LEDGERD_HTTP_PORT        HTTP query port                (default 8080)
+ *   LEDGERD_QUERY_CHANNEL    query request channel      (default aeron:udp?endpoint=localhost:44000)
+ *   LEDGERD_QUERY_STREAM_ID  query request stream id    (default 300)
  *   LEDGERD_SNAPSHOT_POLL_MS interval between snapshot polls (default 5000)
  *   LEDGERD_LIVE_LOG         follow the consensus log       (default true)
  * </pre>
@@ -35,18 +36,16 @@ public final class ReadServiceLauncher {
     private ReadServiceLauncher() {}
 
     public static void main(final String[] args) throws InterruptedException {
-        final int httpPort = Integer.parseInt(envOrDefault("LEDGERD_HTTP_PORT", "8080"));
-        final ReadServiceConfig readConfig =
-                ReadServiceConfig.builder().httpPort(httpPort).build();
         final ReadReplicaConfig replicaConfig = resolveReadReplicaConfig();
 
-        try (ReadReplicaNode node = new ReadReplicaNode(replicaConfig, CoreConfig.defaults(), readConfig)) {
+        try (ReadReplicaNode node = new ReadReplicaNode(replicaConfig, CoreConfig.defaults())) {
             LOG.log(
                     System.Logger.Level.INFO,
-                    "LEDGERD read replica service started: httpPort={0} archiveChannels={1} liveLog={2}",
-                    node.httpPort(),
+                    "LEDGERD read replica service started: queryChannel={0} archiveChannels={1} liveLog={2} healthy={3}",
+                    replicaConfig.queryRequestChannel(),
                     replicaConfig.archiveControlChannels(),
-                    replicaConfig.liveLogEnabled());
+                    replicaConfig.liveLogEnabled(),
+                    node.isHealthy());
             parkUntilShutdown("ledgerd-read-replica-shutdown");
         }
     }
@@ -73,6 +72,14 @@ public final class ReadServiceLauncher {
         if (aeronDir != null && !aeronDir.isBlank()) {
             builder.aeronDir(aeronDir);
         }
+        final String queryChannel = System.getenv("LEDGERD_QUERY_CHANNEL");
+        if (queryChannel != null && !queryChannel.isBlank()) {
+            builder.queryRequestChannel(queryChannel);
+        }
+        final String queryStreamId = System.getenv("LEDGERD_QUERY_STREAM_ID");
+        if (queryStreamId != null && !queryStreamId.isBlank()) {
+            builder.queryRequestStreamId(Integer.parseInt(queryStreamId));
+        }
         final String pollInterval = System.getenv("LEDGERD_SNAPSHOT_POLL_MS");
         if (pollInterval != null && !pollInterval.isBlank()) {
             builder.pollIntervalMs(Long.parseLong(pollInterval));
@@ -92,11 +99,6 @@ public final class ReadServiceLauncher {
         } catch (final InterruptedException e) {
             Thread.currentThread().interrupt();
         }
-    }
-
-    private static String envOrDefault(final String name, final String fallback) {
-        final String value = System.getenv(name);
-        return value == null || value.isBlank() ? fallback : value;
     }
 
     /** Splits a comma-separated channel list, trimming whitespace and dropping blanks. */

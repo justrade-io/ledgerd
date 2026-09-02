@@ -13,7 +13,7 @@ dependencies {
     testImplementation(project(":launcher"))
     testImplementation(project(":write-client"))
     testImplementation(project(":read"))
-    testImplementation(project(":risk"))
+    testImplementation(project(":read-client"))
     testImplementation(libs.bundles.aeron)
 
     testFixturesApi(project(":protocol"))
@@ -89,7 +89,7 @@ tasks.withType<JavaCompile>().configureEach {
 // both unit (test) and single-node (integrationTest) execution data. Generated
 // SBE codecs in protocol are excluded as they are not hand-written code.
 tasks.named<JacocoReport>("jacocoTestReport") {
-    val coveredProjects = listOf(":core", ":write-client", ":launcher", ":read")
+    val coveredProjects = listOf(":core", ":write-client", ":launcher", ":read", ":read-client")
     dependsOn("test", "integrationTest")
     executionData(fileTree(layout.buildDirectory).include("jacoco/test.exec", "jacoco/integrationTest.exec"))
     coveredProjects.forEach { path ->

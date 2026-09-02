@@ -117,17 +117,10 @@ ClientConfig config = ClientConfig
         .build();
 ```
 
-### Remote / Docker
+### Remote
 
-When the client and cluster nodes are on different hosts (separate containers), the cluster needs a
-routable address to send results back. Override `egressChannel` with the client's own host address.
-
-```bash
-# docker-compose environment variables
-LEDGERD_INGRESS_ENDPOINTS=0=ledgerd-node-0:20100,1=ledgerd-node-1:20200,2=ledgerd-node-2:20300
-LEDGERD_EGRESS_ENDPOINT=client-host:0          # ephemeral port; host must be reachable by nodes
-LEDGERD_CLIENT_ID=1
-```
+When the client and cluster nodes are on different hosts, the cluster needs a routable address to
+send results back. Override `egressChannel` with the client's own host address.
 
 ```java
 String ingressEndpoints = System.getenv("LEDGERD_INGRESS_ENDPOINTS");
@@ -140,8 +133,7 @@ if (egressEndpoint != null && !egressEndpoint.isBlank()) {
 ClientConfig config = builder.build();
 ```
 
-See `examples/RemoteClientExample.java` and `docker/client-entrypoint.sh` for a full example
-driving the three-node `docker-compose.yml` cluster.
+See `examples/RemoteClientExample.java` for a full example driving a multi-node cluster.
 
 ---
 
@@ -708,7 +700,7 @@ engine.process(cmd, outcome);
 
 ---
 
-## 13. Read API (HTTP)
+## 13. Read API (Aeron Query Protocol)
 
 The command path (sections 1 - 12) is write-only: every result is a deterministic `CommandResult`
 committed through Raft. Reads are served separately by the `read` module, a CQRS read side.
@@ -730,11 +722,11 @@ Reads are served by a read replica node:
 **Consistency**: reads are eventually consistent with bounded staleness. With
 live log following (the default), staleness is the live log replay delay
 (milliseconds); a snapshot, when present, bounds the replay. Do not use these
-endpoints where linearizable reads are required.
+queries where linearizable reads are required.
 
-**Threading**: queries are answered on the single agent thread (an Agrona
-`Agent` driven by an `AgentRunner`), reached over a lock-free ring buffer from
-the Netty HTTP boundary. Reads never touch the stores concurrently, so the
+**Threading**: queries are answered by the `QueryResponder` on the single agent
+thread (an Agrona `Agent` driven by an `AgentRunner`), the same thread that
+advances replication. Reads never touch the stores concurrently, so the
 single-writer discipline is preserved.
 
 ### Running a read node
@@ -749,7 +741,6 @@ LEDGERD_ARCHIVE_CHANNELS="aeron:udp?endpoint=localhost:20104,aeron:udp?endpoint=
 ```java
 import io.justrade.ledgerd.config.CoreConfig;
 import io.justrade.ledgerd.read.ReadReplicaNode;
-import io.justrade.ledgerd.read.config.ReadServiceConfig;
 import io.justrade.ledgerd.read.config.ReadReplicaConfig;
 
 ReadReplicaConfig replicaConfig = ReadReplicaConfig.builder()
@@ -757,12 +748,12 @@ ReadReplicaConfig replicaConfig = ReadReplicaConfig.builder()
                 "aeron:udp?endpoint=localhost:20104",
                 "aeron:udp?endpoint=localhost:20204",
                 "aeron:udp?endpoint=localhost:20304")
+        .queryRequestChannel("aeron:udp?endpoint=localhost:44000")
         .build();
-ReadServiceConfig readConfig = ReadServiceConfig.builder().httpPort(8080).build();
 
-try (ReadReplicaNode node = new ReadReplicaNode(replicaConfig, CoreConfig.defaults(), readConfig)) {
-    // Serves reads on http://localhost:8080 while following the cluster log,
-    // failing over across the member Archives if one becomes unreachable.
+try (ReadReplicaNode node = new ReadReplicaNode(replicaConfig, CoreConfig.defaults())) {
+    // Serves QueryRequest frames while following the cluster log, failing over
+    // across the member Archives if one becomes unreachable.
 }
 ```
 
@@ -770,54 +761,58 @@ Configured by environment variables via `io.justrade.ledgerd.read.ReadServiceLau
 `LEDGERD_ARCHIVE_CHANNELS` (comma-separated Archive control channels, one per
 member; the node fails over across them - ADR 0008), `LEDGERD_ARCHIVE_CHANNEL`
 (single channel, legacy fallback), `LEDGERD_LOCAL_HOST` (routable host for Archive
-call-backs, default `localhost`; set to the container address in Docker),
-`LEDGERD_HTTP_PORT` (default `8080`), `LEDGERD_SNAPSHOT_POLL_MS` (default `5000`),
-`LEDGERD_LIVE_LOG` (default `true`). See
-[OPERATIONS.md - Read Service](OPERATIONS.md#8-read-service-http-query-api)
+call-backs, default `localhost`), `LEDGERD_AERON_DIR`, `LEDGERD_QUERY_CHANNEL`
+(default `aeron:udp?endpoint=localhost:44000`), `LEDGERD_QUERY_STREAM_ID` (default
+`300`), `LEDGERD_SNAPSHOT_POLL_MS` (default `5000`), `LEDGERD_LIVE_LOG` (default
+`true`). See [OPERATIONS.md - Read Service](OPERATIONS.md#8-read-service-aeron-query-api)
 for the full reference.
 
-### Endpoints
+### Query types
 
-| Method | Path                          | Description                          | Success body                                                        |
-|--------|-------------------------------|--------------------------------------|---------------------------------------------------------------------|
-| GET    | `/balance/{id}`               | One account balance                  | `{"account":100,"exists":true,"balance":350}`                       |
-| POST   | `/balances`                   | Batch balances (ids in request body) | `{"balances":[{"account":100,"exists":true,"balance":350}, ...]}`   |
-| GET    | `/allowance/{owner}/{delegate}` | Allowance for a pair               | `{"owner":1,"delegate":9,"allowance":200}`                          |
-| GET    | `/supply`                     | Engine-wide total supply             | `{"totalSupply":500}`                                               |
-| GET    | `/healthz`                    | Health probe (200 ok / 503 stale)    | `{"status":"ok","appliedPosition":...,"endpoint":"...","failovers":...}` |
-| GET    | `/metrics`                    | Gateway + replication counters       | `{"submitted":...,"completed":...,"pending":...,"failovers":...}`   |
+| Query type      | Request fields                       | Result                                                            |
+|-----------------|--------------------------------------|-------------------------------------------------------------------|
+| `BALANCE`       | `assetId`, `accountId`                | `BalanceResult(accountId, balance, found, appliedPosition)`       |
+| `BATCH_BALANCE` | `assetId`, `accountIds` group         | `List<BalanceResult>` (one per account, in request order)         |
+| `ALLOWANCE`     | `assetId`, `ownerId`, `delegateId`    | `AllowanceResult(ownerId, delegateId, allowance, appliedPosition)`|
+| `TOTAL_SUPPLY`  | `assetId`                             | `TotalSupplyResult(assetId, totalSupply, appliedPosition)`        |
 
-- A missing account returns HTTP 200 with `{"exists":false}` (not 404), so batch responses stay
-  uniform. The `balance` field is omitted when `exists` is false.
-- All read endpoints accept an optional `?asset=<id>` query parameter (default `0`) to target a
-  specific asset (ADR 0009), e.g. `GET /balance/100?asset=1`, `GET /supply?asset=1`. Balances
-  returned are the account's `available` funds; reserved (held) funds are not exposed directly but
-  are reflected as a lower available balance with conserved supply (ADR 0010).
-- `POST /balances` accepts any JSON or text body containing the account ids; every signed decimal
-  integer in the body is treated as an id, up to `maxBatchSize` (default 512). Example body:
-  `{"ids":[100,200,999]}`.
-- An overloaded request ring returns HTTP 503 `{"error":"read service overloaded"}`; a read that is
-  not answered within `requestTimeoutMs` (default 5000) returns HTTP 504.
+- A missing account reports `found == false` with `balance == 0` (not an error), so batch
+  responses stay uniform.
+- Every query targets a specific asset via `assetId` (default `0`, ADR 0009). Balances returned
+  are the account's `available` funds; reserved (held) funds are reflected as a lower available
+  balance with conserved supply (ADR 0010).
+- Every response carries the replica's `appliedPosition` at answer time, so callers can compare
+  replica freshness.
 
-### Examples
+### read-client SDK
 
-```bash
-curl http://localhost:8080/balance/100
-# {"account":100,"exists":true,"balance":350}
+The `read-client` module queries a read replica over plain Aeron request/response streams,
+correlating responses by request id. It provides blocking synchronous queries and an asynchronous
+submit/poll API.
 
-curl "http://localhost:8080/balance/100?asset=1"
-# {"account":100,"exists":false}   # asset 1 untouched; default asset is 0
+```java
+import io.justrade.ledgerd.read.client.BalanceResult;
+import io.justrade.ledgerd.read.client.ReadClient;
+import io.justrade.ledgerd.read.client.config.ReadClientConfig;
 
-curl -X POST http://localhost:8080/balances -d '{"ids":[100,200,999]}'
-# {"balances":[{"account":100,"exists":true,"balance":350},
-#              {"account":200,"exists":true,"balance":150},
-#              {"account":999,"exists":false}]}
+try (ReadClient client = new ReadClient(ReadClientConfig.builder().build())) {
+    BalanceResult balance = client.balance(0L, 100L);
+    List<BalanceResult> batch = client.batchBalances(0L, 100L, 200L, 999L);
+    AllowanceResult allowance = client.allowance(0L, 1L, 9L);
+    TotalSupplyResult supply = client.totalSupply(0L);
+}
+```
 
-curl http://localhost:8080/allowance/1/9
-# {"owner":1,"delegate":9,"allowance":200}
+For asynchronous delivery, register a `QueryListener` and drive `poll()`:
 
-curl http://localhost:8080/supply
-# {"totalSupply":500}
+```java
+client.setListener(new QueryListener() {
+    @Override public void onBalance(long requestId, BalanceResult result) { /* ... */ }
+});
+long requestId = client.submitBalance(0L, 100L);
+while (running) {
+    client.poll();
+}
 ```
 
 > **Authentication and rate limiting are out of scope** for the read module and must be added at the

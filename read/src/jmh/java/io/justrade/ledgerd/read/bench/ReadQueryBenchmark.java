@@ -3,8 +3,13 @@ package io.justrade.ledgerd.read.bench;
 import io.justrade.ledgerd.collections.BalanceStore;
 import io.justrade.ledgerd.config.CoreConfig;
 import io.justrade.ledgerd.core.BalanceEngine;
-import io.justrade.ledgerd.read.query.QueryCodec;
-import io.justrade.ledgerd.read.query.QueryType;
+import io.justrade.ledgerd.protocol.MessageHeaderDecoder;
+import io.justrade.ledgerd.protocol.MessageHeaderEncoder;
+import io.justrade.ledgerd.protocol.QueryRequestDecoder;
+import io.justrade.ledgerd.protocol.QueryRequestEncoder;
+import io.justrade.ledgerd.protocol.QueryResponseEncoder;
+import io.justrade.ledgerd.protocol.QueryStatusCode;
+import io.justrade.ledgerd.protocol.QueryType;
 import io.justrade.ledgerd.telemetry.CoreMetrics;
 import java.util.concurrent.TimeUnit;
 import org.agrona.concurrent.UnsafeBuffer;
@@ -19,9 +24,9 @@ import org.openjdk.jmh.annotations.State;
 
 /**
  * Measures the per-query work performed on the read service thread: decode a
- * request off the ring, look up the balance store, and encode the response. This
- * mirrors {@code ReadReplicaNode.answerBalances} exactly and must be
- * allocation-free (verify with {@code -prof gc}).
+ * {@code QueryRequest} off the wire, look up the balance store, and encode a
+ * {@code QueryResponse}. This mirrors {@code QueryResponder.encodeBalance} and
+ * must be allocation-free (verify with {@code -prof gc}).
  */
 @State(Scope.Thread)
 @BenchmarkMode(Mode.AverageTime)
@@ -29,12 +34,17 @@ import org.openjdk.jmh.annotations.State;
 public class ReadQueryBenchmark {
 
     private static final int ACCOUNTS = 1 << 14;
-    private static final int BATCH = 16;
+
+    private final MessageHeaderEncoder headerEncoder = new MessageHeaderEncoder();
+    private final QueryRequestEncoder requestEncoder = new QueryRequestEncoder();
+    private final MessageHeaderDecoder headerDecoder = new MessageHeaderDecoder();
+    private final QueryRequestDecoder requestDecoder = new QueryRequestDecoder();
+    private final QueryResponseEncoder responseEncoder = new QueryResponseEncoder();
 
     private BalanceEngine engine;
-    private UnsafeBuffer singleRequest;
-    private UnsafeBuffer batchRequest;
+    private UnsafeBuffer request;
     private UnsafeBuffer response;
+    private int requestLength;
 
     @Setup(Level.Trial)
     public void setup() {
@@ -44,39 +54,41 @@ public class ReadQueryBenchmark {
             balances.set(0L, i, (i + 1) * 10L);
         }
 
-        singleRequest = new UnsafeBuffer(new byte[QueryCodec.maxMessageLength()]);
-        batchRequest = new UnsafeBuffer(new byte[QueryCodec.maxMessageLength()]);
-        response = new UnsafeBuffer(new byte[QueryCodec.maxMessageLength()]);
+        request = new UnsafeBuffer(new byte[256]);
+        response = new UnsafeBuffer(new byte[1024]);
 
-        QueryCodec.encodeRequest(singleRequest, 1L, QueryType.BALANCE, 0L, new long[] {ACCOUNTS / 2}, 1);
-
-        final long[] ids = new long[BATCH];
-        for (int i = 0; i < BATCH; i++) {
-            ids[i] = (i * 97) % ACCOUNTS;
-        }
-        QueryCodec.encodeRequest(batchRequest, 2L, QueryType.BATCH_BALANCE, 0L, ids, BATCH);
+        requestEncoder
+                .wrapAndApplyHeader(request, 0, headerEncoder)
+                .requestId(1L)
+                .queryType(QueryType.BALANCE)
+                .assetId(0L)
+                .accountId(ACCOUNTS / 2)
+                .responseStreamId(301)
+                .responseChannel("aeron:udp?endpoint=localhost:0");
+        requestLength = MessageHeaderEncoder.ENCODED_LENGTH + requestEncoder.encodedLength();
     }
 
     @Benchmark
     public int singleBalance() {
-        return answer(singleRequest, 1);
-    }
+        headerDecoder.wrap(request, 0);
+        requestDecoder.wrap(
+                request, MessageHeaderEncoder.ENCODED_LENGTH, headerDecoder.blockLength(), headerDecoder.version());
 
-    @Benchmark
-    public int batchBalance() {
-        return answer(batchRequest, BATCH);
-    }
+        final long assetId = requestDecoder.assetId();
+        final long accountId = requestDecoder.accountId();
+        final long balance = engine.balances().rawGet(assetId, accountId);
+        final boolean exists = balance != BalanceStore.MISSING;
 
-    private int answer(final UnsafeBuffer request, final int count) {
-        final BalanceStore balances = engine.balances();
-        final long correlationId = QueryCodec.correlationId(request, 0);
-        QueryCodec.beginResponse(response, correlationId, QueryType.BATCH_BALANCE, count);
-        for (int i = 0; i < count; i++) {
-            final long id = QueryCodec.operand(request, 0, i);
-            final long balance = balances.rawGet(0L, id);
-            final boolean exists = balance != BalanceStore.MISSING;
-            QueryCodec.putEntry(response, i, exists ? balance : 0L, exists);
-        }
-        return QueryCodec.responseLength(count);
+        responseEncoder
+                .wrapAndApplyHeader(response, 0, headerEncoder)
+                .requestId(requestDecoder.requestId())
+                .queryType(QueryType.BALANCE)
+                .status(exists ? QueryStatusCode.SUCCESS : QueryStatusCode.NOT_FOUND)
+                .appliedPosition(0L)
+                .assetId(assetId)
+                .accountId(accountId)
+                .balance(exists ? balance : 0L)
+                .exists(exists ? (short) 1 : (short) 0);
+        return MessageHeaderEncoder.ENCODED_LENGTH + responseEncoder.encodedLength();
     }
 }

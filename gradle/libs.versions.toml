@@ -8,16 +8,9 @@ junit = "5.11.4"
 jqwik = "1.9.2"
 jmh = "1.37"
 checkstyle = "10.20.1"
-netty = "4.1.136.Final"
 jacoco = "0.8.12"
 errorprone = "2.36.0"
 nullaway = "0.12.1"
-
-# bench only (datastore comparison harness, not the hot path)
-testcontainers = "1.20.4"
-postgresql = "42.7.4"
-jedis = "5.2.0"
-slf4jSimple = "2.0.16"
 
 # plugin versions
 spotless = "6.25.0"
@@ -34,13 +27,6 @@ agrona = { group = "org.agrona", name = "agrona", version.ref = "agrona" }
 sbe-tool = { group = "uk.co.real-logic", name = "sbe-tool", version.ref = "sbe" }
 hdrhistogram = { group = "org.hdrhistogram", name = "HdrHistogram", version.ref = "hdrhistogram" }
 affinity = { group = "net.openhft", name = "affinity", version.ref = "affinity" }
-netty-codec-http = { group = "io.netty", name = "netty-codec-http", version.ref = "netty" }
-
-testcontainers = { group = "org.testcontainers", name = "testcontainers", version.ref = "testcontainers" }
-testcontainers-postgresql = { group = "org.testcontainers", name = "postgresql", version.ref = "testcontainers" }
-postgresql = { group = "org.postgresql", name = "postgresql", version.ref = "postgresql" }
-jedis = { group = "redis.clients", name = "jedis", version.ref = "jedis" }
-slf4j-simple = { group = "org.slf4j", name = "slf4j-simple", version.ref = "slf4jSimple" }
 
 errorprone-core = { group = "com.google.errorprone", name = "error_prone_core", version.ref = "errorprone" }
 nullaway = { group = "com.uber.nullaway", name = "nullaway", version.ref = "nullaway" }
@@ -53,7 +39,6 @@ jmh-annprocess = { group = "org.openjdk.jmh", name = "jmh-generator-annprocess",
 
 [bundles]
 aeron = ["aeron-client", "aeron-driver", "aeron-archive", "aeron-cluster", "agrona"]
-bench-datastores = ["testcontainers", "testcontainers-postgresql", "postgresql", "jedis"]
 
 [plugins]
 spotless = { id = "com.diffplug.spotless", version.ref = "spotless" }

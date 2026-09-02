@@ -1,5 +1,6 @@
 package io.justrade.ledgerd.read.config;
 
+import io.justrade.ledgerd.protocol.QueryStreams;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -33,6 +34,8 @@ public final class ReadReplicaConfig {
     private final long failoverBackoffMs;
     private final long archiveMessageTimeoutMs;
     private final long liveLogLivenessTimeoutMs;
+    private final String queryRequestChannel;
+    private final int queryRequestStreamId;
 
     private ReadReplicaConfig(final Builder builder) {
         this.archiveControlChannels = Collections.unmodifiableList(new ArrayList<>(builder.archiveControlChannels));
@@ -47,6 +50,8 @@ public final class ReadReplicaConfig {
         this.failoverBackoffMs = builder.failoverBackoffMs;
         this.archiveMessageTimeoutMs = builder.archiveMessageTimeoutMs;
         this.liveLogLivenessTimeoutMs = builder.liveLogLivenessTimeoutMs;
+        this.queryRequestChannel = builder.queryRequestChannel;
+        this.queryRequestStreamId = builder.queryRequestStreamId;
     }
 
     public static Builder builder() {
@@ -149,6 +154,16 @@ public final class ReadReplicaConfig {
         return liveLogLivenessTimeoutMs;
     }
 
+    /** The channel the read service subscribes to for {@code QueryRequest} frames. */
+    public String queryRequestChannel() {
+        return queryRequestChannel;
+    }
+
+    /** The stream id the read service subscribes to for {@code QueryRequest} frames. */
+    public int queryRequestStreamId() {
+        return queryRequestStreamId;
+    }
+
     /** Fluent builder for {@link ReadReplicaConfig}. */
     public static final class Builder {
         private final List<String> archiveControlChannels = new ArrayList<>();
@@ -163,6 +178,8 @@ public final class ReadReplicaConfig {
         private long failoverBackoffMs = 1_000L;
         private long archiveMessageTimeoutMs = 2_000L;
         private long liveLogLivenessTimeoutMs = 10_000L;
+        private String queryRequestChannel = QueryStreams.QUERY_REQUEST_CHANNEL;
+        private int queryRequestStreamId = QueryStreams.QUERY_REQUEST_STREAM_ID;
 
         private Builder() {
             archiveControlChannels.add("aeron:udp?endpoint=localhost:20104");
@@ -241,6 +258,16 @@ public final class ReadReplicaConfig {
 
         public Builder liveLogLivenessTimeoutMs(final long value) {
             this.liveLogLivenessTimeoutMs = value;
+            return this;
+        }
+
+        public Builder queryRequestChannel(final String value) {
+            this.queryRequestChannel = value;
+            return this;
+        }
+
+        public Builder queryRequestStreamId(final int value) {
+            this.queryRequestStreamId = value;
             return this;
         }
 

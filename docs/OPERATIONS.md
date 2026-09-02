@@ -15,9 +15,8 @@ observability for LEDGERD operators and SREs. For the client integration surface
 5. [Node Restart and Recovery](#5-node-restart-and-recovery)
 6. [CoreConfig Capacity Reference](#6-coreconfig-capacity-reference)
 7. [Prometheus Metrics](#7-prometheus-metrics)
-8. [Read Service (HTTP Query API)](#8-read-service-http-query-api)
+8. [Read Service (Aeron Query API)](#8-read-service-aeron-query-api)
 9. [Domain Event Journal](#9-domain-event-journal)
-10. [AI Risk Service](#10-ai-risk-service)
 
 ---
 
@@ -31,8 +30,8 @@ command line:
 --add-opens java.base/sun.nio.ch=ALL-UNNAMED
 ```
 
-These are already wired in the Gradle `jvmArgs` block and in the Docker images. Manual deployments
-must set them explicitly.
+These are already wired in the Gradle `jvmArgs` block. Manual deployments must set them
+explicitly.
 
 **Recommended GC** for production:
 
@@ -116,22 +115,6 @@ For a three-node cluster on `localhost` (ports follow `PORT_BASE=20100`, `PORT_S
 
 All three nodes share the same `ledgerd.clusterMembers` string in `local-3node.properties`; each
 supplies its own `ledgerd.nodeId` on the command line.
-
-### Docker Compose
-
-```bash
-# Start three-node cluster.
-docker compose up --build
-
-# Run smoke-test client against the live cluster.
-docker compose run --rm client
-```
-
-Node 0 exposes ingress port `20100/udp` to the host. Prometheus endpoints are available at
-`localhost:9100`, `localhost:9101`, `localhost:9102`.
-
-The `LEDGERD_INGRESS_ENDPOINTS` and `LEDGERD_EGRESS_ENDPOINT` environment variables in the compose file
-configure which host the client connects to and which address it advertises for egress delivery.
 
 ---
 
@@ -323,18 +306,23 @@ scrape_configs:
 
 ---
 
-## 8. Read Service (HTTP Query API)
+## 8. Read Service (Aeron Query API)
 
 The read service (`read`) serves eventually-consistent balance, allowance,
-and total-supply reads over HTTP via a read replica node. `ReadReplicaNode` runs
-as a standalone process, independent of the Raft cluster: it connects to the
-write cluster members' Aeron Archives, follows the consensus log recording (from
-the position it has applied up to, or from position 0 on a fresh replica), loads
-service snapshots as they appear, and serves reads from the engine. It accepts
-multiple Archive endpoints (one per member) and fails over between them, so the
-loss of any single member's Archive does not freeze reads. It is NOT a cluster
-member: it does not vote, does not affect quorum, and can be added, removed, or
-restarted independently. See ADR 0006, 0007, and 0008.
+and total-supply reads over a plain Aeron query protocol (`QueryRequest` /
+`QueryResponse`) via a read replica node. `ReadReplicaNode` runs as a standalone
+process, independent of the Raft cluster: it connects to the write cluster
+members' Aeron Archives, follows the consensus log recording (from the position
+it has applied up to, or from position 0 on a fresh replica), loads service
+snapshots as they appear, and serves reads from the engine. It accepts multiple
+Archive endpoints (one per member) and fails over between them, so the loss of
+any single member's Archive does not freeze reads. It is NOT a cluster member: it
+does not vote, does not affect quorum, and can be added, removed, or restarted
+independently. See ADR 0006, 0007, and 0008.
+
+Clients query the read replica through the `read-client` SDK, which sends
+`QueryRequest` messages and correlates `QueryResponse` messages by request id
+over Aeron request/response streams.
 
 ### Running a read replica node
 
@@ -357,8 +345,10 @@ Recognised environment variables:
 |---------------------------|:--------:|---------------------------------------|-------------------------------------------------------|
 | `LEDGERD_ARCHIVE_CHANNELS`   | no*      | `aeron:udp?endpoint=localhost:20104`  | Comma-separated Archive control channels, one per cluster member; the node fails over across them (ADR 0008). |
 | `LEDGERD_ARCHIVE_CHANNEL`    | no*      | `aeron:udp?endpoint=localhost:20104`  | Single Archive control channel (legacy fallback when `LEDGERD_ARCHIVE_CHANNELS` is unset). |
-| `LEDGERD_LOCAL_HOST`         | no       | `localhost`                           | Routable host for Archive call-backs (control response + replays). Set to the container address in Docker. |
-| `LEDGERD_HTTP_PORT`          | no       | `8080`                                | Port for the HTTP query API.                          |
+| `LEDGERD_LOCAL_HOST`         | no       | `localhost`                           | Routable host for Archive call-backs (control response + replays). |
+| `LEDGERD_AERON_DIR`          | no       | `build/read-replica/driver`           | Embedded media driver directory.                          |
+| `LEDGERD_QUERY_CHANNEL`      | no       | `aeron:udp?endpoint=localhost:44000`  | Channel the query responder subscribes to for `QueryRequest` frames. |
+| `LEDGERD_QUERY_STREAM_ID`    | no       | `300`                                 | Stream id for `QueryRequest` frames.                      |
 | `LEDGERD_SNAPSHOT_POLL_MS`   | no       | `5000`                                | Interval (ms) between snapshot polls on the Archive.  |
 | `LEDGERD_LIVE_LOG`           | no       | `true`                                | Follow the consensus log for sub-second staleness.    |
 
@@ -375,43 +365,21 @@ Recognised environment variables:
 - Archive failover (ADR 0008): when the followed member's Archive dies or becomes
   unreachable, the node fails over to the next configured endpoint (round-robin
   with backoff), keeping its state; reads keep converging instead of freezing.
-- Health probe: `GET /healthz` returns `200 {"status":"ok",...}` while following
-  and `503 {"status":"stale",...}` while reconnecting after a source failure. The
-  body also carries `appliedPosition`, the active `endpoint`, and `failovers`, so
-  an orchestrator or load balancer can detect a degraded replica.
-- Gateway counters: `GET /metrics` returns `submitted`, `completed`, `pending`,
-  `overloads`, `orphanResponses`, and `failovers` as JSON.
+- `ReadReplicaNode.isHealthy()` reports whether the node is currently following a
+  reachable Archive, for orchestrators that drive the node programmatically.
 
-### Deployment
+### Querying the read replica
 
-`docker-compose.yml` brings up the 3-node write cluster plus one read replica read
-node (`ledgerd-read-0`) on a shared network:
+The `read-client` SDK is the query surface. It sends `QueryRequest` messages to
+the read replica's `QueryResponder` and correlates `QueryResponse` messages by
+request id, with idempotent retry and typed results for balance, batch balance,
+allowance, and total supply:
 
-```bash
-docker compose up --build
-
-# Write via WriteClient to localhost:20100.
-# Read from the read replica node:
-curl http://localhost:8080/balance/100
-curl "http://localhost:8080/balance/100?asset=1"   # optional ?asset= (default 0)
-curl http://localhost:8080/supply
-curl http://localhost:8080/healthz
-```
-
-The read node is configured with all three member Archives
-(`LEDGERD_ARCHIVE_CHANNELS`): it follows the first reachable one and fails over to a
-survivor if that member dies (ADR 0008). It advertises its own container address
-for Archive call-backs (`LEDGERD_LOCAL_HOST`, derived automatically by the
-entrypoint). Read replica nodes are NOT cluster members: they do not vote, do not
-affect quorum, and can be added, removed, or restarted independently.
-
-An operational verification script exercises the full topology end to end (cold
-start, read-after-write over the live log, malformed-request handling, read-node
-restart and re-sync, write-node restart, read decoupling from quorum, and archive
-failover after killing the followed member):
-
-```bash
-bash docker/verify-read.sh
+```java
+try (ReadClient client = new ReadClient(ReadClientConfig.builder().build())) {
+    BalanceResult result = client.balance(0L, 100L);
+    TotalSupplyResult supply = client.totalSupply(0L);
+}
 ```
 
 ---
@@ -421,17 +389,14 @@ bash docker/verify-read.sh
 The write cluster can emit a deterministic stream of semantic domain events
 (balance changed, transfer, allowance changed, reservation, rejection) on a
 dedicated egress path, off the consensus hot path (ADR 0011). Downstream
-consumers - AI risk, audit, analytics - follow it without re-executing the
-engine.
+consumers - audit, analytics - follow it without re-executing the engine.
 
 ### Enabling the journal
 
 Journaling is opt-in. Off by default, so nodes that do not need it pay nothing.
 
-| Deployment | How to enable |
-|------------|---------------|
-| Gradle / manual | `-Dledgerd.eventJournal=true` (optionally `-Dledgerd.eventJournalCapacity=<power-of-two>`) |
-| Docker | `LEDGERD_EVENT_JOURNAL=true` in the service environment (set for all members in `docker-compose.yml`) |
+Enable with `-Dledgerd.eventJournal=true` (optionally
+`-Dledgerd.eventJournalCapacity=<power-of-two>`).
 
 When enabled, each member records its own event stream to its Archive on stream
 id 108 via the `EventJournaler` agent, which runs on its own thread off the
@@ -442,100 +407,5 @@ deduplicating by `(logPosition, eventIndex)` (reuses ADR 0008 failover).
 ### Verifying the journal
 
 A standalone verifier follows the recorded event stream and checks it against the
-applied commands:
-
-```bash
-# Docker: follow the members' event journal and verify.
-docker compose run --rm event-verifier
-```
-
-The verifier ships in the `read` distribution (`EventJournalVerifier`); the
-Docker `event-verifier` target reuses that image.
-
----
-
-## 10. AI Risk Service
-
-The AI risk service (`risk`) is an Edge consumer of the domain event journal
-(ADR 0012). It follows the members' recorded event stream, scores accounts live
-for transaction velocity and money-flow graph centrality, and serves a dashboard
-plus JSON over HTTP. Like the read replica, it is NOT a Raft member: it does not
-vote, does not affect quorum, and can be added, removed, or restarted
-independently. It requires the write cluster to run with the event journal
-enabled (Section 9).
-
-### Running the risk service
-
-```bash
-# Gradle (development): follow local member Archives, serve the dashboard.
-LEDGERD_ARCHIVE_CHANNELS="aeron:udp?endpoint=localhost:20104,aeron:udp?endpoint=localhost:20204,aeron:udp?endpoint=localhost:20304" \
-    ./gradlew :risk:run
-```
-
-Recognised environment variables (localhost defaults, mirroring `read`):
-
-| Variable                | Required | Default                              | Description                                            |
-|-------------------------|:--------:|--------------------------------------|--------------------------------------------------------|
-| `LEDGERD_ARCHIVE_CHANNELS` | no*      | `aeron:udp?endpoint=localhost:20104` | Comma-separated Archive control channels, one per member; fails over across them. |
-| `LEDGERD_ARCHIVE_CHANNEL`  | no*      | `aeron:udp?endpoint=localhost:20104` | Single Archive control channel (legacy fallback).      |
-| `LEDGERD_LOCAL_HOST`       | no       | `localhost`                          | Routable host for Archive call-backs. Set to the container address in Docker. |
-| `LEDGERD_AERON_DIR`        | no       | embedded                             | Aeron media driver directory; embedded when unset.     |
-| `LEDGERD_HTTP_PORT`        | no       | `8090`                               | Port for the dashboard and JSON endpoints.             |
-
-\* At least one Archive endpoint is required.
-
-### Endpoints
-
-```bash
-# Docker: ledgerd-risk-0 serves on host port 8090.
-open http://localhost:8090/            # dashboard (velocity heatmap + transfer graph)
-curl http://localhost:8090/risk/scores # per-account risk scores (JSON)
-curl http://localhost:8090/risk/graph  # money-flow graph (JSON)
-curl http://localhost:8090/healthz     # follower health
-curl http://localhost:8090/metrics     # follower + scoring counters
-```
-
-The follower delivers every event on one agent thread, so all feature state is
-updated single-threaded; the HTTP threads only read published snapshots and never
-perturb the follower.
-
-### Driving demo data
-
-An empty dashboard has nothing to show. The `risk` scenario of the remote client
-generates a realistic load - a population of accounts exchanging money (a dense
-money-flow graph), several accounts with a velocity anomaly (slow baseline then a
-fast burst), and several hubs fanning out to many counterparties (high graph
-centrality) - so the heatmap and transfer graph fill up and flag accounts.
-
-```bash
-# Docker: point the client image at the running cluster and run the risk scenario.
-docker compose run --rm risk-demo
-
-# Then open the dashboard and watch scores and the money-flow graph populate.
-open http://localhost:8090/
-```
-
-Scale and behaviour are env-tunable (defaults in parentheses):
-
-| Variable                  | Default | Description                                              |
-|---------------------------|:-------:|---------------------------------------------------------|
-| `LEDGERD_RISK_POPULATION`    | `120`   | Accounts seeded and traded between (graph nodes).        |
-| `LEDGERD_RISK_BACKGROUND_TX` | `400`   | Random transfers across the population (graph edges).    |
-| `LEDGERD_RISK_SPIKE_ACCOUNTS`| `4`     | Accounts driven with a velocity spike.                   |
-| `LEDGERD_RISK_SPIKE_EDGES`   | `20`    | Counterparties each spike account also fans out to.      |
-| `LEDGERD_RISK_BURST`         | `30`    | Fast back-to-back transactions per spike account.        |
-| `LEDGERD_RISK_HUBS`          | `3`     | Hub accounts that fan out to many counterparties.        |
-| `LEDGERD_RISK_HUB_SPOKES`    | `30`    | Distinct counterparties per hub (raises centrality).     |
-| `LEDGERD_SCENARIO_LOOP`      | `false` | Repeat the scenario forever for a live, evolving demo.   |
-
-The velocity z-score itself is transient - it peaks on the first fast transaction
-after a baseline and the moving average absorbs it within a couple of events - so
-the service publishes a decaying peak score (30s half-life): a spike raises a
-durable alert that fades over time instead of vanishing on the next event. Spike
-accounts are also given graph centrality, so their combined score clears the flag
-threshold with margin and they show as flagged (red) in the scores table. The
-pure hubs stay visibly hot in the money-flow graph on centrality alone without
-crossing the flag threshold. Use `LEDGERD_SCENARIO_LOOP=true` to keep spikes
-recurring while demoing.
-
+applied commands. It ships in the `read` distribution (`EventJournalVerifier`).
 

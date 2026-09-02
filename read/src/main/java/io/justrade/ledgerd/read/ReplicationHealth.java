@@ -1,15 +1,15 @@
 package io.justrade.ledgerd.read;
 
 /**
- * Replication health published by the read replica's single agent thread and
- * read by the HTTP (Netty) threads serving {@code /healthz} and {@code /metrics}.
- * Volatile fields give the cross-thread visibility this boundary needs without
+ * Replication health tracked by the read replica's single agent thread and read
+ * by {@link ReadReplicaNode#isHealthy()} (and any future external probe).
+ * Volatile fields give the cross-thread visibility that boundary needs without
  * locking; the agent thread is the sole writer.
  *
  * <p>Health is {@code ok} while the replica is connected to an Archive and
  * following, and {@code stale} while it is reconnecting after a source failure.
  * ADR 0008 exposes this so an orchestrator or load balancer can detect a
- * degraded replica instead of the endpoint always reporting ok.
+ * degraded replica instead of the node always reporting ok.
  */
 public final class ReplicationHealth {
 

@@ -16,8 +16,7 @@
     - [launcher - Cluster Bootstrap](#launcher---cluster-bootstrap)
     - [write-client - Edge Client SDK](#write-client---edge-client-sdk)
     - [read - Read Side (CQRS Query)](#read---read-side-cqrs-query)
-    - [risk - AI Risk Substrate](#risk---ai-risk-substrate)
-    - [bench - Datastore Benchmark](#bench---datastore-benchmark)
+    - [read-client - Read Client SDK](#read-client---read-client-sdk)
     - [tests - Verification and Fixtures](#tests---verification-and-fixtures)
 - [Wire Format](#wire-format)
 - [Domain Event Journal](#domain-event-journal)
@@ -63,9 +62,9 @@ audit storage, analytics, and - for now - sharding and cross-shard atomicity
 
 ```
 ledgerd/
-|-- settings.gradle.kts             Gradle multi-module (9 modules)
+|-- settings.gradle.kts             Gradle multi-module (8 modules)
 |-- build.gradle.kts                Shared conventions: JDK 21, spotless, checkstyle, -Werror
-|-- gradle/libs.versions.toml       Version catalog (Aeron, Agrona, SBE, JMH, Netty, ...)
+|-- gradle/libs.versions.toml       Version catalog (Aeron, Agrona, SBE, JMH, ...)
 |
 |-- protocol/                  SBE schema + generated flyweight codecs
 |   |-- build.gradle.kts            SbeTool code generation task
@@ -111,35 +110,23 @@ ledgerd/
 |       |-- config/ClientConfig.java        Immutable client configuration
 |       +-- ResultHandler.java              Result callback correlated by command id
 |
-|-- read/                      Read side (CQRS query, HTTP over Netty)
+|-- read/                      Read side (CQRS query over a plain Aeron query protocol)
 |   +-- src/main/java/com/ledgerd/read/
-|       |-- query/                            QueryCodec, QueryType, ReadCallback, ReadQueryGateway
-|       |-- http/QueryHttpServer.java         Netty HTTP boundary
 |       |-- journal/                          EventJournalFollower/Subscriber/Config, DomainEventListener, EventJournalVerifier
-|       |-- config/
-|       |   |-- ReadServiceConfig.java        Immutable read config (HTTP port, ring capacities)
-|       |   +-- ReadReplicaConfig.java        Read replica node config (Archive channels, snapshot, live log)
+|       |-- config/ReadReplicaConfig.java     Read replica node config (Archive channels, snapshot, live log, query)
 |       |-- ArchiveSource.java                Multi-archive endpoint with round-robin failover (ADR 0008)
 |       |-- ReadStreams.java                  Consensus log / snapshot stream id constants
-|       |-- ReplicationHealth.java            Volatile health published for /healthz and /metrics
-|       |-- ReadReplicaNode.java              Standalone read node: embedded driver, snapshot load, live log
+|       |-- ReplicationHealth.java            Volatile health state (follow / failover / integrity)
+|       |-- QueryResponder.java               Aeron request/response query responder (balance/allowance/supply)
+|       |-- ReadReplicaNode.java              Standalone read node: embedded driver, snapshot load, live log, query responder
 |       |-- LiveLogSubscriber.java            Subscribes consensus recording, applies to engine in real time
 |       +-- ReadServiceLauncher.java          Entry point: resolve env config, run the read replica node
 |
-|-- risk/                      Edge AI risk substrate (ADR 0012, event-journal consumer)
-|   +-- src/main/java/com/ledgerd/risk/
-|       |-- RiskScoringService.java           DomainEventListener: single-writer feature state
-|       |-- feature/VelocityTracker.java      Per-account EWMA velocity z-score
-|       |-- feature/TransferGraph.java        Money-flow graph, degree centrality + PageRank
-|       |-- model/RiskModel.java              Weighted score + flag threshold
-|       |-- http/RiskHttpServer.java          Netty dashboard + JSON (/risk/scores, /risk/graph)
-|       +-- RiskServiceLauncher.java          Entry point: env config, follow journal, serve dashboard
-|
-|-- bench/                     Datastore benchmark harness (ADR 0013)
-|   +-- src/main/java/com/ledgerd/bench/
-|       |-- BenchmarkHarness.java             Runs one workload against each backend
-|       |-- store/DataStore.java              Common interface: Ledgerd / Postgres / Redis / Threaded
-|       +-- Reporter.java                     Throughput + latency percentile table + CSV
+|-- read-client/               Read client SDK (depends only on protocol)
+|   +-- src/main/java/com/ledgerd/read/client/
+|       |-- ReadClient.java                   Async submit/poll, sync queries, idempotent retry, correlation
+|       |-- config/ReadClientConfig.java      Immutable read-client configuration
+|       +-- BalanceResult / AllowanceResult / TotalSupplyResult / QueryListener
 |
 |-- examples/                  Runnable examples (QuickStart, RemoteClient)
 |
@@ -196,7 +183,7 @@ flowchart TB
         SB["ReadReplicaNode"]
         LLS["LiveLogSubscriber\n(stream 100)"]
         BE2["BalanceEngine"]
-        QS["QueryHttpServer\n(HTTP :8080)"]
+        QS["QueryResponder\n(Aeron query)"]
         AR -.->|" service snapshot (stream 106) "| SB
         AR -.->|" consensus log (stream 100) "| LLS
         LLS -->|" engine.process() "| BE2
@@ -209,7 +196,8 @@ flowchart TB
     BS -->|" CommandResult (SBE) via Aeron egress "| GW
     GW -->|" response "| CLIENT
 
-    USER["HTTP User"] -->|" GET /balance/:id "| QS
+    RC["read-client"] -->|" QueryRequest "| QS
+    QS -->|" QueryResponse "| RC
 ```
 
 All communication between a node's components uses IPC, so they may run in one
@@ -322,8 +310,8 @@ HdrHistogram latency measurement on top of an Aeron cluster client.
 ### read - Read Side (CQRS Query)
 
 The read (query) bounded context. Unlike the deterministic core, it may use the
-system clock, Netty, and heap allocation at the HTTP boundary. Reads are served
-by a read replica node:
+system clock and heap allocation at the boundary. Reads are served by a read
+replica node over a plain Aeron query protocol (`QueryRequest` / `QueryResponse`):
 
 - **Read replica mode** (the only mode): `ReadReplicaNode` runs as a standalone
   process with its own embedded Media Driver, driven by an Agrona `Agent` /
@@ -334,76 +322,45 @@ by a read replica node:
   as they appear, restarting the live log from the snapshot position. Because
   every member records the committed log to its own Archive, the node fails over
   across an ordered list of member Archive endpoints (`ArchiveSource`) with no
-  leader discovery (ADR 0008). Reads are
-  eventually consistent with bounded staleness and are answered on the single
-  agent thread, reached over a lock-free ring from the HTTP boundary, so the
-  single-writer discipline holds. Read replica nodes are NOT cluster members: they do
-  not vote, do not affect quorum, and can be added, removed, or restarted
-  independently. See ADR 0006, 0007, and 0008.
+  leader discovery (ADR 0008). Reads are eventually consistent with bounded
+  staleness and are answered by the `QueryResponder` on the single agent thread,
+  so the single-writer discipline holds. Read replica nodes are NOT cluster
+  members: they do not vote, do not affect quorum, and can be added, removed, or
+  restarted independently. See ADR 0006, 0007, and 0008.
 
 | Component            | Purpose                                                                        |
 |----------------------|--------------------------------------------------------------------------------|
-| `ReadReplicaNode`    | Standalone read node: embedded driver, Agent loop, snapshot load, live log follow, HTTP server |
+| `ReadReplicaNode`    | Standalone read node: embedded driver, Agent loop, snapshot load, live log follow, query responder |
 | `LiveLogSubscriber`  | Subscribes consensus recording (stream 100), parses framing, applies to engine |
 | `ArchiveSource`      | Owns the `AeronArchive` client; round-robin failover across member Archive endpoints (ADR 0008) |
-| `ReplicationHealth`  | Volatile health (connected, applied position, failovers) published for `/healthz` and `/metrics` |
+| `ReplicationHealth`  | Volatile health (connected, applied position, failovers) for agent state tracking |
 | `ReadStreams`        | Consensus log and service snapshot stream id constants                          |
-| `ReadReplicaConfig`      | Immutable read replica config: Archive channels, local host, stream IDs, poll interval, live log |
-| `ReadQueryGateway`   | Lock-free bridge: request `ManyToOneRingBuffer`, response `OneToOneRingBuffer`, correlation dispatcher |
-| `QueryCodec`         | Fixed little-endian request/response layout over the in-process rings           |
-| `QueryType`          | Enum of read kinds (BALANCE, BATCH_BALANCE, ALLOWANCE, TOTAL_SUPPLY)            |
-| `ReadCallback`       | Functional interface invoked on the dispatcher thread when a response correlates |
-| `QueryHttpServer`    | Netty HTTP boundary: routes REST reads to the gateway, completes them as JSON    |
-| `ReadServiceConfig`  | Immutable read config (HTTP port, ring capacities, request timeout, batch size)  |
+| `ReadReplicaConfig`      | Immutable read replica config: Archive channels, local host, stream IDs, poll interval, live log, query channel |
+| `QueryResponder`     | Serves `QueryRequest` frames from the engine on the agent thread and publishes `QueryResponse` frames |
 | `ReadServiceLauncher`| Entry point configured from environment variables; runs the read replica node        |
 | `journal/*`          | Domain event journal follower: `EventJournalFollower`/`Subscriber`, `DomainEventListener`, `EventJournalConfig`, and the standalone `EventJournalVerifier` (ADR 0011) |
 
 ```mermaid
 flowchart LR
-    USER["User"] -->|" HTTP GET/POST "| NETTY["QueryHttpServer (Netty)"]
-    NETTY -->|" request + correlationId "| REQ["request ring\n(ManyToOne)"]
-    REQ --> SVC["ReadReplicaNode\n(agent thread)"]
-    LOG["consensus log + snapshots\n(Archive replication)"] -->|" apply via BalanceEngine "| SVC
-    SVC -->|" lookup, answer "| RESP["response ring\n(OneToOne)"]
-    RESP --> DISP["dispatcher thread"]
-    DISP -->|" complete by correlationId, JSON "| NETTY
-    NETTY -->|" HTTP 200 "| USER
+    CLIENT["read-client\n(ReadClient)"] -->|" QueryRequest "| RESPONDER["QueryResponder\n(agent thread)"]
+    LOG["consensus log + snapshots\n(Archive replication)"] -->|" apply via BalanceEngine "| RESPONDER
+    RESPONDER -->|" QueryResponse "| CLIENT
 ```
 
-### risk - AI Risk Substrate
+### read-client - Read Client SDK
 
-An Edge consumer bounded context (ADR 0012), like `read`: it may use the
-system clock, Netty, and heap allocation, and it MUST NOT link the deterministic
-core hot path or join Raft. It follows the members' recorded domain event journal
-(ADR 0011, stream 108) through `read`'s `EventJournalFollower` and scores
-accounts in real time. The follower delivers every event on one agent thread, so
-`RiskScoringService` owns all feature state single-threaded; the HTTP dashboard
-thread only reads published snapshots.
+The read-side SDK, a separate bounded context that consumes only the `protocol`
+wire contract (`QueryRequest` / `QueryResponse`), never `core` or `read`,
+mirroring how `write-client` stays decoupled from the engine. It queries a read
+replica's `QueryResponder` over plain Aeron request/response streams with
+request-id correlation and idempotent retry.
 
-| Component             | Purpose                                                                       |
-|-----------------------|-------------------------------------------------------------------------------|
-| `RiskScoringService`  | `DomainEventListener`: single-writer feature state updated per event          |
-| `VelocityTracker`     | Per-account transaction velocity as an EWMA z-score against the account's own baseline |
-| `TransferGraph`       | Incremental money-flow adjacency; live degree centrality plus on-demand PageRank |
-| `RiskModel`           | Weighted combination of velocity z-score and graph centrality with a flag threshold |
-| `RiskHttpServer`      | Netty dashboard and JSON: `GET /`, `/risk/scores`, `/risk/graph`, `/healthz`, `/metrics` |
-| `RiskServiceLauncher` | Entry point: env config, follow the journal, serve the dashboard              |
-
-### bench - Datastore Benchmark
-
-Illustrative Edge infrastructure (ADR 0013), like `examples`. It runs one
-identical seeded wallet workload (`CREDIT` / `DEBIT` / `TRANSFER`) against LEDGERD,
-PostgreSQL, and Redis behind a common `DataStore` interface and reports throughput
-and latency percentiles side by side. It is exempt from the core determinism rules
-(it may use the system clock, `HashMap`, threads, and blocking JDBC/Redis clients)
-but still formats and lints clean. See [BENCHMARKS-VS-DATASTORES.md](BENCHMARKS-VS-DATASTORES.md).
-
-| Component          | Purpose                                                             |
-|--------------------|---------------------------------------------------------------------|
-| `BenchmarkHarness` | Drives the workload against each selected backend, collects metrics |
-| `DataStore`        | Common interface with `LedgerdDataStore`, `PostgresDataStore`, `RedisDataStore`, `ThreadedDataStore` implementations |
-| `WorkloadGenerator`| Seeded pseudo-random op stream, identical across backends            |
-| `Reporter`         | Prints the comparison table and writes `results.csv`                |
+| Component             | Purpose                                                                    |
+|-----------------------|----------------------------------------------------------------------------|
+| `ReadClient`          | Async submit/poll with idempotent retry, plus blocking sync queries        |
+| `ReadClientConfig`    | Immutable config: request/response channels, stream ids, retry budget      |
+| `QueryListener`       | Async callback sink correlated by request id                                |
+| `BalanceResult` / `AllowanceResult` / `TotalSupplyResult` | Typed query results |
 
 ### tests - Verification and Fixtures
 
@@ -451,7 +408,7 @@ INVALID_ACCOUNT, DUPLICATE, OVERFLOW, INVALID_AMOUNT, INSUFFICIENT_RESERVED.
 Beyond the single `CommandResult` ACK, the core can emit a durable, deterministic
 stream of *semantic facts* ("account A debited 100, new balance 400", "A
 transferred 150 to B") on a dedicated egress path, off the consensus hot path
-(ADR 0011). This gives a decoupled fan-out substrate - AI risk, audit, analytics -
+(ADR 0011). This gives a decoupled fan-out substrate - audit, analytics -
 that does not have to re-execute the engine to derive state.
 
 - **Opt-in.** Journaling is a `CoreConfig` flag (`eventJournalEnabled`, default
@@ -482,8 +439,8 @@ flowchart LR
     BS["BalanceService\n(consensus thread)"] -->|" encode event "| RING["EventJournalRing\n(off-heap SPSC)"]
     RING -->|" drain in batches "| EJ["EventJournaler\n(own AgentRunner)"]
     EJ -->|" offer (stream 108) "| AR["Archive\n(records event stream)"]
-    AR -->|" replay + dedup "| FOL["EventJournalFollower\n(read / risk)"]
-    FOL -->|" decoded events "| CONS["DomainEventListener\n(risk, audit, analytics)"]
+    AR -->|" replay + dedup "| FOL["EventJournalFollower\n(read)"]
+    FOL -->|" decoded events "| CONS["DomainEventListener\n(audit, analytics)"]
 ```
 
 ---
@@ -670,15 +627,13 @@ JVM must run with `--add-opens java.base/jdk.internal.misc=ALL-UNNAMED` and
 | `ReplayDeterminismTest`     | Unit        | Two engines replaying the same log produce identical snapshots |
 | `AmountsPropertyTest`       | Property    | Overflow detection matches `Math.addExact` (jqwik)         |
 | `EventJournalRingTest`      | Unit        | Off-heap event ring SPSC framing and batch drain           |
-| `ReadQueryGatewayTest`      | Unit        | Query-ring correlation, cancel/orphan handling, codec round-trip |
 | `MetricsHttpServerTest`     | Unit        | Prometheus metrics and healthz HTTP endpoint               |
-| Risk feature/model tests    | Unit        | `VelocityTracker`, `TransferGraph`, `RiskModel`, `RiskScoringService` (ADR 0012) |
 | `ClusterIntegrationTest`    | Integration | End-to-end over a real single-node cluster, idempotency verified |
 | `WriteClientIntegrationTest` | Integration | Client SDK submit/poll, command-id correlation             |
 | `EventJournalIntegrationTest` | Integration | Event journal recorded and followed end-to-end (ADR 0011)  |
 | `EventJournalFollowerIntegrationTest` | Integration | Follower dedup and multi-archive failover               |
-| `RiskServiceIntegrationTest`| Integration | Risk service scores accounts from the live journal         |
-| `ReadReplicaQueryIntegrationTest`| Integration | Read-after-write over HTTP via read replica; both sides of a transfer, malformed requests |
+| `ReadClientIntegrationTest` | Integration | Read-client sync/async queries, request-id correlation     |
+| `ReadReplicaQueryIntegrationTest`| Integration | Read-after-write via read-client SDK; both sides of a transfer |
 | `ReadReplicaReplicationIntegrationTest` | Integration | Read replica snapshot replication end-to-end            |
 | `ReadReplicaLiveLogIntegrationTest` | Integration | Read replica live log following, sub-second staleness       |
 | `ReadReplicaNodeSmokeTest`  | Integration | Read replica node startup and basic query                  |
@@ -713,16 +668,10 @@ run in the default `check` gate.
 # Run a single-node cluster
 ./gradlew :launcher:run
 
-# Run a read node (eventually-consistent HTTP query API, default port 8080)
+# Run a read node (eventually-consistent Aeron query API)
 ./gradlew :read:run
-
-# Run the AI risk service (dashboard + JSON, default port 8090)
-./gradlew :risk:run
-
-# Run the datastore benchmark (LEDGERD vs PostgreSQL vs Redis; needs Docker)
-./gradlew :bench:run
 ```
 
 Toolchain: JDK 21 LTS. Aeron 1.48, Agrona 2.2, SBE 1.35. The dependency chain
 for changes: a schema change in `protocol` regenerates codecs used by
-`core`, `launcher`, and `tests`, so all layers rebuild together.
+`core`, `launcher`, `read-client`, and `tests`, so all layers rebuild together.

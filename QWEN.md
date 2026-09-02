@@ -28,25 +28,22 @@
 | Latency measurement | HdrHistogram 2.2.2 |
 | Thread affinity | Affinity 3.23.3 (OpenHFT) |
 | Linting / formatting | Checkstyle 10.20.1, Spotless (Palantir Java Format) |
-| Read-side HTTP | Netty 4.1.136.Final |
-| Containerisation | Docker (multi-stage `Dockerfile` + `docker-compose.yml`) |
 | CI | GitHub Actions (`.github/workflows/ci.yml`) |
 
 ## Module Architecture
 
 ```
-protocol/     SBE schema + generated flyweight codecs (zero-dependency wire contract; command, snapshot, domain event journal)
+protocol/     SBE schema + generated flyweight codecs (zero-dependency wire contract; command, snapshot, domain event journal, read query)
 core/         Deterministic state machine: engine, handlers, stores, dedup, snapshot, event journal ring, telemetry
 launcher/     Aeron bootstrap: Media Driver, Archive, Consensus Module, service container, event journaler, optional Prometheus endpoint
 write-client/       Edge-side SDK: leader-change handling, idempotent retry, async correlation, backpressure (depends only on protocol)
-read/         CQRS read side: read replica node (Aeron Archive replication + multi-archive failover), balance/allowance/supply queries over HTTP (Netty), domain event journal follower
-risk/         Edge AI risk substrate (ADR 0012): event-journal consumer, velocity + money-flow graph scoring, HTTP dashboard
+read/         CQRS read side: read replica node (Aeron Archive replication + multi-archive failover), balance/allowance/supply queries over a plain Aeron query protocol (QueryResponder), domain event journal follower
+read-client/  Read-side SDK: queries a read replica over Aeron request/response streams (depends only on protocol)
 tests/        Unit, property, integration, cluster, fault, and soak tests + testFixtures toolkit
 examples/     Runnable examples (QuickStart, RemoteClient)
-bench/        Datastore benchmark harness (ADR 0013): LEDGERD vs PostgreSQL vs Redis behind a common interface
 ```
 
-The hot path lives entirely in `core`. Everything else (client, launcher, read side, risk, examples, benchmark) is outside the deterministic boundary. The domain event journal (ADR 0011) is opt-in via `CoreConfig.eventJournalEnabled`; its Aeron I/O runs on the launcher's `EventJournaler` agent, never the consensus thread.
+The hot path lives entirely in `core`. Everything else (client, launcher, read side, examples) is outside the deterministic boundary. The domain event journal (ADR 0011) is opt-in via `CoreConfig.eventJournalEnabled`; its Aeron I/O runs on the launcher's `EventJournaler` agent, never the consensus thread.
 
 ## Key Build / Test Commands
 
@@ -157,11 +154,3 @@ Priority order: **Correctness > Determinism > Tail Latency > Mean Latency > Thro
 | `.github/copilot-instructions.md` | Machine-parseable coding directives (hot path, memory, concurrency, testing) |
 | `core/config/checkstyle/determinism.xml` | Forbidden-constructs ruleset for the hot path |
 | `benchmark-baseline.txt` | Committed baseline numbers for JMH diff comparison |
-
-## Docker
-
-```bash
-docker compose up --build          # 3-node Raft write cluster + 1 read replica node
-docker compose run --rm client     # end-to-end smoke test
-bash docker/verify-read.sh         # operational verification (read side, failover, decoupling)
-```

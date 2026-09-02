@@ -1,23 +1,20 @@
 package io.justrade.ledgerd.read;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assertions.fail;
 
 import io.justrade.ledgerd.config.CoreConfig;
 import io.justrade.ledgerd.launcher.ClusterConfig;
 import io.justrade.ledgerd.launcher.ClusterNode;
 import io.justrade.ledgerd.protocol.CommandType;
 import io.justrade.ledgerd.protocol.StatusCode;
+import io.justrade.ledgerd.read.client.BalanceResult;
+import io.justrade.ledgerd.read.client.ReadClient;
 import io.justrade.ledgerd.read.config.ReadReplicaConfig;
-import io.justrade.ledgerd.read.config.ReadServiceConfig;
 import io.justrade.ledgerd.testkit.ClusterTestClient;
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.nio.file.Path;
-import java.time.Duration;
+import java.util.List;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
@@ -28,11 +25,10 @@ import org.junit.jupiter.api.io.TempDir;
 /**
  * End-to-end read-side test over the read replica path: writes via a
  * {@link ClusterTestClient} against a single-node write cluster, then reads back
- * over HTTP from a {@link ReadReplicaNode}. The read replica follows the consensus
- * log from position 0 (no snapshot required), so the read model is complete - it
- * reflects both sides of a transfer, unlike the egress stream which only carries
- * the sender's balance. Also covers the HTTP boundary's rejection of malformed
- * requests, previously covered by the removed cluster-mode integration test.
+ * through the read-client SDK from a {@link ReadReplicaNode}. The read replica
+ * follows the consensus log from position 0 (no snapshot required), so the read
+ * model is complete - it reflects both sides of a transfer, unlike the egress
+ * stream which only carries the sender's balance.
  */
 @Tag("integration")
 class ReadReplicaQueryIntegrationTest {
@@ -44,8 +40,7 @@ class ReadReplicaQueryIntegrationTest {
     private ClusterNode clusterNode;
     private ClusterConfig clusterConfig;
     private ReadReplicaNode replicaNode;
-    private HttpClient http;
-    private String baseUrl;
+    private ReadClient client;
 
     @BeforeEach
     void start(@TempDir final Path tempDir) {
@@ -54,20 +49,22 @@ class ReadReplicaQueryIntegrationTest {
 
         // Live log following from position 0 means reads converge without any
         // snapshot; a long poll interval keeps snapshot loading out of the test.
+        final int queryPort = ReadClientTestSupport.freeUdpPort();
         final ReadReplicaConfig replicaConfig = ReadReplicaConfig.builder()
                 .archiveControlChannel("aeron:udp?endpoint=localhost:20104")
                 .liveLogEnabled(true)
                 .pollIntervalMs(60_000L)
+                .queryRequestChannel(ReadClientTestSupport.queryChannel(queryPort))
                 .build();
-        final ReadServiceConfig readConfig =
-                ReadServiceConfig.builder().httpPort(0).build();
-        replicaNode = new ReadReplicaNode(replicaConfig, CoreConfig.defaults(), readConfig);
-        http = HttpClient.newHttpClient();
-        baseUrl = "http://localhost:" + replicaNode.httpPort();
+        replicaNode = new ReadReplicaNode(replicaConfig, CoreConfig.defaults());
+        client = new ReadClient(ReadClientTestSupport.clientConfig(queryPort));
     }
 
     @AfterEach
     void stop() {
+        if (client != null) {
+            client.close();
+        }
         if (replicaNode != null) {
             replicaNode.close();
         }
@@ -79,105 +76,37 @@ class ReadReplicaQueryIntegrationTest {
     @Test
     @Timeout(90)
     void readsReflectCommittedWrites() {
-        try (ClusterTestClient client = new ClusterTestClient(clusterConfig.aeronDirectoryName(), INGRESS_ENDPOINTS)) {
-            client.send(1L, 0L, 0L, 1L, CommandType.CREDIT, 100L, 0L, 0L, 500L);
-            assertTrue(client.awaitResult(1L, RESULT_TIMEOUT_MS), "credit result");
-            assertEquals(StatusCode.SUCCESS, client.lastStatus());
+        try (ClusterTestClient clusterClient =
+                new ClusterTestClient(clusterConfig.aeronDirectoryName(), INGRESS_ENDPOINTS)) {
+            clusterClient.send(1L, 0L, 0L, 1L, CommandType.CREDIT, 100L, 0L, 0L, 500L);
+            assertTrue(clusterClient.awaitResult(1L, RESULT_TIMEOUT_MS), "credit result");
+            assertEquals(StatusCode.SUCCESS, clusterClient.lastStatus());
 
-            client.send(1L, 1L, 0L, 2L, CommandType.TRANSFER, 100L, 200L, 0L, 150L);
-            assertTrue(client.awaitResult(2L, RESULT_TIMEOUT_MS), "transfer result");
-            assertEquals(StatusCode.SUCCESS, client.lastStatus());
+            clusterClient.send(1L, 1L, 0L, 2L, CommandType.TRANSFER, 100L, 200L, 0L, 150L);
+            assertTrue(clusterClient.awaitResult(2L, RESULT_TIMEOUT_MS), "transfer result");
+            assertEquals(StatusCode.SUCCESS, clusterClient.lastStatus());
 
-            client.send(1L, 2L, 0L, 3L, CommandType.APPROVE, 1L, 9L, 0L, 200L);
-            assertTrue(client.awaitResult(3L, RESULT_TIMEOUT_MS), "approve result");
-            assertEquals(StatusCode.SUCCESS, client.lastStatus());
+            clusterClient.send(1L, 2L, 0L, 3L, CommandType.APPROVE, 1L, 9L, 0L, 200L);
+            assertTrue(clusterClient.awaitResult(3L, RESULT_TIMEOUT_MS), "approve result");
+            assertEquals(StatusCode.SUCCESS, clusterClient.lastStatus());
         }
 
         // Sender lost 150 (500 -> 350); this side is visible on egress.
-        awaitBody("/balance/100", "\"balance\":350");
+        ReadClientTestSupport.awaitBalance(client, 0L, 100L, 350L, READ_TIMEOUT_MS);
         // Recipient gained 150 (0 -> 150); only the read model has this side.
-        awaitBody("/balance/200", "\"balance\":150");
+        ReadClientTestSupport.awaitBalance(client, 0L, 200L, 150L, READ_TIMEOUT_MS);
         // Total supply is conserved by the transfer.
-        awaitBody("/supply", "\"totalSupply\":500");
+        ReadClientTestSupport.awaitSupply(client, 0L, 500L, READ_TIMEOUT_MS);
         // Allowance set by APPROVE.
-        awaitBody("/allowance/1/9", "\"allowance\":200");
+        ReadClientTestSupport.awaitAllowance(client, 0L, 1L, 9L, 200L, READ_TIMEOUT_MS);
 
         // Batch: two known accounts plus one that does not exist.
-        final String batch = awaitBody("POST", "/balances", "{\"ids\":[100,200,999]}", "\"account\":999");
-        assertTrue(batch.contains("\"account\":100,\"exists\":true,\"balance\":350"), batch);
-        assertTrue(batch.contains("\"account\":200,\"exists\":true,\"balance\":150"), batch);
-        assertTrue(batch.contains("\"account\":999,\"exists\":false"), batch);
-    }
-
-    @Test
-    @Timeout(60)
-    void rejectsMalformedRequestsWithoutCrashing() {
-        assertEquals(404, statusOf("GET", "/nope", null), "unknown GET route");
-        assertEquals(404, statusOf("POST", "/nope", "{}"), "unknown POST route");
-        assertEquals(400, statusOf("GET", "/balance/not-a-number", null), "non-numeric balance id");
-        assertEquals(400, statusOf("GET", "/allowance/1", null), "allowance missing delegate");
-        assertEquals(400, statusOf("GET", "/allowance/1/", null), "allowance empty delegate");
-        assertEquals(400, statusOf("GET", "/allowance/x/y", null), "allowance non-numeric");
-        assertEquals(400, statusOf("POST", "/balances", "   "), "batch with no ids");
-
-        // The node still serves valid queries after rejecting the malformed ones.
-        assertEquals(200, statusOf("GET", "/healthz", null), "healthz after malformed requests");
-    }
-
-    private int statusOf(final String method, final String path, final String body) {
-        try {
-            final HttpRequest.Builder builder =
-                    HttpRequest.newBuilder(URI.create(baseUrl + path)).timeout(Duration.ofSeconds(5));
-            if ("POST".equals(method)) {
-                builder.header("Content-Type", "application/json")
-                        .POST(HttpRequest.BodyPublishers.ofString(body == null ? "" : body));
-            } else {
-                builder.GET();
-            }
-            return http.send(builder.build(), HttpResponse.BodyHandlers.ofString())
-                    .statusCode();
-        } catch (final Exception e) {
-            throw new IllegalStateException("HTTP " + method + " " + path + " failed", e);
-        }
-    }
-
-    private String awaitBody(final String path, final String mustContain) {
-        return awaitBody("GET", path, null, mustContain);
-    }
-
-    private String awaitBody(final String method, final String path, final String body, final String mustContain) {
-        final long deadline = System.currentTimeMillis() + READ_TIMEOUT_MS;
-        String last = "";
-        while (System.currentTimeMillis() < deadline) {
-            last = request(method, path, body);
-            if (last.contains(mustContain)) {
-                return last;
-            }
-            try {
-                Thread.sleep(50L);
-            } catch (final InterruptedException e) {
-                Thread.currentThread().interrupt();
-                break;
-            }
-        }
-        fail("read of " + path + " never contained '" + mustContain + "'; last body=" + last);
-        return last;
-    }
-
-    private String request(final String method, final String path, final String body) {
-        try {
-            final HttpRequest.Builder builder =
-                    HttpRequest.newBuilder(URI.create(baseUrl + path)).timeout(Duration.ofSeconds(5));
-            if ("POST".equals(method)) {
-                builder.header("Content-Type", "application/json").POST(HttpRequest.BodyPublishers.ofString(body));
-            } else {
-                builder.GET();
-            }
-            final HttpResponse<String> response = http.send(builder.build(), HttpResponse.BodyHandlers.ofString());
-            assertEquals(200, response.statusCode(), "unexpected status for " + path + ": " + response.body());
-            return response.body();
-        } catch (final Exception e) {
-            throw new IllegalStateException("HTTP " + method + " " + path + " failed", e);
-        }
+        final List<BalanceResult> batch = client.batchBalances(0L, 100L, 200L, 999L);
+        assertEquals(3, batch.size(), "batch must echo every requested account");
+        assertEquals(new BalanceResult(100L, 350L, true, batch.get(0).appliedPosition()), batch.get(0));
+        assertEquals(new BalanceResult(200L, 150L, true, batch.get(1).appliedPosition()), batch.get(1));
+        final BalanceResult missing = batch.get(2);
+        assertEquals(999L, missing.accountId());
+        assertFalse(missing.found(), "account 999 should not exist");
     }
 }

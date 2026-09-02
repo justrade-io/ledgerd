@@ -1,12 +1,13 @@
 // read: the CQRS read-side. Runs a read replica node that replicates
 // cluster state via Aeron Archive (snapshot load + consensus log following),
 // independent of the Raft consensus protocol, and serves eventually-consistent
-// balance / allowance / total-supply reads over HTTP.
+// balance / allowance / total-supply reads over a plain Aeron query protocol
+// (QueryRequest / QueryResponse).
 //
 // Unlike the deterministic core (core), this module is an Edge / read
-// bounded context: it may use the system clock, Netty, and heap allocation at
-// the HTTP boundary. It must never perturb the single-writer engine thread; it
-// answers queries on that same agent thread.
+// bounded context: it may use the system clock and heap allocation at the
+// boundary. It must never perturb the single-writer engine thread; it answers
+// queries on that same agent thread.
 
 plugins {
     application
@@ -24,7 +25,6 @@ application {
 dependencies {
     implementation(project(":core"))
     implementation(libs.bundles.aeron)
-    implementation(libs.netty.codec.http)
 }
 
 jmh {

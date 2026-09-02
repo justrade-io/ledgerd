@@ -8,16 +8,11 @@ import io.justrade.ledgerd.config.CoreConfig;
 import io.justrade.ledgerd.launcher.ClusterConfig;
 import io.justrade.ledgerd.protocol.CommandType;
 import io.justrade.ledgerd.protocol.StatusCode;
+import io.justrade.ledgerd.read.client.ReadClient;
 import io.justrade.ledgerd.read.config.ReadReplicaConfig;
-import io.justrade.ledgerd.read.config.ReadServiceConfig;
 import io.justrade.ledgerd.testkit.ClusterTestClient;
 import io.justrade.ledgerd.testkit.MultiNodeCluster;
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.nio.file.Path;
-import java.time.Duration;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -31,10 +26,8 @@ import org.junit.jupiter.api.io.TempDir;
  * prefixed with cluster-schema framing records before the LEDGERD
  * {@code SnapshotHeader}. The loader must skip that framing and then load the
  * whole snapshot. The snapshot is made large (100 accounts) so it spans more
- * than one 64-fragment poll batch: a loader that mishandles the framing loads
- * only the first batch and never completes, whereas a correct loader converges
- * on the full supply. With the live log disabled the replica can only serve
- * state from a loaded snapshot.
+ * than one 64-fragment poll batch. With the live log disabled the replica can
+ * only serve state from a loaded snapshot.
  *
  * <p>Tagged {@code cluster}: multi-node and timing-sensitive, run via the opt-in
  * {@code clusterTest} task, never wired into {@code check}.
@@ -45,7 +38,7 @@ class ReadReplicaSnapshotLoadClusterTest {
     private static final int NODE_COUNT = 3;
     private static final int ACCOUNTS = 100;
     private static final long RESULT_TIMEOUT_MS = 30_000L;
-    private static final long HTTP_AWAIT_MS = 30_000L;
+    private static final long READ_TIMEOUT_MS = 30_000L;
 
     @Test
     @Timeout(180)
@@ -67,41 +60,20 @@ class ReadReplicaSnapshotLoadClusterTest {
 
             // Live log DISABLED: the replica must build state purely from a service
             // snapshot loaded from a member's archive.
+            final int queryPort = ReadClientTestSupport.freeUdpPort();
             final ReadReplicaConfig replicaConfig = ReadReplicaConfig.builder()
                     .archiveControlChannel(configs[leader].archiveControlChannel())
                     .pollIntervalMs(250L)
                     .liveLogEnabled(false)
+                    .queryRequestChannel(ReadClientTestSupport.queryChannel(queryPort))
                     .build();
-            final ReadServiceConfig readConfig =
-                    ReadServiceConfig.builder().httpPort(0).build();
 
-            try (ReadReplicaNode replica = new ReadReplicaNode(replicaConfig, CoreConfig.defaults(), readConfig)) {
-                final HttpClient http = HttpClient.newHttpClient();
-                final String baseUrl = "http://localhost:" + replica.httpPort();
-                awaitHttp(http, baseUrl, "/supply", "\"totalSupply\":100");
-                awaitHttp(http, baseUrl, "/balance/100", "\"balance\":1");
+            try (ReadReplicaNode replica = new ReadReplicaNode(replicaConfig, CoreConfig.defaults());
+                    ReadClient readClient = new ReadClient(ReadClientTestSupport.clientConfig(queryPort))) {
+                ReadClientTestSupport.awaitSupply(readClient, 0L, 100L, READ_TIMEOUT_MS);
+                ReadClientTestSupport.awaitBalance(readClient, 0L, 100L, 1L, READ_TIMEOUT_MS);
+                assertTrue(replica.isHealthy(), "replica must be healthy after loading the snapshot");
             }
         }
-    }
-
-    private static void awaitHttp(
-            final HttpClient http, final String baseUrl, final String path, final String expectedFragment)
-            throws Exception {
-        final HttpRequest request = HttpRequest.newBuilder(URI.create(baseUrl + path))
-                .timeout(Duration.ofSeconds(5))
-                .GET()
-                .build();
-        final long deadline = System.currentTimeMillis() + HTTP_AWAIT_MS;
-        String body = "";
-        while (System.currentTimeMillis() < deadline) {
-            final HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString());
-            body = response.body();
-            if (response.statusCode() == 200 && body.contains(expectedFragment)) {
-                return;
-            }
-            Thread.sleep(200L);
-        }
-        throw new AssertionError(
-                "timed out waiting for " + path + " to contain '" + expectedFragment + "', last: " + body);
     }
 }

@@ -7,7 +7,6 @@ import io.aeron.archive.client.RecordingDescriptorConsumer;
 import io.aeron.driver.MediaDriver;
 import io.aeron.driver.ThreadingMode;
 import io.aeron.logbuffer.FragmentHandler;
-import io.justrade.ledgerd.collections.AllowanceStore;
 import io.justrade.ledgerd.collections.BalanceStore;
 import io.justrade.ledgerd.config.CoreConfig;
 import io.justrade.ledgerd.core.BalanceEngine;
@@ -15,11 +14,6 @@ import io.justrade.ledgerd.persistence.SnapshotManager;
 import io.justrade.ledgerd.protocol.MessageHeaderDecoder;
 import io.justrade.ledgerd.protocol.SnapshotHeaderDecoder;
 import io.justrade.ledgerd.read.config.ReadReplicaConfig;
-import io.justrade.ledgerd.read.config.ReadServiceConfig;
-import io.justrade.ledgerd.read.http.QueryHttpServer;
-import io.justrade.ledgerd.read.query.QueryCodec;
-import io.justrade.ledgerd.read.query.QueryType;
-import io.justrade.ledgerd.read.query.ReadQueryGateway;
 import io.justrade.ledgerd.telemetry.AtomicCounterSink;
 import io.justrade.ledgerd.telemetry.CoreMetrics;
 import io.justrade.ledgerd.telemetry.CounterSink;
@@ -27,11 +21,9 @@ import java.util.Arrays;
 import org.agrona.BitUtil;
 import org.agrona.BufferUtil;
 import org.agrona.DirectBuffer;
-import org.agrona.MutableDirectBuffer;
 import org.agrona.concurrent.Agent;
 import org.agrona.concurrent.AgentRunner;
 import org.agrona.concurrent.BackoffIdleStrategy;
-import org.agrona.concurrent.MessageHandler;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.agrona.concurrent.status.AtomicCounter;
 import org.agrona.concurrent.status.CountersManager;
@@ -39,12 +31,13 @@ import org.agrona.concurrent.status.CountersManager;
 /**
  * A read node that operates independently of the Raft consensus protocol. It
  * connects to a cluster member's Aeron Archive, follows the committed consensus
- * log, loads service snapshots as they appear, and serves reads over HTTP. It is
+ * log, loads service snapshots as they appear, and serves reads over a plain
+ * Aeron query protocol ({@code QueryRequest} / {@code QueryResponse}). It is
  * never listed in {@code clusterMembers} and does not vote or affect quorum.
  *
  * <p>Single-writer: a single Agrona {@link Agent} thread (driven by an
- * {@link AgentRunner}) owns the engine. That one thread drains HTTP queries from
- * the {@link ReadQueryGateway}, polls the live log, and loads new snapshots.
+ * {@link AgentRunner}) owns the engine. That one thread polls the
+ * {@link QueryResponder}, polls the live log, and loads new snapshots.
  * Because reads and writes to the engine's non-thread-safe stores always happen
  * on this one thread, no concurrency control is needed and readers always see a
  * consistent state.
@@ -60,14 +53,11 @@ import org.agrona.concurrent.status.CountersManager;
  * converges with no clobber. Snapshots are loaded ADVANCE-ONLY: a service
  * snapshot is applied only when its cluster-global {@code logPosition} advances
  * the replica's current position, so an older snapshot on a new source never
- * rolls state back. {@code /healthz} reports ok / stale and {@code /metrics}
- * exposes a failover counter so an orchestrator can detect a degraded replica.
- * See ADR 0006, 0007, and 0008.
+ * rolls state back. See ADR 0006, 0007, and 0008.
  */
 public final class ReadReplicaNode implements AutoCloseable {
 
     private static final int FRAGMENT_LIMIT = 64;
-    private static final int REQUEST_DRAIN_LIMIT = 64;
     private static final long STARTUP_CONNECT_TIMEOUT_MS = 10_000L;
     private static final long LIVE_LOG_RECONNECT_BACKOFF_MS = 250L;
     private static final System.Logger LOG = System.getLogger(ReadReplicaNode.class.getName());
@@ -77,13 +67,10 @@ public final class ReadReplicaNode implements AutoCloseable {
     private final ArchiveSource source;
     private final BalanceEngine engine;
     private final CoreMetrics metrics;
-    private final ReadQueryGateway gateway;
-    private final QueryHttpServer httpServer;
+    private final QueryResponder queryResponder;
     private final ReadReplicaConfig replicaConfig;
     private final SnapshotManager snapshotManager;
     private final ReplicationHealth health;
-    private final UnsafeBuffer responseBuffer;
-    private final MessageHandler queryHandler;
     private final FragmentHandler snapshotFragmentHandler;
     private final MessageHeaderDecoder validationHeader = new MessageHeaderDecoder();
     private final SnapshotHeaderDecoder snapshotHeaderDecoder = new SnapshotHeaderDecoder();
@@ -125,18 +112,14 @@ public final class ReadReplicaNode implements AutoCloseable {
         FAILED
     }
 
-    public ReadReplicaNode(
-            final ReadReplicaConfig replicaConfig, final CoreConfig coreConfig, final ReadServiceConfig readConfig) {
+    public ReadReplicaNode(final ReadReplicaConfig replicaConfig, final CoreConfig coreConfig) {
 
         this.replicaConfig = replicaConfig;
         this.snapshotManager = new SnapshotManager();
-        this.responseBuffer = new UnsafeBuffer(new byte[QueryCodec.maxMessageLength()]);
-        this.queryHandler = this::onQuery;
         this.health = new ReplicationHealth();
 
         this.metrics = newMetrics();
         this.engine = new BalanceEngine(coreConfig, metrics);
-        this.gateway = new ReadQueryGateway(readConfig.requestRingCapacity(), readConfig.responseRingCapacity());
 
         // The service snapshot recording is prefixed with cluster-schema framing
         // records (schema 111); the LEDGERD SnapshotHeader (LEDGERD schema, template 10)
@@ -175,7 +158,7 @@ public final class ReadReplicaNode implements AutoCloseable {
         final String aeronDir = replicaConfig.aeronDir();
         MediaDriver driver = null;
         Aeron aeronClient = null;
-        QueryHttpServer server = null;
+        QueryResponder responder = null;
         AgentRunner runner = null;
         try {
             driver = MediaDriver.launch(new MediaDriver.Context()
@@ -184,7 +167,11 @@ public final class ReadReplicaNode implements AutoCloseable {
                     .dirDeleteOnStart(true)
                     .dirDeleteOnShutdown(true));
             aeronClient = Aeron.connect(new Aeron.Context().aeronDirectoryName(aeronDir));
-            server = new QueryHttpServer(gateway, readConfig, health);
+            this.mediaDriver = driver;
+            this.aeron = aeronClient;
+            this.source = new ArchiveSource(aeronClient, replicaConfig);
+            responder = new QueryResponder(aeronClient, this, replicaConfig);
+            this.queryResponder = responder;
             runner = new AgentRunner(new BackoffIdleStrategy(), this::onAgentError, null, new Agent() {
                 @Override
                 public int doWork() {
@@ -196,17 +183,11 @@ public final class ReadReplicaNode implements AutoCloseable {
                     return "ledgerd-read-replica-agent";
                 }
             });
-
-            this.mediaDriver = driver;
-            this.aeron = aeronClient;
-            this.source = new ArchiveSource(aeronClient, replicaConfig);
-            this.httpServer = server;
             this.agentRunner = runner;
         } catch (final RuntimeException e) {
-            // Do not leak the driver, client, HTTP server, or gateway dispatcher
-            // thread if a later component fails to start.
-            closeQuietly(runner, server, aeronClient, driver);
-            gateway.close();
+            // Do not leak the driver, client, or query responder if a later
+            // component fails to start.
+            closeQuietly(runner, responder, aeronClient, driver);
             throw e;
         }
 
@@ -246,19 +227,41 @@ public final class ReadReplicaNode implements AutoCloseable {
         }
     }
 
-    /** The bound HTTP port (useful when a port of 0 was requested in tests). */
-    public int httpPort() {
-        return httpServer.port();
+    /** Whether the replica is currently following a healthy Archive source. */
+    public boolean isHealthy() {
+        return health.isHealthy();
     }
 
-    public ReadQueryGateway gateway() {
-        return gateway;
+    /** The cluster log position the engine has applied; read on the agent thread only. */
+    long appliedPosition() {
+        return appliedLogPosition;
+    }
+
+    /** Balance of {@code (assetId, accountId)}; {@code 0} when the account is unknown. */
+    long balance(final long assetId, final long accountId) {
+        final long balance = engine.balances().rawGet(assetId, accountId);
+        return balance == BalanceStore.MISSING ? 0L : balance;
+    }
+
+    /** Whether the replicated state contains {@code (assetId, accountId)}. */
+    boolean accountExists(final long assetId, final long accountId) {
+        return engine.balances().rawGet(assetId, accountId) != BalanceStore.MISSING;
+    }
+
+    /** Allowance for an {@code (assetId, ownerId, delegateId)} pair. */
+    long allowance(final long assetId, final long ownerId, final long delegateId) {
+        return engine.allowances().get(assetId, ownerId, delegateId);
+    }
+
+    /** Engine-wide total supply for {@code assetId}. */
+    long totalSupply(final long assetId) {
+        return engine.balances().totalSupply(assetId);
     }
 
     // --- Single-writer agent loop ----------------------------------------
 
     private int doWorkCycle() {
-        int work = gateway.readRequests(queryHandler, REQUEST_DRAIN_LIMIT);
+        int work = queryResponder.poll();
         switch (state) {
             case CONNECTING, DEGRADED -> work += attemptConnect();
             case FOLLOWING -> work += followCycle();
@@ -584,52 +587,6 @@ public final class ReadReplicaNode implements AutoCloseable {
         return new CoreMetrics(new AtomicCounterSink(counters, gauges));
     }
 
-    // --- Query handling (agent thread) -----------------
-
-    private void onQuery(final int msgTypeId, final MutableDirectBuffer buffer, final int index, final int length) {
-        final long correlationId = QueryCodec.correlationId(buffer, index);
-        final QueryType type = QueryCodec.queryType(buffer, index);
-        switch (type) {
-            case BALANCE -> answerBalances(correlationId, buffer, index, 1);
-            case BATCH_BALANCE -> answerBalances(correlationId, buffer, index, QueryCodec.count(buffer, index));
-            case ALLOWANCE -> answerAllowance(correlationId, buffer, index);
-            case TOTAL_SUPPLY -> answerTotalSupply(correlationId, buffer, index);
-        }
-    }
-
-    private void answerBalances(
-            final long correlationId, final DirectBuffer request, final int reqIndex, final int accountCount) {
-        final BalanceStore balances = engine.balances();
-        final long assetId = QueryCodec.assetId(request, reqIndex);
-        QueryCodec.beginResponse(responseBuffer, correlationId, QueryType.BATCH_BALANCE, accountCount);
-        for (int i = 0; i < accountCount; i++) {
-            final long accountId = QueryCodec.operand(request, reqIndex, i);
-            final long balance = balances.rawGet(assetId, accountId);
-            final boolean exists = balance != BalanceStore.MISSING;
-            QueryCodec.putEntry(responseBuffer, i, exists ? balance : 0L, exists);
-        }
-        gateway.offerResponse(responseBuffer, 0, QueryCodec.responseLength(accountCount));
-    }
-
-    private void answerAllowance(final long correlationId, final DirectBuffer request, final int reqIndex) {
-        final AllowanceStore allowances = engine.allowances();
-        final long assetId = QueryCodec.assetId(request, reqIndex);
-        final long ownerId = QueryCodec.operand(request, reqIndex, 0);
-        final long delegateId = QueryCodec.operand(request, reqIndex, 1);
-        final long allowance = allowances.get(assetId, ownerId, delegateId);
-        QueryCodec.beginResponse(responseBuffer, correlationId, QueryType.ALLOWANCE, 1);
-        QueryCodec.putEntry(responseBuffer, 0, allowance, true);
-        gateway.offerResponse(responseBuffer, 0, QueryCodec.responseLength(1));
-    }
-
-    private void answerTotalSupply(final long correlationId, final DirectBuffer request, final int reqIndex) {
-        final long assetId = QueryCodec.assetId(request, reqIndex);
-        final long supply = engine.balances().totalSupply(assetId);
-        QueryCodec.beginResponse(responseBuffer, correlationId, QueryType.TOTAL_SUPPLY, 1);
-        QueryCodec.putEntry(responseBuffer, 0, supply, true);
-        gateway.offerResponse(responseBuffer, 0, QueryCodec.responseLength(1));
-    }
-
     @Override
     public void close() {
         agentRunner.close();
@@ -639,10 +596,9 @@ public final class ReadReplicaNode implements AutoCloseable {
             liveLog = null;
         }
 
-        httpServer.close();
+        queryResponder.close();
         source.close();
         aeron.close();
         mediaDriver.close();
-        gateway.close();
     }
 }
