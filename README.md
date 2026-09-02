@@ -48,19 +48,18 @@ double-applied command or a nondeterministic replay is a correctness failure.
   retry, asynchronous result correlation, explicit backpressure signalling, and
   end-to-end HdrHistogram latency, consuming only the wire contract.
 - **CQRS Read Side**: `read` serves eventually-consistent balance, allowance,
-  and total-supply reads over HTTP (Netty). A read replica node follows a cluster
-  member's Aeron Archive (no quorum impact, sub-second live log following) and
-  fails over across every member's Archive with no leader discovery (ADR 0006,
-  0008).
+  and total-supply reads over a plain Aeron query protocol (`QueryRequest` /
+  `QueryResponse`). A read replica node follows a cluster member's Aeron Archive
+  (no quorum impact, sub-second live log following) and fails over across every
+  member's Archive with no leader discovery (ADR 0006, 0008).
+- **Read Client SDK**: `read-client` queries a read replica over Aeron
+  request/response streams with request-id correlation, idempotent retry, and
+  typed results, consuming only the wire contract.
 - **Domain Event Journal**: an opt-in, deterministic stream of semantic facts
   (balance changed, transfer, allowance changed, reservation, rejection) is
   emitted off the consensus hot path and recorded per member, giving downstream
   consumers a decoupled fan-out substrate without re-implementing the engine
   (ADR 0011).
-- **AI Risk Substrate**: `risk` is an Edge consumer of the event journal that
-  scores accounts live for transaction velocity and money-flow graph centrality
-  and serves a dashboard over HTTP; it is not a Raft member and never touches the
-  hot path (ADR 0012).
 - **Off-Heap Telemetry**: core counters are mirrored to a standalone off-heap
   `CountersManager` so operators can read them from another thread without
   perturbing the single-writer hot path.
@@ -236,69 +235,6 @@ nanoseconds, balance / allowance-owner / dedup-client map sizes). The endpoint
 runs on its own daemon thread and only reads counter values, never touching the
 single-writer hot path.
 
-## Running a Cluster with Docker
-
-A `docker-compose.yml` brings up a local three-node Raft write cluster, one read
-replica node, and one AI risk service, each in its own container on a shared
-bridge network:
-
-```bash
-docker compose up --build
-```
-
-Node 0 publishes its ingress port (`20100/udp`) to the host so an external client
-can connect, and each node exposes its Prometheus endpoint (`9100`, `9101`,
-`9102` on the host). The write members run with the domain event journal enabled
-(`LEDGERD_EVENT_JOURNAL=true`), so each records its own semantic event stream to its
-Archive (ADR 0011). The read replica node (`ledgerd-read-0`) connects to the members'
-Aeron Archives, follows the consensus log, and serves eventually-consistent reads
-over HTTP on host port `8080`. It is not a Raft member: it does not vote, does
-not affect quorum, and can be restarted independently (see ADR 0006 and 0007).
-
-```bash
-curl http://localhost:8080/balance/100
-curl http://localhost:8080/supply
-```
-
-The risk service (`ledgerd-risk-0`) follows the members' domain event journal, scores
-accounts for transaction velocity and money-flow graph centrality, and serves a
-live dashboard on host port `8090` (ADR 0012). Like the read node, it is not a
-Raft member and never affects quorum.
-
-```bash
-open http://localhost:8090/           # dashboard
-curl http://localhost:8090/risk/scores
-curl http://localhost:8090/risk/graph
-```
-
-The topology is supplied entirely through environment variables in the compose
-file (member id, advertised host, and the Aeron member string), so the image
-itself stays generic. On a fresh start the three members elect a leader and
-replicate committed commands.
-
-An end-to-end smoke test connects a client to all three members over the internal
-network, submits a credit and a transfer, and exits non-zero if the expected
-results do not arrive:
-
-```bash
-docker compose run --rm client
-```
-
-A journal verifier follows the recorded domain event stream and checks it against
-the applied commands (neither is started by default):
-
-```bash
-docker compose run --rm event-verifier
-```
-
-An operational verification script exercises the full topology end to end - cold
-start, read-after-write over the live log, malformed-request handling, read-node
-restart and re-sync, write-node restart, and read decoupling from quorum:
-
-```bash
-bash docker/verify-read.sh
-```
-
 ## Architecture
 
 ```mermaid
@@ -324,15 +260,14 @@ flowchart TB
 
 | Module          | Responsibility                                                        |
 |-----------------|-----------------------------------------------------------------------|
-| `protocol` | SBE schema and generated flyweight codecs (wire, snapshot, event journal) |
+| `protocol` | SBE schema and generated flyweight codecs (wire, snapshot, event journal, read query) |
 | `core`     | Deterministic engine, handlers, dedup, snapshot, event journal ring, telemetry |
 | `launcher` | Aeron bootstrap: Media Driver, Archive, Consensus Module, Container, event journaler |
 | `write-client`   | Edge-side SDK: leader-change handling, idempotent retry, correlation  |
-| `read`     | CQRS read side: read replica node (Archive replication + failover), HTTP query API (Netty), event journal follower |
-| `risk`     | Edge AI risk substrate: event-journal consumer, velocity + graph scoring, HTTP dashboard (ADR 0012) |
+| `read`     | CQRS read side: read replica node (Archive replication + failover), Aeron query responder, event journal follower |
+| `read-client`   | Read-side SDK: Aeron request/response queries, correlation, typed results |
 | `tests`    | Unit, property, integration, cluster, fault, soak tests and fixtures  |
 | `examples` | Runnable examples (QuickStart, RemoteClient)                          |
-| `bench`    | Datastore benchmark harness: LEDGERD vs PostgreSQL vs Redis (ADR 0013)   |
 
 Within `core`:
 
@@ -351,7 +286,6 @@ Within `core`:
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Component map, wire format, data flows, determinism rules |
 | [docs/API-REFERENCE.md](docs/API-REFERENCE.md) | Client SDK, commands, use cases, status codes, observability |
 | [docs/OPERATIONS.md](docs/OPERATIONS.md) | Snapshot management, node restart, deployment, Prometheus metrics |
-| [docs/BENCHMARKS-VS-DATASTORES.md](docs/BENCHMARKS-VS-DATASTORES.md) | LEDGERD vs PostgreSQL vs Redis datastore benchmark (ADR 0013) |
 | [docs/decisions/](docs/decisions/) | Architectural decision records |
 
 ## Performance
@@ -420,11 +354,11 @@ principles. Key architectural decisions include:
 | `SnapshotRoundTripTest`  | Unit        | Byte-identical round trip and supply invariant        |
 | `ReplayDeterminismTest`  | Unit        | Two engines, same log, identical snapshots            |
 | `AmountsPropertyTest`    | Property    | Overflow matches `Math.addExact` (jqwik)              |
-| `ReadQueryGatewayTest`   | Unit        | Query-ring correlation, cancel/orphan handling, codec |
 | `MetricsHttpServerTest`  | Unit        | Prometheus metrics and healthz HTTP endpoint          |
 | `ClusterIntegrationTest` | Integration | End-to-end over a real cluster, idempotency verified  |
 | `WriteClientIntegrationTest` | Integration | Client SDK submit/poll, command-id correlation     |
-| `ReadReplicaQueryIntegrationTest` | Integration | Read-after-write over HTTP via read replica; both sides of transfer, malformed requests |
+| `ReadReplicaQueryIntegrationTest` | Integration | Read-after-write via read-client SDK; both sides of transfer |
+| `ReadClientIntegrationTest` | Integration | Read-client sync/async queries, request-id correlation |
 | `ReadReplicaReplicationIntegrationTest` | Integration | Read replica snapshot replication end-to-end    |
 | `ReadReplicaLiveLogIntegrationTest` | Integration | Read replica live log following, sub-second staleness |
 | `ReadReplicaNodeSmokeTest` | Integration | Read replica node startup and basic query           |
