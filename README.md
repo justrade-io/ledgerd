@@ -1,6 +1,6 @@
 # LEDGERD - Deterministic Balance Engine on Aeron Cluster
 
-[![CI](https://github.com/justrade/ledgerd/actions/workflows/ci.yml/badge.svg)](https://github.com/justrade/ledgerd/actions/workflows/ci.yml)
+[![CI](https://github.com/justrade-io/ledgerd/actions/workflows/ci.yml/badge.svg)](https://github.com/justrade-io/ledgerd/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![JDK 21](https://img.shields.io/badge/JDK-21-blue.svg)](gradle.properties)
 [![Gradle](https://img.shields.io/badge/Gradle-8.10.2-green.svg)](gradle/wrapper/gradle-wrapper.properties)
