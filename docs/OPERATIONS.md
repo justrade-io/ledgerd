@@ -122,9 +122,10 @@ supplies its own `ledgerd.nodeId` on the command line.
 
 ### What is snapshotted
 
-Every snapshot includes balances, allowances, and the full dedup table. This means idempotency
-guarantees survive a restart: a node restarted from snapshot returns `DUPLICATE` for any command
-already applied before the snapshot was taken.
+Every snapshot includes balances, allowances, and the full dedup table (both single-command and
+transfer-batch entries). This means idempotency guarantees survive a restart: a node restarted
+from snapshot returns `DUPLICATE` for any command or batch already applied before the snapshot
+was taken.
 
 ### Triggering a snapshot
 
@@ -145,16 +146,19 @@ while streaming records.
 
 ### Snapshot record order
 
-Records are written one at a time into a 64-byte reusable buffer. Keys are sorted within each
-section so any two healthy nodes produce byte-identical snapshots.
+Records are written one at a time into a reusable buffer sized to the largest record (a batch
+dedup entry). Keys are sorted within each section so any two healthy nodes produce byte-identical
+snapshots.
 
 ```
-[SnapshotHeader]    logPosition, schemaVersion, balanceCount, allowanceCount,
-                    dedupCount, totalSupply
-[BalanceEntry...]   ascending by accountId
-[AllowanceEntry..] ascending by (ownerId, delegateId)
-[DedupEntry...]     ascending by (clientId, clientSeq)
-[SnapshotFooter]    checksum = sum(all balances) - must equal totalSupply
+[SnapshotHeader]      logPosition, schemaVersion, balanceCount, allowanceCount,
+                      dedupCount, totalSupply, assetCount, batchDedupCount
+[AssetSupplyEntry..]  ascending by assetId
+[BalanceEntry...]     ascending by (assetId, accountId)
+[AllowanceEntry..]    ascending by (assetId, ownerId, delegateId)
+[DedupEntry...]       ascending by (clientId, clientSeq)
+[BatchDedupEntry..]   ascending by (clientId, clientSeq)
+[SnapshotFooter]      checksum = sum(all balances) - must equal totalSupply
 ```
 
 **Integrity check**: `SnapshotManager.verifyInvariant()` confirms `sum(balances) == totalSupply`
@@ -224,6 +228,8 @@ operation. Size them for peak steady-state; over-sizing wastes memory, under-siz
 | `delegateCapacity`        | `1 << 4` | 16                | Delegate slots per owner.                             |
 | `dedupClientCapacity`     | `1 << 16`| 65 536            | Distinct client ids tracked by the dedup table.       |
 | `dedupWindow`             | `1 << 10`| 1 024             | Most recent commands retained per client (ring size). |
+| `maxBatchSize`            | `1 << 10`| 1 024             | Max transfer legs accepted per batch (ADR 0012).      |
+| `batchDedupWindow`        | `1 << 10`| 1 024             | Most recent batches retained per client (ring size).  |
 
 **Tuning rules**:
 - All values must be powers of two. `CoreConfig.of(...)` validates at construction.
@@ -231,6 +237,9 @@ operation. Size them for peak steady-state; over-sizing wastes memory, under-siz
   Agrona `Long2LongHashMap` load factor below `0.6`.
 - `dedupWindow` determines how many commands per client survive a retransmit window. Size it to
   cover `maxRetries * retryBackoffNs` at your peak submit rate.
+- `maxBatchSize` and `batchDedupWindow` are set via `CoreConfig.withBatch(...)`. `maxBatchSize`
+  bounds the batch undo frame, per-leg result arrays, and the snapshot record buffer, so it is the
+  dominant preallocation for the batch path.
 
 Custom capacities:
 

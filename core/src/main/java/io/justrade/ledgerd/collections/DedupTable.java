@@ -5,30 +5,46 @@ import org.agrona.collections.Long2ObjectHashMap;
 
 /**
  * Per-client idempotency table. Each client has a {@link DedupRing} retaining the
- * most recent {@code window} command results; a repeated {@code (clientId, seq)}
- * yields the previously cached result rather than re-applying the command.
+ * most recent {@code window} command results and a {@link BatchDedupRing}
+ * retaining the most recent {@code batchWindow} transfer-batch results; a
+ * repeated {@code (clientId, seq)} yields the previously cached result rather
+ * than re-applying the command or batch.
  *
  * <p>{@link Long2ObjectHashMap} is used only for O(1) key lookup, never for
  * order-dependent iteration at runtime. Deterministic ordering is imposed
- * explicitly in {@link #forEachSorted(DedupRecordConsumer)} for snapshots.
+ * explicitly in {@link #forEachSorted(DedupRecordConsumer)} and
+ * {@link #forEachSortedBatch(BatchDedupRecordConsumer)} for snapshots.
  */
 public final class DedupTable {
 
     private static final float LOAD_FACTOR = 0.65f;
 
     private final Long2ObjectHashMap<DedupRing> perClient;
+    private final Long2ObjectHashMap<BatchDedupRing> perClientBatch;
     private final int window;
+    private final int batchWindow;
+    private final int maxBatchSize;
     private long[] clientScratch = new long[0];
     private long[] seqScratch = new long[0];
+    private long[] batchClientScratch = new long[0];
+    private long[] batchSeqScratch = new long[0];
 
-    public DedupTable(final int clientCapacity, final int window) {
+    public DedupTable(final int clientCapacity, final int window, final int batchWindow, final int maxBatchSize) {
         this.perClient = new Long2ObjectHashMap<>(clientCapacity, LOAD_FACTOR);
+        this.perClientBatch = new Long2ObjectHashMap<>(clientCapacity, LOAD_FACTOR);
         this.window = window;
+        this.batchWindow = batchWindow;
+        this.maxBatchSize = maxBatchSize;
     }
 
     /** Returns the ring for a client, or {@code null} if the client is unseen. */
     public DedupRing ringFor(final long clientId) {
         return perClient.get(clientId);
+    }
+
+    /** Returns the batch ring for a client, or {@code null} if the client is unseen. */
+    public BatchDedupRing batchRingFor(final long clientId) {
+        return perClientBatch.get(clientId);
     }
 
     /**
@@ -57,17 +73,45 @@ public final class DedupTable {
         return ring.put(seq, idHi, idLo, status, balance, hasBalance, allowance, hasAllowance, reserved, hasReserved);
     }
 
+    /**
+     * Caches a transfer-batch result, creating the client batch ring on first use.
+     *
+     * @return {@code true} if storing evicted a different, older sequence from
+     *     the bounded batch window.
+     */
+    public boolean storeBatch(
+            final long clientId,
+            final long seq,
+            final long batchIdHi,
+            final long batchIdLo,
+            final int legCount,
+            final byte[] status,
+            final byte[] hasBalance,
+            final long[] resultBalance) {
+        BatchDedupRing ring = perClientBatch.get(clientId);
+        if (ring == null) {
+            ring = new BatchDedupRing(batchWindow, maxBatchSize);
+            perClientBatch.put(clientId, ring);
+        }
+        return ring.put(seq, batchIdHi, batchIdLo, legCount, status, hasBalance, resultBalance);
+    }
+
     public int clientCount() {
         return perClient.size();
+    }
+
+    public int batchClientCount() {
+        return perClientBatch.size();
     }
 
     /** Removes all state; used before a snapshot load. */
     public void clear() {
         perClient.clear();
+        perClientBatch.clear();
     }
 
     /**
-     * Emits every cached record in ascending {@code (clientId, seq)} order.
+     * Emits every cached command record in ascending {@code (clientId, seq)} order.
      *
      * <p>Cold snapshot path: key extraction and sorting are acceptable here.
      */
@@ -108,6 +152,38 @@ public final class DedupTable {
         }
     }
 
+    /**
+     * Emits every cached batch record in ascending {@code (clientId, seq)} order.
+     * The consumer reads per-leg values from the supplied ring.
+     *
+     * <p>Cold snapshot path: key extraction and sorting are acceptable here.
+     */
+    public void forEachSortedBatch(final BatchDedupRecordConsumer consumer) {
+        final int clientCount = perClientBatch.size();
+        if (batchClientScratch.length < clientCount) {
+            batchClientScratch = new long[clientCount];
+        }
+        final long[] clientIds = batchClientScratch;
+        final int[] cursor = {0};
+        perClientBatch.forEachLong((clientId, ring) -> clientIds[cursor[0]++] = clientId);
+        Arrays.sort(clientIds, 0, clientCount);
+
+        for (int c = 0; c < clientCount; c++) {
+            final long clientId = clientIds[c];
+            final BatchDedupRing ring = perClientBatch.get(clientId);
+            if (batchSeqScratch.length < ring.capacity()) {
+                batchSeqScratch = new long[ring.capacity()];
+            }
+            final long[] seqs = batchSeqScratch;
+            final int count = ring.occupiedSeqs(seqs);
+            Arrays.sort(seqs, 0, count);
+            for (int i = 0; i < count; i++) {
+                final long seq = seqs[i];
+                consumer.accept(clientId, seq, ring.batchIdHi(seq), ring.batchIdLo(seq), ring);
+            }
+        }
+    }
+
     /** Primitive callback for deterministic dedup iteration. */
     @FunctionalInterface
     public interface DedupRecordConsumer {
@@ -123,5 +199,11 @@ public final class DedupTable {
                 boolean hasAllowance,
                 long resultReserved,
                 boolean hasReserved);
+    }
+
+    /** Primitive callback for deterministic batch dedup iteration. */
+    @FunctionalInterface
+    public interface BatchDedupRecordConsumer {
+        void accept(long clientId, long seq, long batchIdHi, long batchIdLo, BatchDedupRing ring);
     }
 }

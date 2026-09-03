@@ -556,6 +556,39 @@ and total supply are isolated per asset: an allowance approved on one asset neve
 authorizes spending another (ADR 0009). A single-asset deployment simply sends
 `assetId = 0` everywhere and behaves exactly as before.
 
+### Transfer Batch (ADR 0012)
+
+A `TransferBatch` submits many transfer legs in one message, amortizing the
+per-message consensus cost. Contiguous legs marked `linked` form an atomic
+all-or-nothing chain: if any leg fails, every leg in the chain rolls back and
+returns the first failure's status. Legs outside the chain are unaffected.
+
+```java
+import io.justrade.ledgerd.write.client.TransferLeg;
+import io.justrade.ledgerd.write.client.TransferLegResult;
+
+client.setBatchResultHandler((batchIdHi, batchIdLo, results) -> {
+    for (TransferLegResult r : results) {
+        System.out.println(r.status() + (r.hasBalance() ? " balance=" + r.resultBalance() : ""));
+    }
+});
+
+// Currency exchange: atomic chain A -> B and C -> D (all-or-nothing).
+TransferLeg[] legs = {
+    new TransferLeg(/*from*/ 100L, /*to*/ 200L, /*amount*/ 50L, /*asset*/ 0L, /*linked*/ true),
+    new TransferLeg(/*from*/ 300L, /*to*/ 400L, /*amount*/ 25L, /*asset*/ 0L, /*linked*/ false),
+};
+long batchIdLo = client.submitTransferBatch(legs);
+```
+
+- A batch is one idempotency unit at `(clientId, clientSeq)`: resending the same
+  batch returns the cached per-leg results and never re-applies.
+- The last leg of a chain must have `linked = false`; a trailing `linked` flag
+  returns `INVALID_CHAIN` for the whole batch. A batch exceeding
+  `ClientConfig.maxBatchSize()` is rejected.
+- `submitTransferBatch` throws `BackpressureException` when the batch in-flight
+  window (`ClientConfig.maxBatchInFlight()`) is full.
+
 ---
 
 ## 9. Status Codes
@@ -570,6 +603,7 @@ authorizes spending another (ADR 0009). A single-asset deployment simply sends
 | `OVERFLOW`              | 5     | Operation would push balance or allowance above `Long.MAX_VALUE`.   | CREDIT large amount, TRANSFER recipient, INCREASE_ALLOWANCE, DELEGATED_TRANSFER recipient. |
 | `INVALID_AMOUNT`        | 6     | `amount` is negative.                                               | Any command submitted with `amount < 0`.                        |
 | `INSUFFICIENT_RESERVED` | 7     | Reserved (held) balance is less than the requested amount.          | RELEASE, CAPTURE (held funds too low).                          |
+| `INVALID_CHAIN`         | 8     | A transfer batch is structurally invalid (trailing `linked`, too large). | `submitTransferBatch` with a malformed chain.               |
 | `NULL_VAL`              | -1    | Uninitialized sentinel; never returned by the engine.               | Check `hasBalance`/`hasAllowance` rather than comparing to this value. |
 
 On any non-`SUCCESS` status (including `DUPLICATE`), `hasBalance` and `hasAllowance` are both

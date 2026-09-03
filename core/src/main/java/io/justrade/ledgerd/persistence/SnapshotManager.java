@@ -9,6 +9,8 @@ import io.justrade.ledgerd.protocol.AssetSupplyEntryDecoder;
 import io.justrade.ledgerd.protocol.AssetSupplyEntryEncoder;
 import io.justrade.ledgerd.protocol.BalanceEntryDecoder;
 import io.justrade.ledgerd.protocol.BalanceEntryEncoder;
+import io.justrade.ledgerd.protocol.BatchDedupEntryDecoder;
+import io.justrade.ledgerd.protocol.BatchDedupEntryEncoder;
 import io.justrade.ledgerd.protocol.DedupEntryDecoder;
 import io.justrade.ledgerd.protocol.DedupEntryEncoder;
 import io.justrade.ledgerd.protocol.MessageHeaderDecoder;
@@ -37,7 +39,16 @@ import org.agrona.concurrent.UnsafeBuffer;
  */
 public final class SnapshotManager {
 
-    private static final int MAX_RECORD_LENGTH = 128;
+    /** Minimum record buffer size, comfortably above every fixed-size record. */
+    private static final int MIN_RECORD_LENGTH = 128;
+
+    /** Default max batch size for the no-arg constructor (tests, benchmarks). */
+    private static final int DEFAULT_MAX_BATCH_SIZE = 1 << 10;
+
+    /** Header (8) + block (32) + group header (4) + one 10-byte leg per batch entry. */
+    private static int recordLengthFor(final int maxBatchSize) {
+        return Math.max(MIN_RECORD_LENGTH, 44 + 10 * maxBatchSize);
+    }
 
     private final MessageHeaderEncoder headerEncoder = new MessageHeaderEncoder();
     private final SnapshotHeaderEncoder snapshotHeaderEncoder = new SnapshotHeaderEncoder();
@@ -45,8 +56,9 @@ public final class SnapshotManager {
     private final AllowanceEntryEncoder allowanceEncoder = new AllowanceEntryEncoder();
     private final AssetSupplyEntryEncoder assetSupplyEncoder = new AssetSupplyEntryEncoder();
     private final DedupEntryEncoder dedupEncoder = new DedupEntryEncoder();
+    private final BatchDedupEntryEncoder batchDedupEncoder = new BatchDedupEntryEncoder();
     private final SnapshotFooterEncoder footerEncoder = new SnapshotFooterEncoder();
-    private final UnsafeBuffer recordBuffer = new UnsafeBuffer(new byte[MAX_RECORD_LENGTH]);
+    private final UnsafeBuffer recordBuffer;
 
     private final MessageHeaderDecoder headerDecoder = new MessageHeaderDecoder();
     private final SnapshotHeaderDecoder snapshotHeaderDecoder = new SnapshotHeaderDecoder();
@@ -54,7 +66,26 @@ public final class SnapshotManager {
     private final AllowanceEntryDecoder allowanceDecoder = new AllowanceEntryDecoder();
     private final AssetSupplyEntryDecoder assetSupplyDecoder = new AssetSupplyEntryDecoder();
     private final DedupEntryDecoder dedupDecoder = new DedupEntryDecoder();
+    private final BatchDedupEntryDecoder batchDedupDecoder = new BatchDedupEntryDecoder();
     private final SnapshotFooterDecoder footerDecoder = new SnapshotFooterDecoder();
+
+    // Scratch for decoding a batch dedup entry's legs on the load path.
+    private final byte[] batchLoadStatus;
+    private final byte[] batchLoadHasBalance;
+    private final long[] batchLoadBalance;
+
+    /** Constructs a manager sized for the default max batch size. */
+    public SnapshotManager() {
+        this(DEFAULT_MAX_BATCH_SIZE);
+    }
+
+    /** Constructs a manager whose record buffer can hold a batch dedup entry. */
+    public SnapshotManager(final int maxBatchSize) {
+        this.recordBuffer = new UnsafeBuffer(new byte[recordLengthFor(maxBatchSize)]);
+        this.batchLoadStatus = new byte[maxBatchSize];
+        this.batchLoadHasBalance = new byte[maxBatchSize];
+        this.batchLoadBalance = new long[maxBatchSize];
+    }
 
     // Load-side targets, set once before load begins.
     private BalanceStore loadBalances;
@@ -95,6 +126,7 @@ public final class SnapshotManager {
                 .dedupCount(dedup.clientCount())
                 .totalSupply(balances.aggregateSupply())
                 .assetCount(balances.assetCount())
+                .batchDedupCount(dedup.batchClientCount())
                 .encodedLength();
         emit(sink, idler, MessageHeaderEncoder.ENCODED_LENGTH + len);
 
@@ -149,6 +181,24 @@ public final class SnapshotManager {
                     }
                     emit(sink, idler, MessageHeaderEncoder.ENCODED_LENGTH + dedupEncoder.encodedLength());
                 });
+
+        dedup.forEachSortedBatch((clientId, seq, batchIdHi, batchIdLo, ring) -> {
+            final int legCount = ring.legCount(seq);
+            batchDedupEncoder
+                    .wrapAndApplyHeader(recordBuffer, 0, headerEncoder)
+                    .clientId(clientId)
+                    .clientSeq(seq)
+                    .batchIdHi(batchIdHi)
+                    .batchIdLo(batchIdLo);
+            final BatchDedupEntryEncoder.LegsEncoder legs = batchDedupEncoder.legsCount(legCount);
+            for (int l = 0; l < legCount; l++) {
+                legs.next()
+                        .status(StatusCode.get(ring.status(seq, l)))
+                        .hasBalance(ring.hasBalance(seq, l) ? (short) 1 : (short) 0)
+                        .resultBalance(ring.resultBalance(seq, l));
+            }
+            emit(sink, idler, MessageHeaderEncoder.ENCODED_LENGTH + batchDedupEncoder.encodedLength());
+        });
 
         len = footerEncoder
                 .wrapAndApplyHeader(recordBuffer, 0, headerEncoder)
@@ -248,6 +298,26 @@ public final class SnapshotManager {
                         hasReserved ? resReserved : 0L,
                         hasReserved);
             }
+            case BatchDedupEntryDecoder.TEMPLATE_ID -> {
+                batchDedupDecoder.wrap(buffer, bodyOffset, blockLength, version);
+                final BatchDedupEntryDecoder.LegsDecoder legs = batchDedupDecoder.legs();
+                final int legCount = legs.count();
+                for (int l = 0; l < legCount; l++) {
+                    legs.next();
+                    batchLoadStatus[l] = (byte) legs.status().value();
+                    batchLoadHasBalance[l] = legs.hasBalance() != 0 ? (byte) 1 : (byte) 0;
+                    batchLoadBalance[l] = legs.resultBalance();
+                }
+                loadDedup.storeBatch(
+                        batchDedupDecoder.clientId(),
+                        batchDedupDecoder.clientSeq(),
+                        batchDedupDecoder.batchIdHi(),
+                        batchDedupDecoder.batchIdLo(),
+                        legCount,
+                        batchLoadStatus,
+                        batchLoadHasBalance,
+                        batchLoadBalance);
+            }
             case SnapshotFooterDecoder.TEMPLATE_ID -> {
                 footerDecoder.wrap(buffer, bodyOffset, blockLength, version);
                 footerSeen = true;
@@ -277,9 +347,9 @@ public final class SnapshotManager {
         return sum[0];
     }
 
-    /** Length of the small reusable per-record buffer. */
-    public static int maxRecordLength() {
-        return MAX_RECORD_LENGTH;
+    /** Length of the reusable per-record buffer. */
+    public int maxRecordLength() {
+        return recordBuffer.capacity();
     }
 
     /** Exposes the reusable record buffer for callers that copy before offering. */

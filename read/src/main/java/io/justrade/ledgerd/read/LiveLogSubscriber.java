@@ -6,8 +6,10 @@ import io.aeron.archive.client.RecordingDescriptorConsumer;
 import io.aeron.cluster.codecs.SessionMessageHeaderDecoder;
 import io.aeron.logbuffer.FragmentHandler;
 import io.justrade.ledgerd.core.BalanceEngine;
+import io.justrade.ledgerd.core.BatchOutcome;
 import io.justrade.ledgerd.core.CommandOutcome;
 import io.justrade.ledgerd.protocol.CommandEnvelopeDecoder;
+import io.justrade.ledgerd.protocol.TransferBatchDecoder;
 import org.agrona.DirectBuffer;
 
 /**
@@ -44,7 +46,9 @@ final class LiveLogSubscriber implements AutoCloseable {
     private final io.justrade.ledgerd.protocol.MessageHeaderDecoder ledgerdHeader =
             new io.justrade.ledgerd.protocol.MessageHeaderDecoder();
     private final CommandEnvelopeDecoder envelopeDecoder = new CommandEnvelopeDecoder();
+    private final TransferBatchDecoder transferBatchDecoder = new TransferBatchDecoder();
     private final CommandOutcome outcome = new CommandOutcome();
+    private final BatchOutcome batchOutcome;
     private final FragmentHandler fragmentHandler = this::onFragment;
 
     private Subscription subscription;
@@ -66,6 +70,7 @@ final class LiveLogSubscriber implements AutoCloseable {
         this.engine = engine;
         this.startPosition = startPosition;
         this.localHost = localHost;
+        this.batchOutcome = new BatchOutcome(engine.maxBatchSize());
     }
 
     /** Returns the consensus framing overhead in bytes. */
@@ -186,17 +191,21 @@ final class LiveLogSubscriber implements AutoCloseable {
         }
 
         ledgerdHeader.wrap(buffer, serviceOffset);
-        if (ledgerdHeader.templateId() != CommandEnvelopeDecoder.TEMPLATE_ID) {
-            return; // not a command we process
+        final int bodyOffset = serviceOffset + io.justrade.ledgerd.protocol.MessageHeaderDecoder.ENCODED_LENGTH;
+
+        if (ledgerdHeader.templateId() == CommandEnvelopeDecoder.TEMPLATE_ID) {
+            envelopeDecoder.wrap(buffer, bodyOffset, ledgerdHeader.blockLength(), ledgerdHeader.version());
+            engine.process(envelopeDecoder, outcome);
+            return;
         }
 
-        envelopeDecoder.wrap(
-                buffer,
-                serviceOffset + io.justrade.ledgerd.protocol.MessageHeaderDecoder.ENCODED_LENGTH,
-                ledgerdHeader.blockLength(),
-                ledgerdHeader.version());
+        if (ledgerdHeader.templateId() == TransferBatchDecoder.TEMPLATE_ID) {
+            transferBatchDecoder.wrap(buffer, bodyOffset, ledgerdHeader.blockLength(), ledgerdHeader.version());
+            engine.processBatch(transferBatchDecoder, batchOutcome);
+            return;
+        }
 
-        engine.process(envelopeDecoder, outcome);
+        // Not a command we process.
     }
 
     private static String awaitResolvedEndpoint(final Subscription subscription) {

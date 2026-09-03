@@ -125,6 +125,27 @@ public final class BalanceStore {
         bucketForCreate(assetId).reserved(accountCapacity).put(accountId, value);
     }
 
+    /**
+     * Restores an account's available balance to a prior value captured before a
+     * linked-chain apply. When {@code priorValue} is {@link #MISSING}, the account
+     * was auto-created by the rolled-back chain and is removed, decrementing the
+     * account count. Transfer legs only mutate {@code available}, so this is the
+     * only undo primitive the batch path needs.
+     */
+    public void restoreAvailable(final long assetId, final long accountId, final long priorValue) {
+        final AssetBucket bucket = bucketFor(assetId);
+        if (bucket == null) {
+            return;
+        }
+        if (priorValue == MISSING) {
+            if (bucket.available.remove(accountId) != MISSING) {
+                totalAccounts--;
+            }
+        } else {
+            bucket.available.put(accountId, priorValue);
+        }
+    }
+
     /** Returns the running total supply for an asset; zero if the asset is unseen. */
     public long totalSupply(final long assetId) {
         final AssetBucket bucket = bucketFor(assetId);

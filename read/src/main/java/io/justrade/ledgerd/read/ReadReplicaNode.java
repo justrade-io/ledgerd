@@ -122,7 +122,7 @@ public final class ReadReplicaNode implements AutoCloseable {
 
         this.replicaConfig = replicaConfig;
         this.clock = clock;
-        this.snapshotManager = new SnapshotManager();
+        this.snapshotManager = new SnapshotManager(coreConfig.maxBatchSize());
         this.health = new ReplicationHealth();
 
         this.metrics = newMetrics();

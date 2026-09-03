@@ -23,7 +23,8 @@ touching consensus.
 - [QueryResponder.java](src/main/java/io/justrade/ledgerd/read/QueryResponder.java) -
   serves queries over Aeron.
 - [LiveLogSubscriber.java](src/main/java/io/justrade/ledgerd/read/LiveLogSubscriber.java) -
-  consumes the committed consensus log.
+  consumes the committed consensus log (single commands and transfer batches,
+  ADR 0012).
 - [ArchiveSource.java](src/main/java/io/justrade/ledgerd/read/ArchiveSource.java) -
   multi-archive endpoint with round-robin failover.
 - [journal/](src/main/java/io/justrade/ledgerd/read/journal/) - domain event

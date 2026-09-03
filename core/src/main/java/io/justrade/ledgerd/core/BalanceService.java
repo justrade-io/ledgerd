@@ -17,11 +17,14 @@ import io.justrade.ledgerd.protocol.CapturedEventEncoder;
 import io.justrade.ledgerd.protocol.CommandEnvelopeDecoder;
 import io.justrade.ledgerd.protocol.CommandRejectedEventEncoder;
 import io.justrade.ledgerd.protocol.CommandResultEncoder;
+import io.justrade.ledgerd.protocol.CommandType;
 import io.justrade.ledgerd.protocol.MessageHeaderDecoder;
 import io.justrade.ledgerd.protocol.MessageHeaderEncoder;
 import io.justrade.ledgerd.protocol.ReleasedEventEncoder;
 import io.justrade.ledgerd.protocol.ReservedEventEncoder;
 import io.justrade.ledgerd.protocol.StatusCode;
+import io.justrade.ledgerd.protocol.TransferBatchDecoder;
+import io.justrade.ledgerd.protocol.TransferBatchResultEncoder;
 import io.justrade.ledgerd.protocol.TransferEventEncoder;
 import io.justrade.ledgerd.telemetry.CoreMetrics;
 import org.agrona.DirectBuffer;
@@ -49,10 +52,14 @@ public final class BalanceService implements io.aeron.cluster.service.ClusteredS
 
     private final MessageHeaderDecoder messageHeaderDecoder = new MessageHeaderDecoder();
     private final CommandEnvelopeDecoder envelopeDecoder = new CommandEnvelopeDecoder();
+    private final TransferBatchDecoder transferBatchDecoder = new TransferBatchDecoder();
     private final MessageHeaderEncoder resultHeaderEncoder = new MessageHeaderEncoder();
     private final CommandResultEncoder resultEncoder = new CommandResultEncoder();
+    private final TransferBatchResultEncoder batchResultEncoder = new TransferBatchResultEncoder();
     private final CommandOutcome outcome = new CommandOutcome();
+    private final BatchOutcome batchOutcome;
     private final UnsafeBuffer egressBuffer = new UnsafeBuffer(new byte[EGRESS_BUFFER_LENGTH]);
+    private final UnsafeBuffer batchEgressBuffer;
 
     // Domain event journal (ADR 0011): encoders and ring are only allocated when
     // journaling is enabled, so a non-journaling node pays nothing.
@@ -74,9 +81,16 @@ public final class BalanceService implements io.aeron.cluster.service.ClusteredS
     public BalanceService(final CoreConfig config, final CoreMetrics metrics) {
         this.metrics = metrics;
         this.engine = new BalanceEngine(config, metrics);
-        this.snapshotManager = new SnapshotManager();
+        this.snapshotManager = new SnapshotManager(config.maxBatchSize());
         this.journalEnabled = config.eventJournalEnabled();
         this.eventRing = journalEnabled ? new EventJournalRing(config.eventJournalCapacity()) : null;
+        this.batchOutcome = new BatchOutcome(config.maxBatchSize());
+        this.batchEgressBuffer = new UnsafeBuffer(
+                new byte
+                        [MessageHeaderEncoder.ENCODED_LENGTH
+                                + TransferBatchResultEncoder.BLOCK_LENGTH
+                                + TransferBatchResultEncoder.ResultsEncoder.HEADER_SIZE
+                                + TransferBatchResultEncoder.ResultsEncoder.sbeBlockLength() * config.maxBatchSize()]);
     }
 
     @Override
@@ -98,22 +112,32 @@ public final class BalanceService implements io.aeron.cluster.service.ClusteredS
             final Header header) {
 
         messageHeaderDecoder.wrap(buffer, offset);
-        if (messageHeaderDecoder.templateId() != CommandEnvelopeDecoder.TEMPLATE_ID) {
-            // Not a command we recognise; ignore rather than corrupt state.
+        final int templateId = messageHeaderDecoder.templateId();
+        final int bodyOffset = offset + MessageHeaderDecoder.ENCODED_LENGTH;
+
+        if (templateId == CommandEnvelopeDecoder.TEMPLATE_ID) {
+            envelopeDecoder.wrap(
+                    buffer, bodyOffset, messageHeaderDecoder.blockLength(), messageHeaderDecoder.version());
+            final boolean duplicate = engine.process(envelopeDecoder, outcome);
+            sendResult(session);
+            if (journalEnabled && !duplicate) {
+                journalEvents(timestamp);
+            }
             return;
         }
 
-        envelopeDecoder.wrap(
-                buffer,
-                offset + MessageHeaderDecoder.ENCODED_LENGTH,
-                messageHeaderDecoder.blockLength(),
-                messageHeaderDecoder.version());
-
-        final boolean duplicate = engine.process(envelopeDecoder, outcome);
-        sendResult(session);
-        if (journalEnabled && !duplicate) {
-            journalEvents(timestamp);
+        if (templateId == TransferBatchDecoder.TEMPLATE_ID) {
+            transferBatchDecoder.wrap(
+                    buffer, bodyOffset, messageHeaderDecoder.blockLength(), messageHeaderDecoder.version());
+            final boolean duplicate = engine.processBatch(transferBatchDecoder, batchOutcome);
+            sendBatchResult(session);
+            if (journalEnabled && !duplicate) {
+                journalBatchEvents(timestamp);
+            }
+            return;
         }
+
+        // Not a command we recognise; ignore rather than corrupt state.
     }
 
     private void sendResult(final ClientSession session) {
@@ -137,10 +161,31 @@ public final class BalanceService implements io.aeron.cluster.service.ClusteredS
         offerToSession(session, msgLength);
     }
 
+    private void sendBatchResult(final ClientSession session) {
+        batchResultEncoder
+                .wrapAndApplyHeader(batchEgressBuffer, 0, resultHeaderEncoder)
+                .batchIdHi(transferBatchDecoder.batchIdHi())
+                .batchIdLo(transferBatchDecoder.batchIdLo());
+        final TransferBatchResultEncoder.ResultsEncoder results =
+                batchResultEncoder.resultsCount(batchOutcome.legCount());
+        for (int i = 0; i < batchOutcome.legCount(); i++) {
+            results.next()
+                    .status(batchOutcome.legStatus(i))
+                    .hasBalance(batchOutcome.legHasBalance(i) ? (short) 1 : (short) 0)
+                    .resultBalance(batchOutcome.legResultBalance(i));
+        }
+        final int msgLength = MessageHeaderEncoder.ENCODED_LENGTH + batchResultEncoder.encodedLength();
+        offerToSession(session, batchEgressBuffer, msgLength);
+    }
+
     private void offerToSession(final ClientSession session, final int length) {
+        offerToSession(session, egressBuffer, length);
+    }
+
+    private void offerToSession(final ClientSession session, final DirectBuffer buffer, final int length) {
         idleStrategy.reset();
         while (true) {
-            final long result = session.offer(egressBuffer, 0, length);
+            final long result = session.offer(buffer, 0, length);
             if (result > 0) {
                 return;
             }
@@ -174,6 +219,27 @@ public final class BalanceService implements io.aeron.cluster.service.ClusteredS
         final int count = outcome.eventCount();
         for (int i = 0; i < count; i++) {
             encodeEvent(outcome.event(i), i, logPosition, timestamp);
+        }
+    }
+
+    // Encodes the domain events for a transfer batch (ADR 0011). Committed legs
+    // emit their staged transfer events; failed legs emit one rejection event
+    // each. eventIndex is unique across the whole batch because the batch is one
+    // log entry.
+    private void journalBatchEvents(final long timestamp) {
+        final long logPosition = cluster.logPosition();
+        final TransferBatchDecoder.LegsDecoder legs = transferBatchDecoder.legs();
+        int stagedIndex = 0;
+        int eventIndex = 0;
+        for (int i = 0; i < batchOutcome.legCount(); i++) {
+            legs.next();
+            if (batchOutcome.legStatus(i) != StatusCode.SUCCESS) {
+                encodeBatchRejected(logPosition, timestamp, eventIndex++, legs, batchOutcome.legStatus(i));
+            } else {
+                for (int e = 0; e < BatchOutcome.EVENTS_PER_LEG; e++) {
+                    encodeBatchEvent(stagedIndex++, eventIndex++, logPosition, timestamp);
+                }
+            }
         }
     }
 
@@ -271,6 +337,61 @@ public final class BalanceService implements io.aeron.cluster.service.ClusteredS
                         .delegateId(e.accountB())
                         .newAllowance(e.valueA());
                 length = MessageHeaderEncoder.ENCODED_LENGTH + allowanceChangedEncoder.encodedLength();
+            }
+            default -> length = 0;
+        }
+        if (length > 0) {
+            offerEvent(length);
+        }
+    }
+
+    private void encodeBatchRejected(
+            final long logPosition,
+            final long timestamp,
+            final int eventIndex,
+            final TransferBatchDecoder.LegsDecoder leg,
+            final StatusCode reason) {
+        commandRejectedEncoder
+                .wrapAndApplyHeader(eventBuffer, 0, eventHeaderEncoder)
+                .logPosition(logPosition)
+                .timestamp(timestamp)
+                .eventIndex(eventIndex)
+                .assetId(leg.assetId())
+                .accountId(leg.fromId())
+                .amount(leg.amount())
+                .commandType(CommandType.TRANSFER)
+                .reason(reason);
+        offerEvent(MessageHeaderEncoder.ENCODED_LENGTH + commandRejectedEncoder.encodedLength());
+    }
+
+    private void encodeBatchEvent(
+            final int stagedIndex, final int eventIndex, final long logPosition, final long timestamp) {
+        int length;
+        switch (batchOutcome.eventKind(stagedIndex)) {
+            case BALANCE_CHANGED -> {
+                balanceChangedEncoder
+                        .wrapAndApplyHeader(eventBuffer, 0, eventHeaderEncoder)
+                        .logPosition(logPosition)
+                        .timestamp(timestamp)
+                        .eventIndex(eventIndex)
+                        .assetId(batchOutcome.eventAsset(stagedIndex))
+                        .accountId(batchOutcome.eventAccountA(stagedIndex))
+                        .newBalance(batchOutcome.eventValueA(stagedIndex))
+                        .delta(batchOutcome.eventValueB(stagedIndex))
+                        .cause(batchOutcome.eventCause(stagedIndex));
+                length = MessageHeaderEncoder.ENCODED_LENGTH + balanceChangedEncoder.encodedLength();
+            }
+            case TRANSFER -> {
+                transferEncoder
+                        .wrapAndApplyHeader(eventBuffer, 0, eventHeaderEncoder)
+                        .logPosition(logPosition)
+                        .timestamp(timestamp)
+                        .eventIndex(eventIndex)
+                        .assetId(batchOutcome.eventAsset(stagedIndex))
+                        .fromAccount(batchOutcome.eventAccountA(stagedIndex))
+                        .toAccount(batchOutcome.eventAccountB(stagedIndex))
+                        .amount(batchOutcome.eventValueA(stagedIndex));
+                length = MessageHeaderEncoder.ENCODED_LENGTH + transferEncoder.encodedLength();
             }
             default -> length = 0;
         }

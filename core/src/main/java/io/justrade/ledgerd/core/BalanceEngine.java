@@ -2,6 +2,7 @@ package io.justrade.ledgerd.core;
 
 import io.justrade.ledgerd.collections.AllowanceStore;
 import io.justrade.ledgerd.collections.BalanceStore;
+import io.justrade.ledgerd.collections.BatchDedupRing;
 import io.justrade.ledgerd.collections.DedupTable;
 import io.justrade.ledgerd.config.CoreConfig;
 import io.justrade.ledgerd.core.handlers.ApproveHandler;
@@ -9,10 +10,12 @@ import io.justrade.ledgerd.core.handlers.CreditHandler;
 import io.justrade.ledgerd.core.handlers.DebitHandler;
 import io.justrade.ledgerd.core.handlers.DelegatedTransferHandler;
 import io.justrade.ledgerd.core.handlers.ReserveHandler;
+import io.justrade.ledgerd.core.handlers.TransferBatchHandler;
 import io.justrade.ledgerd.core.handlers.TransferHandler;
 import io.justrade.ledgerd.persistence.SnapshotManager;
 import io.justrade.ledgerd.protocol.CommandEnvelopeDecoder;
 import io.justrade.ledgerd.protocol.CommandType;
+import io.justrade.ledgerd.protocol.TransferBatchDecoder;
 import io.justrade.ledgerd.telemetry.CoreMetrics;
 
 /**
@@ -29,10 +32,12 @@ public final class BalanceEngine {
     private final AllowanceStore allowances;
     private final DedupTable dedup;
     private final CoreMetrics metrics;
+    private final int maxBatchSize;
 
     private final CreditHandler creditHandler;
     private final DebitHandler debitHandler;
     private final TransferHandler transferHandler;
+    private final TransferBatchHandler transferBatchHandler;
     private final ApproveHandler approveHandler;
     private final DelegatedTransferHandler delegatedTransferHandler;
     private final ReserveHandler reserveHandler;
@@ -44,11 +49,14 @@ public final class BalanceEngine {
     public BalanceEngine(final CoreConfig config, final CoreMetrics metrics) {
         this.balances = new BalanceStore(config.accountCapacity());
         this.allowances = new AllowanceStore(config.allowanceOwnerCapacity(), config.delegateCapacity());
-        this.dedup = new DedupTable(config.dedupClientCapacity(), config.dedupWindow());
+        this.dedup = new DedupTable(
+                config.dedupClientCapacity(), config.dedupWindow(), config.batchDedupWindow(), config.maxBatchSize());
         this.metrics = metrics;
+        this.maxBatchSize = config.maxBatchSize();
         this.creditHandler = new CreditHandler(balances);
         this.debitHandler = new DebitHandler(balances);
         this.transferHandler = new TransferHandler(balances);
+        this.transferBatchHandler = new TransferBatchHandler(balances, config.maxBatchSize());
         this.approveHandler = new ApproveHandler(allowances);
         this.delegatedTransferHandler = new DelegatedTransferHandler(balances, allowances);
         this.reserveHandler = new ReserveHandler(balances);
@@ -95,6 +103,72 @@ public final class BalanceEngine {
         recordStatus(out);
         publishSizeGauges();
         return false;
+    }
+
+    /**
+     * Processes one decoded transfer batch and populates {@code out}. A batch is
+     * one idempotency unit at {@code (clientId, clientSeq)}: resubmitting the same
+     * sequence replays the cached per-leg results without re-applying.
+     *
+     * @return {@code true} if this was a duplicate (cached results returned),
+     *     {@code false} if freshly applied.
+     */
+    public boolean processBatch(final TransferBatchDecoder batch, final BatchOutcome out) {
+        final long clientId = batch.clientId();
+        final long clientSeq = batch.clientSeq();
+
+        final BatchDedupRing ring = dedup.batchRingFor(clientId);
+        if (ring != null && ring.contains(clientSeq)) {
+            replayBatch(ring, clientSeq, out);
+            metrics.onDuplicate();
+            return true;
+        }
+
+        transferBatchHandler.handle(batch, out);
+
+        final boolean evicted = dedup.storeBatch(
+                clientId,
+                clientSeq,
+                batch.batchIdHi(),
+                batch.batchIdLo(),
+                out.legCount(),
+                out.statusValues(),
+                out.hasBalanceFlags(),
+                out.resultBalances());
+        if (evicted) {
+            metrics.onDedupEvicted();
+        }
+
+        metrics.onCommandProcessed();
+        recordBatchStatus(out);
+        publishSizeGauges();
+        return false;
+    }
+
+    private void replayBatch(final BatchDedupRing ring, final long clientSeq, final BatchOutcome out) {
+        final int legCount = ring.legCount(clientSeq);
+        out.reset(legCount);
+        for (int i = 0; i < legCount; i++) {
+            out.setLeg(
+                    i,
+                    io.justrade.ledgerd.protocol.StatusCode.get(ring.status(clientSeq, i)),
+                    ring.hasBalance(clientSeq, i),
+                    ring.resultBalance(clientSeq, i));
+        }
+    }
+
+    private void recordBatchStatus(final BatchOutcome out) {
+        for (int i = 0; i < out.legCount(); i++) {
+            switch (out.legStatus(i)) {
+                case INSUFFICIENT_BALANCE -> metrics.onInsufficientBalance();
+                case INVALID_ACCOUNT -> metrics.onInvalidAccount();
+                case OVERFLOW -> metrics.onOverflow();
+                case INVALID_AMOUNT, INVALID_CHAIN -> metrics.onInvalidAmount();
+                default -> {
+                    // SUCCESS and the allowance/reserved statuses carry no error counter.
+                }
+            }
+        }
     }
 
     private enum DedupRingHit {
@@ -191,6 +265,10 @@ public final class BalanceEngine {
 
     public DedupTable dedup() {
         return dedup;
+    }
+
+    public int maxBatchSize() {
+        return maxBatchSize;
     }
 
     /** Writes engine state to a snapshot sink in deterministic order. */

@@ -23,6 +23,8 @@ so each tier can run independently in the build and in CI.
   minimal Aeron Cluster client that matches results by command id.
 - [CommandFixtures.java](src/testFixtures/java/io/justrade/ledgerd/testkit/CommandFixtures.java) -
   encode a `CommandEnvelope` and return a wrapped decoder.
+- [TransferBatchFixtures.java](src/testFixtures/java/io/justrade/ledgerd/testkit/TransferBatchFixtures.java) -
+  encode a `TransferBatch` and return a wrapped decoder.
 - [InMemorySnapshot.java](src/testFixtures/java/io/justrade/ledgerd/testkit/InMemorySnapshot.java) -
   serialise/restore engine state via an in-memory record stream.
 - [WorkloadGenerator.java](src/testFixtures/java/io/justrade/ledgerd/testkit/WorkloadGenerator.java) -

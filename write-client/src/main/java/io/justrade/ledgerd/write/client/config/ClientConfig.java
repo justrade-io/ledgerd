@@ -19,6 +19,8 @@ public final class ClientConfig {
     private final long retryBackoffNs;
     private final int maxRetries;
     private final int maxInFlight;
+    private final int maxBatchSize;
+    private final int maxBatchInFlight;
 
     private ClientConfig(final Builder builder) {
         this.clientId = builder.clientId;
@@ -29,6 +31,8 @@ public final class ClientConfig {
         this.retryBackoffNs = builder.retryBackoffNs;
         this.maxRetries = builder.maxRetries;
         this.maxInFlight = builder.maxInFlight;
+        this.maxBatchSize = builder.maxBatchSize;
+        this.maxBatchInFlight = builder.maxBatchInFlight;
     }
 
     public static Builder builder(final long clientId, final String ingressEndpoints) {
@@ -67,6 +71,14 @@ public final class ClientConfig {
         return maxInFlight;
     }
 
+    public int maxBatchSize() {
+        return maxBatchSize;
+    }
+
+    public int maxBatchInFlight() {
+        return maxBatchInFlight;
+    }
+
     /** Fluent builder with sensible defaults for local and production use. */
     public static final class Builder {
         private final long clientId;
@@ -77,6 +89,8 @@ public final class ClientConfig {
         private long retryBackoffNs = TimeUnit.MILLISECONDS.toNanos(250);
         private int maxRetries;
         private int maxInFlight = 1024;
+        private int maxBatchSize = 1024;
+        private int maxBatchInFlight = 16;
 
         private Builder(final long clientId, final String ingressEndpoints) {
             this.clientId = clientId;
@@ -120,6 +134,18 @@ public final class ClientConfig {
 
         public Builder maxInFlight(final int value) {
             this.maxInFlight = value;
+            return this;
+        }
+
+        /** Maximum legs accepted per transfer batch. */
+        public Builder maxBatchSize(final int value) {
+            this.maxBatchSize = value;
+            return this;
+        }
+
+        /** Maximum transfer batches in flight at once. */
+        public Builder maxBatchInFlight(final int value) {
+            this.maxBatchInFlight = value;
             return this;
         }
 

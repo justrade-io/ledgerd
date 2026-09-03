@@ -51,6 +51,9 @@ nondeterministic replay is a correctness failure.
   overflow checks (never a silent wrap), multi-asset isolation (ADR 0009), and
   `RESERVE` / `CAPTURE` / `RELEASE` two-phase holds with conserved supply
   (ADR 0010).
+- **Batched transfers with atomic chains** - one `TransferBatch` message carries
+  many transfer legs and amortizes the per-message consensus cost; contiguous
+  `linked` legs commit or roll back together (ADR 0012).
 - **Reads without touching consensus** - a CQRS read replica follows a member's
   Aeron Archive and answers balance / allowance / supply queries over a plain
   Aeron protocol, failing over across every member's Archive (ADR 0006, 0008).
@@ -126,8 +129,9 @@ Indicative JMH numbers on x86_64 Linux, JDK 21 (steady state, zero allocation):
 | Operation | Time |
 |-----------|------|
 | Envelope decode | ~1.9 ns |
-| Primitive map lookup | ~0.7 ns |
-| Credit dispatch (in-process) | ~19 ns |
+| Primitive map lookup | ~0.8 ns |
+| Credit dispatch (in-process) | ~24 ns |
+| Batch leg dispatch (in-process) | ~22 ns/leg |
 
 Targets: decode < 100 ns, primitive-map lookup < 50 ns, command dispatch
 < 500 ns, hot-path allocation 0 bytes. See the

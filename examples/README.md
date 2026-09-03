@@ -8,13 +8,18 @@ see the whole system work end to end.
 - [QuickStartExample.java](src/main/java/io/justrade/ledgerd/examples/QuickStartExample.java) -
   boots an in-process single-node cluster and drives commands through the write
   client.
+- [BatchTransferExample.java](src/main/java/io/justrade/ledgerd/examples/BatchTransferExample.java) -
+  drives transfer batches: independent legs, an atomic linked chain, and a
+  linked chain that rolls back (ADR 0012).
 - [RemoteClientExample.java](src/main/java/io/justrade/ledgerd/examples/RemoteClientExample.java) -
   connects to a running cluster and submits commands plus reads results.
 
 ## Run
 
 ```bash
-./gradlew :examples:run
+./gradlew :examples:run                                                  # QuickStartExample (default)
+./gradlew :examples:run -PmainClass=io.justrade.ledgerd.examples.BatchTransferExample
+./gradlew :examples:run -PmainClass=io.justrade.ledgerd.examples.RemoteClientExample
 ```
 
 The example configuration sets the required `--add-opens` JVM flags

@@ -7,6 +7,8 @@ client.
 ## Responsibility
 
 - Submit `CommandEnvelope` messages to the cluster ingress.
+- Submit `TransferBatch` messages (many transfer legs, with linked atomic
+  chains) and deliver `TransferBatchResult` messages (ADR 0012).
 - Handle leader changes and reconnects transparently.
 - Provide idempotent retry via `(clientId, commandId)` correlation, so a retry
   after a timeout or failover cannot double-apply.
@@ -18,8 +20,16 @@ client.
   the client: connect, submit, poll.
 - [ResultHandler.java](src/main/java/io/justrade/ledgerd/write/client/ResultHandler.java) -
   callback for command results.
+- [BatchResultHandler.java](src/main/java/io/justrade/ledgerd/write/client/BatchResultHandler.java) -
+  callback for transfer-batch results.
+- [TransferLeg.java](src/main/java/io/justrade/ledgerd/write/client/TransferLeg.java) -
+  one leg of a transfer batch (from, to, amount, asset, linked).
+- [TransferLegResult.java](src/main/java/io/justrade/ledgerd/write/client/TransferLegResult.java) -
+  result of one transfer leg.
 - [PendingCommand.java](src/main/java/io/justrade/ledgerd/write/client/PendingCommand.java) -
   in-flight command tracking for correlation and retry.
+- [PendingBatchCommand.java](src/main/java/io/justrade/ledgerd/write/client/PendingBatchCommand.java) -
+  in-flight batch tracking for correlation and retry.
 - [config/ClientConfig.java](src/main/java/io/justrade/ledgerd/write/client/config/ClientConfig.java) -
   immutable client configuration.
 
@@ -34,6 +44,17 @@ try (WriteClient client = new WriteClient(config, handler)) {
         client.poll();   // drives result callbacks, correlated by commandId
     }
 }
+```
+
+Submit a transfer batch with an atomic linked chain (ADR 0012):
+
+```java
+client.setBatchResultHandler((batchIdHi, batchIdLo, results) -> { /* per-leg results */ });
+TransferLeg[] legs = {
+    new TransferLeg(100L, 200L, 50L, 0L, true),   // linked to the next leg
+    new TransferLeg(300L, 400L, 25L, 0L, false),  // last leg of the chain
+};
+long batchIdLo = client.submitTransferBatch(legs);
 ```
 
 See [../examples/](../examples/) for a runnable end-to-end use and

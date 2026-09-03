@@ -25,10 +25,12 @@ logic.
 ## Message families
 
 - Ingress: `CommandEnvelope` (command plus correlation: clientId, clientSeq,
-  commandId, assetId).
-- Egress: `CommandResult` (deterministic result for exactly one command).
+  commandId, assetId) and `TransferBatch` (a group of transfer legs with a
+  `linked` flag, ADR 0012).
+- Egress: `CommandResult` (deterministic result for exactly one command) and
+  `TransferBatchResult` (one result per leg, ADR 0012).
 - Snapshot: `SnapshotHeader`, `BalanceEntry`, `AllowanceEntry`, `DedupEntry`,
-  `AssetSupplyEntry`, `SnapshotFooter`.
+  `AssetSupplyEntry`, `BatchDedupEntry`, `SnapshotFooter`.
 - Domain event journal (ADR 0011): `BalanceChangedEvent`, `ReservedEvent`,
   `CapturedEvent`, `ReleasedEvent`, `TransferEvent`, `AllowanceChangedEvent`,
   `CommandRejectedEvent`.

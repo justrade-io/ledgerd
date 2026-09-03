@@ -9,8 +9,10 @@ records domain events, all without allocating, locking, or reading a clock.
 
 - Overflow-checked 64-bit credit, debit, transfer, allowance, delegated
   transfer, and reserve operations with total-supply conservation (ADR 0010).
+- Batched transfers with linked atomic chains, transfer-only, with a narrow
+  undo frame (ADR 0012).
 - Multi-asset balances and (assetId, owner, delegate) allowances (ADR 0009).
-- Per-client dedup for exactly-once (idempotent) command processing.
+- Per-client dedup for exactly-once (idempotent) command and batch processing.
 - Deterministic streaming snapshots and the off-heap event journal ring
   (ADR 0011).
 - Off-heap telemetry counters.
@@ -22,13 +24,15 @@ records domain events, all without allocating, locking, or reading a clock.
 - [BalanceService.java](src/main/java/io/justrade/ledgerd/core/BalanceService.java) -
   the `ClusteredService` integration (decode, process, ACK, snapshot).
 - [handlers/](src/main/java/io/justrade/ledgerd/core/handlers/) - credit, debit,
-  transfer, approve, delegated transfer, and reserve command handlers.
+  transfer, approve, delegated transfer, reserve, and transfer-batch handlers.
+- [BatchOutcome.java](src/main/java/io/justrade/ledgerd/core/BatchOutcome.java) -
+  reusable per-leg results plus staged domain events for one batch (ADR 0012).
 - [collections/BalanceStore.java](src/main/java/io/justrade/ledgerd/collections/BalanceStore.java) -
   primitive balance map plus the total-supply invariant.
 - [collections/AllowanceStore.java](src/main/java/io/justrade/ledgerd/collections/AllowanceStore.java) -
   nested primitive map keyed by (assetId, owner, delegate).
 - [collections/DedupTable.java](src/main/java/io/justrade/ledgerd/collections/DedupTable.java) -
-  per-client dedup rings for idempotency.
+  per-client command and batch dedup rings for idempotency.
 - [persistence/SnapshotManager.java](src/main/java/io/justrade/ledgerd/persistence/SnapshotManager.java) -
   streaming SBE snapshot write and load.
 - [pipeline/EventJournalRing.java](src/main/java/io/justrade/ledgerd/pipeline/EventJournalRing.java) -

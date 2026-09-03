@@ -10,6 +10,8 @@ import io.justrade.ledgerd.protocol.CommandResultDecoder;
 import io.justrade.ledgerd.protocol.CommandType;
 import io.justrade.ledgerd.protocol.MessageHeaderDecoder;
 import io.justrade.ledgerd.protocol.MessageHeaderEncoder;
+import io.justrade.ledgerd.protocol.TransferBatchEncoder;
+import io.justrade.ledgerd.protocol.TransferBatchResultDecoder;
 import io.justrade.ledgerd.write.client.config.ClientConfig;
 import org.HdrHistogram.Histogram;
 import org.agrona.DirectBuffer;
@@ -46,18 +48,28 @@ public final class WriteClient implements EgressListener, AutoCloseable {
 
     private final MessageHeaderEncoder headerEncoder = new MessageHeaderEncoder();
     private final CommandEnvelopeEncoder envelopeEncoder = new CommandEnvelopeEncoder();
+    private final TransferBatchEncoder transferBatchEncoder = new TransferBatchEncoder();
     private final MessageHeaderDecoder headerDecoder = new MessageHeaderDecoder();
     private final CommandResultDecoder resultDecoder = new CommandResultDecoder();
+    private final TransferBatchResultDecoder batchResultDecoder = new TransferBatchResultDecoder();
 
     private final Long2ObjectHashMap<PendingCommand> pending;
     private final PendingCommand[] pool;
     private final int[] freeStack;
     private int freeTop;
 
+    private final Long2ObjectHashMap<PendingBatchCommand> pendingBatch;
+    private final PendingBatchCommand[] batchPool;
+    private final int[] batchFreeStack;
+    private int batchFreeTop;
+
+    private BatchResultHandler batchHandler = BatchResultHandler.NOOP;
+
     private final Histogram latencyHistogram = new Histogram(3_600_000_000_000L, 3);
 
     private long nextClientSeq;
     private long nextCommandIdLo = 1L;
+    private long nextBatchIdLo = 1L;
 
     private long submitted;
     private long completed;
@@ -87,6 +99,19 @@ public final class WriteClient implements EgressListener, AutoCloseable {
             freeStack[i] = pool.length - 1 - i;
         }
         this.freeTop = pool.length;
+
+        this.pendingBatch = new Long2ObjectHashMap<>(Math.max(16, config.maxBatchInFlight() * 2), LOAD_FACTOR);
+        final int batchBufferLength = MessageHeaderEncoder.ENCODED_LENGTH
+                + TransferBatchEncoder.BLOCK_LENGTH
+                + TransferBatchEncoder.LegsEncoder.HEADER_SIZE
+                + TransferBatchEncoder.LegsEncoder.sbeBlockLength() * config.maxBatchSize();
+        this.batchPool = new PendingBatchCommand[config.maxBatchInFlight()];
+        this.batchFreeStack = new int[config.maxBatchInFlight()];
+        for (int i = 0; i < batchPool.length; i++) {
+            batchPool[i] = new PendingBatchCommand(i, batchBufferLength);
+            batchFreeStack[i] = batchPool.length - 1 - i;
+        }
+        this.batchFreeTop = batchPool.length;
 
         MediaDriver embedded = null;
         String aeronDir = config.aeronDirectoryName();
@@ -176,6 +201,62 @@ public final class WriteClient implements EgressListener, AutoCloseable {
     }
 
     /**
+     * Encodes and submits a transfer batch, returning its low batch-id word for
+     * correlation. The batch is retried automatically (reusing the same id) until
+     * acknowledged, on timeout or leader change.
+     *
+     * @throws BackpressureException if the batch in-flight window is full
+     * @throws IllegalArgumentException if {@code legs.length} exceeds
+     *     {@code ClientConfig.maxBatchSize()}
+     */
+    public long submitTransferBatch(final TransferLeg[] legs) {
+        if (legs.length > config.maxBatchSize()) {
+            throw new IllegalArgumentException("batch legs exceed " + config.maxBatchSize() + ": " + legs.length);
+        }
+        if (batchFreeTop == 0) {
+            backpressureEvents++;
+            throw new BackpressureException("batch in-flight window full: " + config.maxBatchInFlight());
+        }
+
+        final PendingBatchCommand pc = batchPool[batchFreeStack[--batchFreeTop]];
+        pc.inUse = true;
+        pc.retries = 0;
+        pc.batchIdHi = config.clientId();
+        pc.batchIdLo = nextBatchIdLo++;
+
+        transferBatchEncoder
+                .wrapAndApplyHeader(pc.buffer, 0, headerEncoder)
+                .clientId(config.clientId())
+                .clientSeq(nextClientSeq++)
+                .batchIdHi(pc.batchIdHi)
+                .batchIdLo(pc.batchIdLo);
+        final TransferBatchEncoder.LegsEncoder legsEncoder = transferBatchEncoder.legsCount(legs.length);
+        for (final TransferLeg leg : legs) {
+            legsEncoder
+                    .next()
+                    .fromId(leg.fromId())
+                    .toId(leg.toId())
+                    .amount(leg.amount())
+                    .assetId(leg.assetId())
+                    .linked(leg.linked() ? (short) 1 : (short) 0);
+        }
+
+        pc.length = MessageHeaderEncoder.ENCODED_LENGTH + transferBatchEncoder.encodedLength();
+        pc.submitNanos = nanoClock.nanoTime();
+        pc.deadlineNanos = pc.submitNanos + config.retryBackoffNs();
+
+        pendingBatch.put(pc.batchIdLo, pc);
+        submitted++;
+        offerBatch(pc);
+        return pc.batchIdLo;
+    }
+
+    /** Registers the callback that receives transfer-batch results. */
+    public void setBatchResultHandler(final BatchResultHandler handler) {
+        this.batchHandler = handler == null ? BatchResultHandler.NOOP : handler;
+    }
+
+    /**
      * Drives egress delivery and time-based retransmission. Call in a loop.
      *
      * @return an opaque work count (positive when progress was made).
@@ -202,6 +283,21 @@ public final class WriteClient implements EgressListener, AutoCloseable {
                 }
             }
         }
+        for (int i = 0; i < batchPool.length; i++) {
+            final PendingBatchCommand pc = batchPool[i];
+            switch (retryPolicy.evaluate(now, pc.deadlineNanos, pc.retries, retransmitAll, pc.inUse)) {
+                case WAIT -> {
+                    // not in use, or still within its backoff window
+                }
+                case EXPIRE -> expireBatch(pc);
+                case RETRY -> {
+                    offerBatch(pc);
+                    pc.retries++;
+                    pc.deadlineNanos = now + config.retryBackoffNs();
+                    work++;
+                }
+            }
+        }
         retransmitAll = false;
         return work;
     }
@@ -213,7 +309,21 @@ public final class WriteClient implements EgressListener, AutoCloseable {
         release(pc);
     }
 
+    private void expireBatch(final PendingBatchCommand pc) {
+        pendingBatch.remove(pc.batchIdLo);
+        batchHandler.onBatchExpired(pc.batchIdHi, pc.batchIdLo);
+        expired++;
+        releaseBatch(pc);
+    }
+
     private void offer(final PendingCommand pc) {
+        final long result = cluster.offer(pc.buffer, 0, pc.length);
+        if (result < 0) {
+            backpressureEvents++;
+        }
+    }
+
+    private void offerBatch(final PendingBatchCommand pc) {
         final long result = cluster.offer(pc.buffer, 0, pc.length);
         if (result < 0) {
             backpressureEvents++;
@@ -225,6 +335,11 @@ public final class WriteClient implements EgressListener, AutoCloseable {
         freeStack[freeTop++] = pc.poolIndex;
     }
 
+    private void releaseBatch(final PendingBatchCommand pc) {
+        pc.reset();
+        batchFreeStack[batchFreeTop++] = pc.poolIndex;
+    }
+
     @Override
     public void onMessage(
             final long clusterSessionId,
@@ -234,37 +349,62 @@ public final class WriteClient implements EgressListener, AutoCloseable {
             final int length,
             final Header header) {
         headerDecoder.wrap(buffer, offset);
-        if (headerDecoder.templateId() != CommandResultDecoder.TEMPLATE_ID) {
+        final int templateId = headerDecoder.templateId();
+        final int bodyOffset = offset + MessageHeaderDecoder.ENCODED_LENGTH;
+
+        if (templateId == CommandResultDecoder.TEMPLATE_ID) {
+            resultDecoder.wrap(buffer, bodyOffset, headerDecoder.blockLength(), headerDecoder.version());
+
+            final long commandIdLo = resultDecoder.commandIdLo();
+            final PendingCommand pc = pending.remove(commandIdLo);
+            final boolean hasBalance = resultDecoder.resultBalance() != CommandResultDecoder.resultBalanceNullValue();
+            final boolean hasAllowance =
+                    resultDecoder.resultAllowance() != CommandResultDecoder.resultAllowanceNullValue();
+
+            if (pc != null) {
+                final long elapsedNs = nanoClock.nanoTime() - pc.submitNanos;
+                // Clamp so a result arriving after a long outage cannot throw out
+                // of the poll loop (Histogram rejects values above highestTrackableValue).
+                latencyHistogram.recordValue(Math.min(elapsedNs, latencyHistogram.getHighestTrackableValue()));
+                release(pc);
+                completed++;
+            }
+
+            handler.onResult(
+                    resultDecoder.commandIdHi(),
+                    commandIdLo,
+                    resultDecoder.status(),
+                    resultDecoder.resultBalance(),
+                    hasBalance,
+                    resultDecoder.resultAllowance(),
+                    hasAllowance);
             return;
         }
-        resultDecoder.wrap(
-                buffer,
-                offset + MessageHeaderDecoder.ENCODED_LENGTH,
-                headerDecoder.blockLength(),
-                headerDecoder.version());
 
-        final long commandIdLo = resultDecoder.commandIdLo();
-        final PendingCommand pc = pending.remove(commandIdLo);
-        final boolean hasBalance = resultDecoder.resultBalance() != CommandResultDecoder.resultBalanceNullValue();
-        final boolean hasAllowance = resultDecoder.resultAllowance() != CommandResultDecoder.resultAllowanceNullValue();
+        if (templateId == TransferBatchResultDecoder.TEMPLATE_ID) {
+            batchResultDecoder.wrap(buffer, bodyOffset, headerDecoder.blockLength(), headerDecoder.version());
 
-        if (pc != null) {
-            final long elapsedNs = nanoClock.nanoTime() - pc.submitNanos;
-            // Clamp so a result arriving after a long outage cannot throw out of
-            // the poll loop (Histogram rejects values above highestTrackableValue).
-            latencyHistogram.recordValue(Math.min(elapsedNs, latencyHistogram.getHighestTrackableValue()));
-            release(pc);
-            completed++;
+            final long batchIdLo = batchResultDecoder.batchIdLo();
+            final PendingBatchCommand pc = pendingBatch.remove(batchIdLo);
+            final TransferBatchResultDecoder.ResultsDecoder results = batchResultDecoder.results();
+            final int count = results.count();
+            final TransferLegResult[] legResults = new TransferLegResult[count];
+            for (int i = 0; i < count; i++) {
+                results.next();
+                legResults[i] =
+                        new TransferLegResult(results.status(), results.hasBalance() != 0, results.resultBalance());
+            }
+
+            if (pc != null) {
+                final long elapsedNs = nanoClock.nanoTime() - pc.submitNanos;
+                latencyHistogram.recordValue(Math.min(elapsedNs, latencyHistogram.getHighestTrackableValue()));
+                releaseBatch(pc);
+                completed++;
+            }
+
+            batchHandler.onBatchResult(batchResultDecoder.batchIdHi(), batchIdLo, legResults);
+            return;
         }
-
-        handler.onResult(
-                resultDecoder.commandIdHi(),
-                commandIdLo,
-                resultDecoder.status(),
-                resultDecoder.resultBalance(),
-                hasBalance,
-                resultDecoder.resultAllowance(),
-                hasAllowance);
     }
 
     @Override

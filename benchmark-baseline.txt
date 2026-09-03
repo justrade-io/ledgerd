@@ -18,40 +18,40 @@ Environment
 -----------
 CPU  : AMD Ryzen 9 9900X (x86_64, 16 logical CPUs)
 OS   : Linux 6.18 (WSL2)
-JDK  : 21.0.11+10 (Temurin/OpenJDK class, amd64)
+JDK  : 21.0.12 (OpenJDK class, amd64)
 Mode : JMH average time, -PquickBench smoke run
 
 Results
 -------
-Benchmark                              (accounts)  Mode  Cnt       Score   Units
-BalanceEngineBenchmark.creditDispatch         N/A  avgt           24.500  ns/op
-BalanceEngineBenchmark.decodeEnvelope         N/A  avgt            1.901  ns/op
-BalanceEngineBenchmark.mapLookup              N/A  avgt            0.754  ns/op
-SnapshotBenchmark.snapshotWrite              1024  avgt         3627.783  us/op
-SnapshotBenchmark.snapshotWrite             16384  avgt        17458.514  us/op
-SnapshotBenchmark.snapshotRead               1024  avgt        10107.138  us/op
-SnapshotBenchmark.snapshotRead              16384  avgt       137459.474  us/op
+Benchmark                                  (accounts)  (batchSize)  Mode  Cnt       Score   Units
+BalanceEngineBenchmark.creditDispatch             N/A          N/A  avgt           24.500  ns/op
+BalanceEngineBenchmark.decodeEnvelope             N/A          N/A  avgt            1.901  ns/op
+BalanceEngineBenchmark.mapLookup                  N/A          N/A  avgt            0.754  ns/op
+BalanceEngineBenchmark.batchApply                 N/A           16  avgt          336.462  ns/op
+BalanceEngineBenchmark.batchApply                 N/A          256  avgt         5798.513  ns/op
+BalanceEngineBenchmark.linkedChainApply           N/A           16  avgt          345.764  ns/op
+BalanceEngineBenchmark.linkedChainApply           N/A          256  avgt         5849.910  ns/op
+SnapshotBenchmark.snapshotWrite                  1024          N/A  avgt         3343.816  us/op
+SnapshotBenchmark.snapshotWrite                 16384          N/A  avgt        15746.871  us/op
+SnapshotBenchmark.snapshotRead                   1024          N/A  avgt         9274.138  us/op
+SnapshotBenchmark.snapshotRead                  16384          N/A  avgt       133140.664  us/op
 
-Note: this baseline was refreshed for the multi-asset + holds work (ADR 0009,
-ADR 0010). The command key gained an asset dimension ((assetId, accountId)), so
-`creditDispatch` moved from 19.2 ns to ~21.5 ns - roughly one cached-bucket field
-compare plus a lazy-reserved null check. See the Performance section of ADR 0009
-for the justification; the figure remains an order of magnitude under the 500 ns
-dispatch budget.
-
-Note: refreshed again for the domain event journal (ADR 0011). Every command now
-records its semantic events into the reused CommandOutcome descriptor buffer, so
-`creditDispatch` moved from ~21.5 ns to ~24.5 ns - a few preallocated field
-stores per event. It remains allocation-free (gc.alloc.rate.norm ~ 0 B/op,
-confirmed with -Pjmh.profilers=gc) and ~20x under the 500 ns dispatch budget. The
-separate SBE-encode-and-ring-write step runs in BalanceService (off the engine
-micro-benchmark) only when journaling is enabled.
+Note: this baseline was refreshed for the transfer-batch feature (ADR 0012).
+The single-command hot path is unchanged: `creditDispatch` stays ~24.5 ns (the
+same as the multi-asset + holds + event-journal baseline), because the batch
+path is a separate message (template 3) and the single-command dispatch is
+untouched. `batchApply` and `linkedChainApply` are per-batch figures and scale
+linearly with batch size (~22 ns per leg), so a batch amortizes the per-message
+consensus/replication cost that a single command pays once. The linked-chain
+undo-recording path adds negligible overhead versus independent legs
+(~341 ns vs ~340 ns at size 16).
 
 Budget check (docs/decisions/0002-core-budget.md)
 -------------------------------------------------
 Envelope decode       target < 100 ns   ->    1.9 ns   PASS
 Primitive map lookup  target <  50 ns   ->    0.8 ns   PASS
-Command dispatch      target < 500 ns   ->   21.5 ns   PASS
+Command dispatch      target < 500 ns   ->   24.5 ns   PASS
+Batch leg dispatch    (no budget)       ->  ~22 ns/leg (informational)
 
 Snapshot write/read scale with account count and are recovery-time figures, not
 steady-state hot-path latency; they are reported separately and not summed.

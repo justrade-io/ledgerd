@@ -16,7 +16,7 @@ dependencies {
 }
 
 application {
-    mainClass.set("io.justrade.ledgerd.examples.QuickStartExample")
+    mainClass.set((project.findProperty("mainClass") as String?) ?: "io.justrade.ledgerd.examples.QuickStartExample")
     applicationDefaultJvmArgs = listOf(
         "--add-opens", "java.base/jdk.internal.misc=ALL-UNNAMED",
         "--add-opens", "java.base/sun.nio.ch=ALL-UNNAMED",

@@ -220,12 +220,15 @@ intermediate objects. Little-endian, fixed field order.
 |------------------|-------------|----------------------------------------------------|
 | `CommandEnvelope`| 1           | Command submitted by the Edge on behalf of a client|
 | `CommandResult`  | 2           | Exactly one deterministic result per command       |
+| `TransferBatch`  | 3           | A batch of transfer legs with linked atomic chains (ADR 0012) |
+| `TransferBatchResult` | 4      | One result per leg, in request order (ADR 0012)    |
 | `SnapshotHeader` | 10          | First snapshot record: log position, counts, supply|
 | `BalanceEntry`   | 11          | One account balance (ascending assetId, accountId) |
 | `AllowanceEntry` | 12          | One allowance (ascending assetId, owner, delegate) |
 | `DedupEntry`     | 13          | One cached result (ascending clientId, clientSeq)  |
 | `SnapshotFooter` | 14          | Terminal record with integrity checksum            |
 | `AssetSupplyEntry`| 15         | Per-asset total supply (ascending assetId)         |
+| `BatchDedupEntry`| 16         | One cached batch result (ascending clientId, clientSeq) |
 | `BalanceChangedEvent` | 20     | Domain event: an account balance changed (ADR 0011) |
 | `ReservedEvent`  | 21          | Domain event: funds moved from available to reserved |
 | `CapturedEvent`  | 22          | Domain event: reserved funds settled               |
@@ -267,6 +270,9 @@ free of Aeron so it can run in tests; `BalanceService` adapts it to the cluster.
 | `ApproveHandler`    | Allowance overwrite, relative increase, relative decrease               |
 | `DelegatedTransferHandler` | Delegate spends owner funds, distinguishes allowance vs balance  |
 | `ReserveHandler`    | Two-phase holds: RESERVE / RELEASE / CAPTURE over available and reserved |
+| `TransferBatchHandler` | Applies a TransferBatch: transfer-only linked chains with a narrow undo frame (ADR 0012) |
+| `BatchOutcome`      | Reusable per-leg results + staged domain events for one batch (ADR 0012) |
+| `BatchDedupRing`    | Per-client ring caching batch results, separate from single-command dedup (ADR 0012) |
 | `BalanceStore`      | Per-asset `AssetBucket` (available, reserved, supply) with last-asset cache |
 | `AllowanceStore`    | Nested primitive map keyed by (owner, delegate), no lossy hashing       |
 | `DedupTable`        | Per-client `DedupRing`s providing 100% idempotency in the dedup window  |
@@ -524,9 +530,11 @@ comes first; error and cold branches live in small private methods.
 
 ```mermaid
 flowchart TD
-    IN(["onSessionMessage(buffer)"]) --> HDR{"templateId ==\nCommandEnvelope?"}
-    HDR -- No --> IGN["ignore (do not corrupt state)"]
-    HDR -- Yes --> WRAP["wrap envelope decoder"]
+    IN(["onSessionMessage(buffer)"]) --> HDR{"templateId?"}
+    HDR -- "CommandEnvelope" --> WRAP["wrap envelope decoder"]
+    HDR -- "TransferBatch" --> BWRAP["wrap batch decoder"]
+    HDR -- "other" --> IGN["ignore (do not corrupt state)"]
+
     WRAP --> DEDUP{"dedup hit for\n(clientId, clientSeq)?"}
     DEDUP -- Yes --> CACHED["load cached result\n(no re-apply)"]
     DEDUP -- No --> DISPATCH{"commandType"}
@@ -536,14 +544,21 @@ flowchart TD
     DISPATCH -->|" APPROVE / INCREASE / DECREASE "| H4["ApproveHandler"]
     DISPATCH -->|" DELEGATED_TRANSFER "| H5["DelegatedTransferHandler"]
     DISPATCH -->|" RESERVE / CAPTURE / RELEASE "| H6["ReserveHandler"]
+
+    BWRAP --> BDEDUP{"batch dedup hit for\n(clientId, clientSeq)?"}
+    BDEDUP -- Yes --> CACHED
+    BDEDUP -- No --> CHAINS["apply legs; roll back\nfailed linked chains"]
+
     H1 --> STORE["store dedup result"]
     H2 --> STORE
     H3 --> STORE
     H4 --> STORE
     H5 --> STORE
     H6 --> STORE
+    CHAINS --> BSTORE["store batch dedup result"]
     STORE --> EVENTS["record domain events\n(if journal enabled)"]
-    EVENTS --> SEND["encode CommandResult"]
+    BSTORE --> EVENTS
+    EVENTS --> SEND["encode CommandResult /\nTransferBatchResult"]
     CACHED --> SEND
     SEND --> EGRESS["offer to session\n(retry + idle on back-pressure)"]
     EVENTS -.->|" encode + ring write "| JRING["EventJournalRing\n(stream 108, off-thread)"]
@@ -573,18 +588,19 @@ used for control flow.
 
 ## Snapshot Format
 
-Records are written one at a time into a small reusable buffer and offered to the
-Archive, so the writer never allocates a dataset-sized buffer. The order is
-fixed, and keys within each section are sorted so two nodes produce identical
-bytes.
+Records are written one at a time into a reusable buffer sized to the largest
+record (a batch dedup entry) and offered to the Archive, so the writer never
+allocates a dataset-sized buffer. The order is fixed, and keys within each
+section are sorted so two nodes produce identical bytes.
 
 ```
-[SnapshotHeader]     logPosition, schemaVersion, counts, totalSupply
-[BalanceEntry...]    sorted by (assetId, accountId), carrying available + reserved
-[AllowanceEntry...]  sorted by (assetId, ownerId, delegateId)
-[DedupEntry...]      sorted by (clientId, clientSeq)   <-- idempotency survives recovery
-[AssetSupplyEntry..] sorted by assetId
-[SnapshotFooter]     checksum (sum of balances)
+[SnapshotHeader]       logPosition, schemaVersion, counts, totalSupply
+[BalanceEntry...]      sorted by (assetId, accountId), carrying available + reserved
+[AllowanceEntry...]    sorted by (assetId, ownerId, delegateId)
+[DedupEntry...]        sorted by (clientId, clientSeq)   <-- command idempotency survives recovery
+[BatchDedupEntry...]   sorted by (clientId, clientSeq)   <-- batch idempotency survives recovery (ADR 0012)
+[AssetSupplyEntry..]   sorted by assetId
+[SnapshotFooter]       checksum (sum of balances)
 ```
 
 On load, records are fed to `SnapshotManager.onRecord` in the same order; the
@@ -605,6 +621,8 @@ construction. Defaults suit a large single node; tests use smaller values.
 | `delegateCapacity`       | 2^4     | Per-owner delegate slots                      |
 | `dedupClientCapacity`    | 2^16    | Preallocated dedup clients                    |
 | `dedupWindow`            | 2^10    | Most recent commands retained per client      |
+| `maxBatchSize`           | 2^10    | Max transfer legs per batch (ADR 0012)        |
+| `batchDedupWindow`       | 2^10    | Most recent batches retained per client       |
 
 `ClusterConfig` provides node id, cluster members, directories, and channels; the
 JVM must run with `--add-opens java.base/jdk.internal.misc=ALL-UNNAMED` and
@@ -621,6 +639,9 @@ JVM must run with `--add-opens java.base/jdk.internal.misc=ALL-UNNAMED` and
 | `HandlerBehaviourTest`      | Unit        | Credit/debit/transfer/allowance/delegated cases and status codes |
 | `HoldsTest`                 | Unit        | RESERVE / CAPTURE / RELEASE buckets and conserved supply (ADR 0010) |
 | `MultiAssetTest`            | Unit        | Per-asset isolation of balance, allowance, and supply (ADR 0009) |
+| `TransferBatchTest`         | Unit        | Batch apply, linked chains, rollback, idempotency (ADR 0012) |
+| `TransferBatchPropertyTest` | Property    | Random batches are deterministic (jqwik) |
+| `TransferBatchSnapshotTest` | Unit        | Batch dedup survives snapshot round-trip (ADR 0012) |
 | `EventRecordingTest`        | Unit        | Domain events emitted per command, `(logPosition, eventIndex)` order (ADR 0011) |
 | `SnapshotRoundTripTest`     | Unit        | Write then load reproduces byte-identical state and invariant |
 | `SnapshotIntegrityTest`     | Unit        | Snapshot footer checksum detects corruption                |
