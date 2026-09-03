@@ -13,8 +13,8 @@ plugins {
     alias(libs.plugins.dependencycheck)
 }
 
-// Supply-chain scan (F7 / OWASP). Runs on demand and in the nightly workflow, not
-// the fast PR gate. Set NVD_API_KEY to avoid NVD rate limiting; fails on High+.
+// Supply-chain scan (F7 / OWASP). Runs on demand, not the fast PR gate. Set
+// NVD_API_KEY to avoid NVD rate limiting; fails on High+.
 dependencyCheck {
     formats = listOf("HTML", "SARIF")
     failBuildOnCVSS = 7.0f
@@ -127,9 +127,8 @@ subprojects {
     }
 }
 
-// Aggregated API documentation across all modules, published to GitHub Pages by
-// .github/workflows/javadoc.yml. Runs on the same JDK 21 toolchain via the
-// javadoc tool resolved from each subproject.
+// Aggregated API documentation across all modules. Runs on the same JDK 21
+// toolchain via the javadoc tool resolved from each subproject.
 tasks.register<Javadoc>("aggregateJavadoc") {
     group = "documentation"
     description = "Generates a single aggregated Javadoc site across all modules."
