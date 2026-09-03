@@ -73,7 +73,7 @@ ledgerd/
 |-- core/                      Deterministic state machine (this is the hot path)
 |   |-- build.gradle.kts            Determinism checkstyle config, JMH source set
 |   |-- config/checkstyle/determinism.xml   Bans clocks, randomness, unordered maps, streams
-|   +-- src/main/java/com/ledgerd/
+|   +-- src/main/java/io/justrade/ledgerd/
 |       |-- config/CoreConfig.java          Preallocated, power-of-two capacities
 |       |-- util/Amounts.java               Overflow-checked 64-bit arithmetic
 |       |-- collections/
@@ -94,10 +94,10 @@ ledgerd/
 |           |-- CoreMetrics.java             Single-writer counters
 |           |-- CounterSink.java             Allocation-free counter sink interface (NOOP default)
 |           +-- AtomicCounterSink.java       Off-heap AtomicCounter-backed sink for cross-thread reads
-|   +-- src/jmh/java/com/ledgerd/bench/         BalanceEngineBenchmark, SnapshotBenchmark
+|   +-- src/jmh/java/io/justrade/ledgerd/bench/   BalanceEngineBenchmark, SnapshotBenchmark
 |
 |-- launcher/                  Aeron component bootstrap
-|   +-- src/main/java/com/ledgerd/launcher/
+|   +-- src/main/java/io/justrade/ledgerd/launcher/
 |       |-- ClusterConfig.java              Endpoints and directories per node
 |       |-- ClusterNode.java                Media Driver + Archive + Consensus + Service Container
 |       |-- EventJournaler.java             Drains the event ring, records stream 108 (ADR 0011)
@@ -105,13 +105,13 @@ ledgerd/
 |       +-- ClusterLauncher.java            main(): start one node, block until terminated
 |
 |-- write-client/                    Edge client SDK (depends only on protocol)
-|   +-- src/main/java/com/ledgerd/client/
+|   +-- src/main/java/io/justrade/ledgerd/client/
 |       |-- WriteClient.java                 Async submit/poll, leader-change resend, correlation
 |       |-- config/ClientConfig.java        Immutable client configuration
 |       +-- ResultHandler.java              Result callback correlated by command id
 |
 |-- read/                      Read side (CQRS query over a plain Aeron query protocol)
-|   +-- src/main/java/com/ledgerd/read/
+|   +-- src/main/java/io/justrade/ledgerd/read/
 |       |-- journal/                          EventJournalFollower/Subscriber/Config, DomainEventListener, EventJournalVerifier
 |       |-- config/ReadReplicaConfig.java     Read replica node config (Archive channels, snapshot, live log, query)
 |       |-- ArchiveSource.java                Multi-archive endpoint with round-robin failover (ADR 0008)
@@ -123,7 +123,7 @@ ledgerd/
 |       +-- ReadServiceLauncher.java          Entry point: resolve env config, run the read replica node
 |
 |-- read-client/               Read client SDK (depends only on protocol)
-|   +-- src/main/java/com/ledgerd/read/client/
+|   +-- src/main/java/io/justrade/ledgerd/read/client/
 |       |-- ReadClient.java                   Async submit/poll, sync queries, idempotent retry, correlation
 |       |-- config/ReadClientConfig.java      Immutable read-client configuration
 |       +-- BalanceResult / AllowanceResult / TotalSupplyResult / QueryListener
@@ -131,12 +131,12 @@ ledgerd/
 |-- examples/                  Runnable examples (QuickStart, RemoteClient)
 |
 |-- tests/                     Unit, property, and integration tests
-|   +-- src/testFixtures/java/com/ledgerd/testkit/   Test-only helpers (NOT the Edge SDK)
+|   +-- src/testFixtures/java/io/justrade/ledgerd/testkit/   Test-only helpers (NOT the Edge SDK)
 |   |   |-- CommandFixtures.java             Encode envelopes, wrap decoders
 |   |   |-- InMemorySnapshot.java            Snapshot to/from an in-memory buffer
 |   |   |-- WorkloadGenerator.java           Deterministic pseudo-random workload
 |   |   +-- ClusterTestClient.java           Minimal AeronCluster client for integration tests
-|   +-- src/test/java/com/ledgerd/              Test suites (see Test Coverage)
+|   +-- src/test/java/io/justrade/ledgerd/      Test suites (see Test Coverage)
 |
 +-- docs/
     |-- ARCHITECTURE.md             This document

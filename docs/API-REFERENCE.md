@@ -20,7 +20,7 @@ with a deterministic `StatusCode`. This document covers the complete client inte
 10. [Observability](#10-observability)
 11. [Direct Engine Usage (Headless)](#11-direct-engine-usage-headless)
 12. [Numeric Conventions](#12-numeric-conventions)
-13. [Read API (HTTP)](#13-read-api-http)
+13. [Read API (Aeron Query Protocol)](#13-read-api-aeron-query-protocol)
 
 For cluster deployment, snapshot management, and observability see [OPERATIONS.md](OPERATIONS.md).
 

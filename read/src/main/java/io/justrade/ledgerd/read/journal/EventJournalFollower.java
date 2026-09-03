@@ -9,6 +9,8 @@ import java.util.concurrent.TimeUnit;
 import org.agrona.concurrent.Agent;
 import org.agrona.concurrent.AgentRunner;
 import org.agrona.concurrent.BackoffIdleStrategy;
+import org.agrona.concurrent.EpochClock;
+import org.agrona.concurrent.SystemEpochClock;
 
 /**
  * Standalone follower of the domain event journal (ADR 0011). It runs its own
@@ -40,6 +42,7 @@ public final class EventJournalFollower implements AutoCloseable {
     private final String[] channels;
     private final long messageTimeoutNs;
     private final AgentRunner agentRunner;
+    private final EpochClock clock;
 
     private State state = State.CONNECTING;
     private int channelIndex;
@@ -62,8 +65,13 @@ public final class EventJournalFollower implements AutoCloseable {
     }
 
     public EventJournalFollower(final EventJournalConfig config, final DomainEventListener listener) {
+        this(config, listener, SystemEpochClock.INSTANCE);
+    }
+
+    EventJournalFollower(final EventJournalConfig config, final DomainEventListener listener, final EpochClock clock) {
         this.config = config;
         this.listener = listener;
+        this.clock = clock;
         final List<String> configured = config.archiveControlChannels();
         this.channels = configured.toArray(new String[0]);
         this.messageTimeoutNs = TimeUnit.MILLISECONDS.toNanos(config.archiveMessageTimeoutMs());
@@ -126,7 +134,7 @@ public final class EventJournalFollower implements AutoCloseable {
     }
 
     private int attemptConnect() {
-        final long now = System.currentTimeMillis();
+        final long now = clock.time();
         if (now < nextConnectMs) {
             return 0;
         }
@@ -146,7 +154,7 @@ public final class EventJournalFollower implements AutoCloseable {
     }
 
     private int followCycle() {
-        final long now = System.currentTimeMillis();
+        final long now = clock.time();
         ensureSubscriber();
         if (subscriber == null) {
             if (now - lastActivityMs > config.livenessTimeoutMs()) {
@@ -172,7 +180,7 @@ public final class EventJournalFollower implements AutoCloseable {
             subscriber = null;
             nextReplayReconnectMs = now + REPLAY_RECONNECT_BACKOFF_MS;
         }
-        if (System.currentTimeMillis() - lastActivityMs > config.livenessTimeoutMs()) {
+        if (clock.time() - lastActivityMs > config.livenessTimeoutMs()) {
             LOG.log(System.Logger.Level.WARNING, "Event follower liveness timeout; failing over");
             failover();
             return fragments;
@@ -182,7 +190,7 @@ public final class EventJournalFollower implements AutoCloseable {
     }
 
     private void ensureSubscriber() {
-        if (subscriber != null || archive == null || System.currentTimeMillis() < nextReplayReconnectMs) {
+        if (subscriber != null || archive == null || clock.time() < nextReplayReconnectMs) {
             return;
         }
         final EventJournalSubscriber candidate = new EventJournalSubscriber(
@@ -211,7 +219,7 @@ public final class EventJournalFollower implements AutoCloseable {
         closeArchive();
         failovers++;
         state = State.DEGRADED;
-        nextConnectMs = System.currentTimeMillis() + config.failoverBackoffMs();
+        nextConnectMs = clock.time() + config.failoverBackoffMs();
         healthy = false;
         LOG.log(
                 System.Logger.Level.WARNING,
@@ -245,8 +253,8 @@ public final class EventJournalFollower implements AutoCloseable {
     }
 
     private void awaitInitialConnect() {
-        final long deadline = System.currentTimeMillis() + STARTUP_CONNECT_TIMEOUT_MS;
-        while (!healthy && System.currentTimeMillis() < deadline) {
+        final long deadline = clock.time() + STARTUP_CONNECT_TIMEOUT_MS;
+        while (!healthy && clock.time() < deadline) {
             try {
                 Thread.sleep(10L);
             } catch (final InterruptedException e) {

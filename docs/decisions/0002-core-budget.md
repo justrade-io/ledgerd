@@ -7,7 +7,7 @@ Date: 2026-07-26
 
 The engine targets low-latency, high-throughput workloads. Latency variance
 (tail percentiles) is the contract, not the mean. See tmp/PRD.md section 6.2 and
-19, and .github/copilot-instructions.md.
+19 (historical planning drafts, not tracked in this repository), and .github/copilot-instructions.md.
 
 ## Budget
 

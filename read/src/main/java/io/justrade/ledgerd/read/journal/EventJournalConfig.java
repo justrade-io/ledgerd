@@ -1,7 +1,6 @@
 package io.justrade.ledgerd.read.journal;
 
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 
 /**
@@ -23,7 +22,7 @@ public final class EventJournalConfig {
     private final long livenessTimeoutMs;
 
     private EventJournalConfig(final Builder builder) {
-        this.archiveControlChannels = Collections.unmodifiableList(new ArrayList<>(builder.archiveControlChannels));
+        this.archiveControlChannels = List.copyOf(builder.archiveControlChannels);
         this.localHost = builder.localHost;
         this.aeronDir = builder.aeronDir;
         this.archiveControlStreamId = builder.archiveControlStreamId;

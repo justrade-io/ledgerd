@@ -20,6 +20,8 @@ import org.agrona.DirectBuffer;
 import org.agrona.collections.Long2ObjectHashMap;
 import org.agrona.concurrent.BackoffIdleStrategy;
 import org.agrona.concurrent.IdleStrategy;
+import org.agrona.concurrent.NanoClock;
+import org.agrona.concurrent.SystemNanoClock;
 import org.agrona.concurrent.UnsafeBuffer;
 
 /**
@@ -64,6 +66,7 @@ public final class ReadClient implements AutoCloseable {
     private static final int SOCKET_SNDBUF_LENGTH = 16 * 1024 * 1024;
 
     private final ReadClientConfig config;
+    private final NanoClock nanoClock;
     private final MediaDriver ownMediaDriver;
     private final Aeron aeron;
     private final Subscription responses;
@@ -103,7 +106,17 @@ public final class ReadClient implements AutoCloseable {
      *     aeronDirectoryName launches an embedded media driver
      */
     public ReadClient(final ReadClientConfig config) {
+        this(config, SystemNanoClock.INSTANCE);
+    }
+
+    /**
+     * @param config query endpoints and timing; a {@code null}
+     *     aeronDirectoryName launches an embedded media driver
+     * @param nanoClock monotonic time source for retry and timeout budgets
+     */
+    public ReadClient(final ReadClientConfig config, final NanoClock nanoClock) {
         this.config = config;
+        this.nanoClock = nanoClock;
         this.pending = new Long2ObjectHashMap<>(Math.max(16, config.maxInFlight() * 2), LOAD_FACTOR);
         this.pool = new PendingQuery[config.maxInFlight()];
         this.freeStack = new int[config.maxInFlight()];
@@ -198,7 +211,7 @@ public final class ReadClient implements AutoCloseable {
      */
     public int poll() {
         int work = responses.poll(fragmentAssembler, RESPONSE_FRAGMENT_LIMIT);
-        work += retransmit(System.nanoTime());
+        work += retransmit(nanoClock.nanoTime());
         return work;
     }
 
@@ -283,7 +296,7 @@ public final class ReadClient implements AutoCloseable {
         pq.retries = 0;
         pq.requestId = nextRequestId();
         pq.type = type;
-        pq.submittedNanos = System.nanoTime();
+        pq.submittedNanos = nanoClock.nanoTime();
 
         requestEncoder
                 .wrapAndApplyHeader(pq.buffer, 0, headerEncoder)
@@ -435,7 +448,7 @@ public final class ReadClient implements AutoCloseable {
     @SuppressWarnings("unchecked")
     private <T> T await(final long requestId) {
         final SyncFrame frame = pushSyncFrame(requestId);
-        final long deadline = System.nanoTime() + config.messageTimeoutNs();
+        final long deadline = nanoClock.nanoTime() + config.messageTimeoutNs();
         try {
             while (true) {
                 poll();
@@ -450,7 +463,7 @@ public final class ReadClient implements AutoCloseable {
                     frame.delivered = false;
                     return value;
                 }
-                if (System.nanoTime() >= deadline) {
+                if (nanoClock.nanoTime() >= deadline) {
                     // Release the abandoned query's window slot: a dead replica
                     // must not keep the slot occupied by a never-answered query.
                     cancel(requestId);

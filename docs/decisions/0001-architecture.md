@@ -8,7 +8,7 @@ Date: 2026-07-26
 LEDGERD Core must be a strongly consistent, ultra-low-latency balance and
 delegated-spending engine. Traditional RDBMS ledgers suffer lock contention and
 latency growth under load; single-node in-memory engines are fast but not fault
-tolerant. See tmp/PRD.md and tmp/TDD.md.
+tolerant. See tmp/PRD.md and tmp/TDD.md (historical planning drafts, not tracked in this repository; /docs/decisions is the authoritative record).
 
 ## Decision
 

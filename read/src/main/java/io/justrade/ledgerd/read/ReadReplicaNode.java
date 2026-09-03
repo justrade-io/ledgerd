@@ -24,6 +24,8 @@ import org.agrona.DirectBuffer;
 import org.agrona.concurrent.Agent;
 import org.agrona.concurrent.AgentRunner;
 import org.agrona.concurrent.BackoffIdleStrategy;
+import org.agrona.concurrent.EpochClock;
+import org.agrona.concurrent.SystemEpochClock;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.agrona.concurrent.status.AtomicCounter;
 import org.agrona.concurrent.status.CountersManager;
@@ -77,7 +79,7 @@ public final class ReadReplicaNode implements AutoCloseable {
     private final long[] snapshotCandidates = new long[64];
 
     private final AgentRunner agentRunner;
-
+    private final EpochClock clock;
     // Agent-thread-owned state (never touched from any other thread).
     private State state = State.CONNECTING;
     private long maxSnapshotRecordingId = -1L;
@@ -113,8 +115,13 @@ public final class ReadReplicaNode implements AutoCloseable {
     }
 
     public ReadReplicaNode(final ReadReplicaConfig replicaConfig, final CoreConfig coreConfig) {
+        this(replicaConfig, coreConfig, SystemEpochClock.INSTANCE);
+    }
+
+    ReadReplicaNode(final ReadReplicaConfig replicaConfig, final CoreConfig coreConfig, final EpochClock clock) {
 
         this.replicaConfig = replicaConfig;
+        this.clock = clock;
         this.snapshotManager = new SnapshotManager();
         this.health = new ReplicationHealth();
 
@@ -204,8 +211,8 @@ public final class ReadReplicaNode implements AutoCloseable {
      * reachable the wait times out and the agent keeps retrying in the background.
      */
     private void awaitInitialConnect() {
-        final long deadline = System.currentTimeMillis() + STARTUP_CONNECT_TIMEOUT_MS;
-        while (!health.isHealthy() && System.currentTimeMillis() < deadline) {
+        final long deadline = clock.time() + STARTUP_CONNECT_TIMEOUT_MS;
+        while (!health.isHealthy() && clock.time() < deadline) {
             try {
                 Thread.sleep(10L);
             } catch (final InterruptedException e) {
@@ -277,7 +284,7 @@ public final class ReadReplicaNode implements AutoCloseable {
 
     /** Tries to (re)connect to the current candidate Archive endpoint. */
     private int attemptConnect() {
-        final long now = System.currentTimeMillis();
+        final long now = clock.time();
         if (now < nextConnectAttemptMs) {
             return 0;
         }
@@ -304,7 +311,7 @@ public final class ReadReplicaNode implements AutoCloseable {
 
     /** Follows the live log and polls for newer snapshots on the active source. */
     private int followCycle() {
-        final long now = System.currentTimeMillis();
+        final long now = clock.time();
         int work = 0;
         try {
             work += pollLiveLog();
@@ -317,7 +324,7 @@ public final class ReadReplicaNode implements AutoCloseable {
         if (now >= nextSnapshotPollMs) {
             try {
                 work += pollForNewSnapshot();
-                lastActivityMs = System.currentTimeMillis(); // a successful archive op
+                lastActivityMs = clock.time(); // a successful archive op
             } catch (final RuntimeException e) {
                 // A control-session failure here means the source is dead; fail over
                 // rather than retrying the same broken endpoint.
@@ -325,13 +332,13 @@ public final class ReadReplicaNode implements AutoCloseable {
                 failover();
                 return work;
             }
-            nextSnapshotPollMs = System.currentTimeMillis() + replicaConfig.pollIntervalMs();
+            nextSnapshotPollMs = clock.time() + replicaConfig.pollIntervalMs();
         }
 
         // Liveness backstop for a silently dead Archive (no exception, no
         // fragments). A successful snapshot poll counts as activity, so an idle
         // but healthy cluster does not false-positive.
-        if (System.currentTimeMillis() - lastActivityMs > replicaConfig.liveLogLivenessTimeoutMs()) {
+        if (clock.time() - lastActivityMs > replicaConfig.liveLogLivenessTimeoutMs()) {
             LOG.log(System.Logger.Level.WARNING, "Read replica live log liveness timeout; failing over");
             failover();
             return work;
@@ -350,7 +357,7 @@ public final class ReadReplicaNode implements AutoCloseable {
         }
         health.recordFailover();
         state = State.DEGRADED;
-        nextConnectAttemptMs = System.currentTimeMillis() + replicaConfig.failoverBackoffMs();
+        nextConnectAttemptMs = clock.time() + replicaConfig.failoverBackoffMs();
         health.markStale(source.activeChannel(), appliedLogPosition);
         LOG.log(
                 System.Logger.Level.WARNING,
@@ -366,7 +373,7 @@ public final class ReadReplicaNode implements AutoCloseable {
         }
         final int fragments = liveLog.poll(FRAGMENT_LIMIT);
         if (fragments > 0) {
-            lastActivityMs = System.currentTimeMillis();
+            lastActivityMs = clock.time();
             final long position = liveLog.lastPosition();
             if (position > appliedLogPosition) {
                 appliedLogPosition = position;
@@ -379,7 +386,7 @@ public final class ReadReplicaNode implements AutoCloseable {
             // are still followed instead of being missed.
             liveLog.close();
             liveLog = null;
-            nextLiveLogConnectMs = System.currentTimeMillis() + LIVE_LOG_RECONNECT_BACKOFF_MS;
+            nextLiveLogConnectMs = clock.time() + LIVE_LOG_RECONNECT_BACKOFF_MS;
         }
         return fragments;
     }
@@ -438,7 +445,7 @@ public final class ReadReplicaNode implements AutoCloseable {
         if (liveLog != null
                 || !replicaConfig.liveLogEnabled()
                 || !source.isConnected()
-                || System.currentTimeMillis() < nextLiveLogConnectMs) {
+                || clock.time() < nextLiveLogConnectMs) {
             return;
         }
         // Follow from the position the engine has already applied up to. On a fresh
@@ -506,8 +513,8 @@ public final class ReadReplicaNode implements AutoCloseable {
             source.archive()
                     .startReplay(recordingId, 0, AeronArchive.NULL_LENGTH, replayChannel, ReadStreams.SNAPSHOT_REPLAY);
 
-            final long deadline = System.currentTimeMillis() + replicaConfig.replayTimeoutMs();
-            while (System.currentTimeMillis() < deadline) {
+            final long deadline = clock.time() + replicaConfig.replayTimeoutMs();
+            while (clock.time() < deadline) {
                 if (snapshotDecision == SnapshotDecision.SKIP) {
                     return SnapshotResult.SKIPPED;
                 }
@@ -556,8 +563,8 @@ public final class ReadReplicaNode implements AutoCloseable {
     }
 
     private String awaitResolvedEndpoint(final Subscription subscription) {
-        final long deadline = System.currentTimeMillis() + replicaConfig.replayTimeoutMs();
-        while (System.currentTimeMillis() < deadline) {
+        final long deadline = clock.time() + replicaConfig.replayTimeoutMs();
+        while (clock.time() < deadline) {
             final String endpoint = subscription.resolvedEndpoint();
             if (endpoint != null) {
                 return endpoint;

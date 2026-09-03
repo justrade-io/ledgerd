@@ -24,7 +24,7 @@ substrate for that fan-out:
   are re-derived elsewhere, risking divergence.
 
 The AI substrate (roadmap month 3-6) is the first multi-consumer workload, so the
-journal is now justified. See tmp/ROADMAP.md sections 3.2-3.4.
+journal is now justified. See tmp/ROADMAP.md sections 3.2-3.4 (historical planning draft, not tracked in this repository).
 
 ## Decision
 

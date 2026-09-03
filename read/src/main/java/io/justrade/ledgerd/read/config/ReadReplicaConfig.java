@@ -11,7 +11,7 @@ import java.util.List;
  *
  * <p>The read replica node connects to a cluster member's Archive, follows the
  * committed consensus log, loads service snapshots as they appear, and serves
- * eventually-consistent reads over HTTP. It does NOT appear in the cluster's
+ * eventually-consistent reads over a plain Aeron query protocol. It does NOT appear in the cluster's
  * {@code clusterMembers} string and does not affect quorum.
  *
  * <p>The replica accepts an ORDERED list of Archive control channels (one per
@@ -38,7 +38,7 @@ public final class ReadReplicaConfig {
     private final int queryRequestStreamId;
 
     private ReadReplicaConfig(final Builder builder) {
-        this.archiveControlChannels = Collections.unmodifiableList(new ArrayList<>(builder.archiveControlChannels));
+        this.archiveControlChannels = List.copyOf(builder.archiveControlChannels);
         this.localHost = builder.localHost;
         this.aeronDir = builder.aeronDir;
         this.archiveControlStreamId = builder.archiveControlStreamId;

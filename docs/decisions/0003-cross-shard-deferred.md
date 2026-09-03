@@ -5,7 +5,7 @@ Date: 2026-07-26
 
 ## Context
 
-PRD v2.0 (tmp/PRD.md sections 9.6, 20, 21) requires that Sharding and
+PRD v2.0 (tmp/PRD.md sections 9.6, 20, 21; historical planning draft, not tracked in this repository) requires that Sharding and
 Cross-Shard Atomicity be released together, because a `transfer` between two
 accounts in different shards is a basic ledger use-case, not an edge case.
 Open Question #3 (2PC vs Saga) must be answered before Phase 2 begins.

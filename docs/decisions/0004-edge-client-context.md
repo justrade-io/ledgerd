@@ -5,7 +5,7 @@ Date: 2026-07-27
 
 ## Context
 
-PRD v2.0 (tmp/PRD.md sections 2.1, 2.2) draws a hard boundary: the Core Service
+PRD v2.0 (tmp/PRD.md sections 2.1, 2.2; historical planning draft, not tracked in this repository) draws a hard boundary: the Core Service
 executes a deterministic replicated state machine, while the Edge (Gateway, auth,
 client SDK, retry policy) is a distinct bounded context that communicates with the
 Core only through the fixed binary command contract.
