@@ -14,6 +14,8 @@ import io.justrade.ledgerd.write.client.config.ClientConfig;
 import org.HdrHistogram.Histogram;
 import org.agrona.DirectBuffer;
 import org.agrona.collections.Long2ObjectHashMap;
+import org.agrona.concurrent.NanoClock;
+import org.agrona.concurrent.SystemNanoClock;
 
 /**
  * Edge-side client for the LEDGERD core. Adds, on top of a raw Aeron cluster client:
@@ -39,6 +41,8 @@ public final class WriteClient implements EgressListener, AutoCloseable {
     private final ResultHandler handler;
     private final AeronCluster cluster;
     private final MediaDriver ownMediaDriver;
+    private final NanoClock nanoClock;
+    private final RetryPolicy retryPolicy;
 
     private final MessageHeaderEncoder headerEncoder = new MessageHeaderEncoder();
     private final CommandEnvelopeEncoder envelopeEncoder = new CommandEnvelopeEncoder();
@@ -64,8 +68,14 @@ public final class WriteClient implements EgressListener, AutoCloseable {
     private boolean retransmitAll;
 
     public WriteClient(final ClientConfig config, final ResultHandler handler) {
+        this(config, handler, SystemNanoClock.INSTANCE);
+    }
+
+    WriteClient(final ClientConfig config, final ResultHandler handler, final NanoClock nanoClock) {
         this.config = config;
         this.handler = handler;
+        this.nanoClock = nanoClock;
+        this.retryPolicy = new RetryPolicy(config.maxRetries());
         // Size the pending map so it never rehashes while the in-flight window
         // (bounded by maxInFlight) is populated: capacity * load factor must
         // cover maxInFlight entries.
@@ -156,7 +166,7 @@ public final class WriteClient implements EgressListener, AutoCloseable {
                 .assetId(assetId);
 
         pc.length = MessageHeaderEncoder.ENCODED_LENGTH + envelopeEncoder.encodedLength();
-        pc.submitNanos = System.nanoTime();
+        pc.submitNanos = nanoClock.nanoTime();
         pc.deadlineNanos = pc.submitNanos + config.retryBackoffNs();
 
         pending.put(pc.commandIdLo, pc);
@@ -172,28 +182,25 @@ public final class WriteClient implements EgressListener, AutoCloseable {
      */
     public int poll() {
         int work = cluster.pollEgress();
-        final long now = System.nanoTime();
+        final long now = nanoClock.nanoTime();
 
         // Scan the preallocated pool rather than the map's value iterator so a
         // poll neither allocates nor risks concurrent modification when a result
         // callback recycles an entry mid-scan.
         for (int i = 0; i < pool.length; i++) {
             final PendingCommand pc = pool[i];
-            if (!pc.inUse) {
-                continue;
+            switch (retryPolicy.evaluate(now, pc.deadlineNanos, pc.retries, retransmitAll, pc.inUse)) {
+                case WAIT -> {
+                    // not in use, or still within its backoff window
+                }
+                case EXPIRE -> expire(pc);
+                case RETRY -> {
+                    offer(pc);
+                    pc.retries++;
+                    pc.deadlineNanos = now + config.retryBackoffNs();
+                    work++;
+                }
             }
-            final boolean due = retransmitAll || (now - pc.deadlineNanos) >= 0;
-            if (!due) {
-                continue;
-            }
-            if (config.maxRetries() > 0 && pc.retries >= config.maxRetries()) {
-                expire(pc);
-                continue;
-            }
-            offer(pc);
-            pc.retries++;
-            pc.deadlineNanos = now + config.retryBackoffNs();
-            work++;
         }
         retransmitAll = false;
         return work;
@@ -242,7 +249,7 @@ public final class WriteClient implements EgressListener, AutoCloseable {
         final boolean hasAllowance = resultDecoder.resultAllowance() != CommandResultDecoder.resultAllowanceNullValue();
 
         if (pc != null) {
-            final long elapsedNs = System.nanoTime() - pc.submitNanos;
+            final long elapsedNs = nanoClock.nanoTime() - pc.submitNanos;
             // Clamp so a result arriving after a long outage cannot throw out of
             // the poll loop (Histogram rejects values above highestTrackableValue).
             latencyHistogram.recordValue(Math.min(elapsedNs, latencyHistogram.getHighestTrackableValue()));

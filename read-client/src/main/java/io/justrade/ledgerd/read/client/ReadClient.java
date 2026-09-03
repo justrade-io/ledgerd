@@ -67,6 +67,7 @@ public final class ReadClient implements AutoCloseable {
 
     private final ReadClientConfig config;
     private final NanoClock nanoClock;
+    private final RetryPolicy retryPolicy;
     private final MediaDriver ownMediaDriver;
     private final Aeron aeron;
     private final Subscription responses;
@@ -117,6 +118,7 @@ public final class ReadClient implements AutoCloseable {
     public ReadClient(final ReadClientConfig config, final NanoClock nanoClock) {
         this.config = config;
         this.nanoClock = nanoClock;
+        this.retryPolicy = new RetryPolicy(config.messageTimeoutNs(), config.maxRetries());
         this.pending = new Long2ObjectHashMap<>(Math.max(16, config.maxInFlight() * 2), LOAD_FACTOR);
         this.pool = new PendingQuery[config.maxInFlight()];
         this.freeStack = new int[config.maxInFlight()];
@@ -351,24 +353,19 @@ public final class ReadClient implements AutoCloseable {
             // A delivering slot is mid-listener-callback (which may re-enter
             // poll via a nested synchronous query); it is released when the
             // callback returns, so it must not be expired here as well.
-            if (!pq.inUse || pq.delivering || (now - pq.deadlineNanos) < 0) {
-                continue;
+            final boolean ready = pq.inUse && !pq.delivering;
+            switch (retryPolicy.evaluate(now, pq.deadlineNanos, pq.submittedNanos, pq.retries, ready)) {
+                case WAIT -> {
+                    // still within its backoff window; leave it in flight
+                }
+                case EXPIRE -> expire(pq);
+                case RETRY -> {
+                    offer(pq);
+                    pq.retries++;
+                    pq.deadlineNanos = now + config.retryBackoffNs();
+                    work++;
+                }
             }
-            // An overall budget bounds every async query, even when maxRetries is 0
-            // (unbounded retries); without it a dead replica would retransmit
-            // forever and exhaust the in-flight window.
-            if (now - pq.submittedNanos > config.messageTimeoutNs()) {
-                expire(pq);
-                continue;
-            }
-            if (config.maxRetries() > 0 && pq.retries >= config.maxRetries()) {
-                expire(pq);
-                continue;
-            }
-            offer(pq);
-            pq.retries++;
-            pq.deadlineNanos = now + config.retryBackoffNs();
-            work++;
         }
         return work;
     }
