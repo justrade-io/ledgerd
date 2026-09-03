@@ -650,8 +650,10 @@ JVM must run with `--add-opens java.base/jdk.internal.misc=ALL-UNNAMED` and
 | `EventJournalRingTest`      | Unit        | Off-heap event ring SPSC framing and batch drain           |
 | `MetricsHttpServerTest`     | Unit        | Prometheus metrics and healthz HTTP endpoint               |
 | `ClusterIntegrationTest`    | Integration | End-to-end over a real single-node cluster, idempotency verified |
+| `TransferBatchClusterIntegrationTest` | Integration | TransferBatch through consensus: per-leg ACK, idempotency, rollback (ADR 0012) |
 | `WriteClientIntegrationTest` | Integration | Client SDK submit/poll, command-id correlation             |
 | `EventJournalIntegrationTest` | Integration | Event journal recorded and followed end-to-end (ADR 0011)  |
+| `EventJournalBatchIntegrationTest` | Integration | Batch event journal: committed legs emit edges, rolled-back chains emit rejections (ADR 0012) |
 | `EventJournalFollowerIntegrationTest` | Integration | Follower dedup and multi-archive failover               |
 | `ReadClientIntegrationTest` | Integration | Read-client sync/async queries, request-id correlation     |
 | `ReadReplicaQueryIntegrationTest`| Integration | Read-after-write via read-client SDK; both sides of a transfer |
@@ -659,6 +661,7 @@ JVM must run with `--add-opens java.base/jdk.internal.misc=ALL-UNNAMED` and
 | `ReadReplicaLiveLogIntegrationTest` | Integration | Read replica live log following, sub-second staleness       |
 | `ReadReplicaNodeSmokeTest`  | Integration | Read replica node startup and basic query                  |
 | `MultiNodeClusterTest`      | Cluster     | Three-node leader election and committed results           |
+| `TransferBatchClusterTest`  | Cluster     | TransferBatch across failover applies exactly once (ADR 0012) |
 | `CatchUpReplayTest`         | Cluster     | Restarted node recovers its log and rejoins consensus      |
 | `ClusterReplayDeterminismTest` | Cluster  | Identical command streams yield identical balances         |
 | `ReadReplicaArchiveModelClusterTest` / `ReadReplicaSnapshotLoadClusterTest` | Cluster | Read replica archive replication and snapshot load against a real cluster |

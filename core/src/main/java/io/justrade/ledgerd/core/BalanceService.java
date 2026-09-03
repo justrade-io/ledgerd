@@ -132,7 +132,12 @@ public final class BalanceService implements io.aeron.cluster.service.ClusteredS
             final boolean duplicate = engine.processBatch(transferBatchDecoder, batchOutcome);
             sendBatchResult(session);
             if (journalEnabled && !duplicate) {
-                journalBatchEvents(timestamp);
+                journalBatchEvents(
+                        timestamp,
+                        buffer,
+                        bodyOffset,
+                        messageHeaderDecoder.blockLength(),
+                        messageHeaderDecoder.version());
             }
             return;
         }
@@ -226,7 +231,15 @@ public final class BalanceService implements io.aeron.cluster.service.ClusteredS
     // emit their staged transfer events; failed legs emit one rejection event
     // each. eventIndex is unique across the whole batch because the batch is one
     // log entry.
-    private void journalBatchEvents(final long timestamp) {
+    private void journalBatchEvents(
+            final long timestamp,
+            final DirectBuffer buffer,
+            final int bodyOffset,
+            final int blockLength,
+            final int version) {
+        // Re-wrap: the handler's leg iteration advanced the decoder limit past the
+        // group, so a fresh wrap restores it before re-iterating the legs.
+        transferBatchDecoder.wrap(buffer, bodyOffset, blockLength, version);
         final long logPosition = cluster.logPosition();
         final TransferBatchDecoder.LegsDecoder legs = transferBatchDecoder.legs();
         int stagedIndex = 0;

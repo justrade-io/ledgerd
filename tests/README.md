@@ -20,7 +20,8 @@ so each tier can run independently in the build and in CI.
 - [MultiNodeCluster.java](src/testFixtures/java/io/justrade/ledgerd/testkit/MultiNodeCluster.java) -
   in-process multi-node cluster harness.
 - [ClusterTestClient.java](src/testFixtures/java/io/justrade/ledgerd/testkit/ClusterTestClient.java) -
-  minimal Aeron Cluster client that matches results by command id.
+  minimal Aeron Cluster client that matches command and transfer-batch results
+  by id.
 - [CommandFixtures.java](src/testFixtures/java/io/justrade/ledgerd/testkit/CommandFixtures.java) -
   encode a `CommandEnvelope` and return a wrapped decoder.
 - [TransferBatchFixtures.java](src/testFixtures/java/io/justrade/ledgerd/testkit/TransferBatchFixtures.java) -

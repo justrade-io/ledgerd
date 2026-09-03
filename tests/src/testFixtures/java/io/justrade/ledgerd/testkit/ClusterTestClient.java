@@ -11,6 +11,8 @@ import io.justrade.ledgerd.protocol.CommandType;
 import io.justrade.ledgerd.protocol.MessageHeaderDecoder;
 import io.justrade.ledgerd.protocol.MessageHeaderEncoder;
 import io.justrade.ledgerd.protocol.StatusCode;
+import io.justrade.ledgerd.protocol.TransferBatchEncoder;
+import io.justrade.ledgerd.protocol.TransferBatchResultDecoder;
 import java.util.concurrent.TimeUnit;
 import org.agrona.DirectBuffer;
 import org.agrona.concurrent.UnsafeBuffer;
@@ -25,16 +27,27 @@ public final class ClusterTestClient implements EgressListener, AutoCloseable {
     private final AeronCluster cluster;
     private final MediaDriver ownMediaDriver;
     private final UnsafeBuffer buffer = new UnsafeBuffer(new byte[256]);
+    private final UnsafeBuffer batchBuffer = new UnsafeBuffer(new byte[1 << 16]);
     private final MessageHeaderEncoder headerEncoder = new MessageHeaderEncoder();
     private final CommandEnvelopeEncoder envelopeEncoder = new CommandEnvelopeEncoder();
+    private final TransferBatchEncoder batchEncoder = new TransferBatchEncoder();
     private final MessageHeaderDecoder headerDecoder = new MessageHeaderDecoder();
     private final CommandResultDecoder resultDecoder = new CommandResultDecoder();
+    private final TransferBatchResultDecoder batchResultDecoder = new TransferBatchResultDecoder();
 
     private boolean received;
     private long lastCommandIdLo = Long.MIN_VALUE;
     private StatusCode lastStatus = StatusCode.NULL_VAL;
     private long lastBalance;
     private long lastAllowance;
+
+    private boolean batchReceived;
+    private long lastBatchIdLo = Long.MIN_VALUE;
+    private int lastBatchLegCount;
+    private StatusCode[] lastBatchStatuses = new StatusCode[0];
+    private long[] lastBatchBalances = new long[0];
+    private boolean[] lastBatchHasBalance = new boolean[0];
+
     private int leaderMemberId = -1;
     private int leaderChanges;
 
@@ -124,6 +137,45 @@ public final class ClusterTestClient implements EgressListener, AutoCloseable {
         } while (result < 0);
     }
 
+    /** Encodes and reliably offers one transfer batch to the cluster. */
+    public void sendBatch(
+            final long clientId,
+            final long clientSeq,
+            final long batchIdHi,
+            final long batchIdLo,
+            final long[] fromIds,
+            final long[] toIds,
+            final long[] amounts,
+            final long[] assetIds,
+            final boolean[] linked) {
+
+        batchEncoder
+                .wrapAndApplyHeader(batchBuffer, 0, headerEncoder)
+                .clientId(clientId)
+                .clientSeq(clientSeq)
+                .batchIdHi(batchIdHi)
+                .batchIdLo(batchIdLo);
+        final TransferBatchEncoder.LegsEncoder legs = batchEncoder.legsCount(fromIds.length);
+        for (int i = 0; i < fromIds.length; i++) {
+            legs.next()
+                    .fromId(fromIds[i])
+                    .toId(toIds[i])
+                    .amount(amounts[i])
+                    .assetId(assetIds[i])
+                    .linked(linked[i] ? (short) 1 : (short) 0);
+        }
+
+        final int length = MessageHeaderEncoder.ENCODED_LENGTH + batchEncoder.encodedLength();
+        long result;
+        do {
+            result = cluster.offer(batchBuffer, 0, length);
+            if (result < 0) {
+                cluster.pollEgress();
+                Thread.onSpinWait();
+            }
+        } while (result < 0);
+    }
+
     /** Polls egress until the result for {@code expectedCommandIdLo} arrives or timeout. */
     public boolean awaitResult(final long expectedCommandIdLo, final long timeoutMs) {
         received = false;
@@ -131,6 +183,21 @@ public final class ClusterTestClient implements EgressListener, AutoCloseable {
         while (System.currentTimeMillis() < deadline) {
             cluster.pollEgress();
             if (received && lastCommandIdLo == expectedCommandIdLo) {
+                return true;
+            }
+            cluster.sendKeepAlive();
+            Thread.onSpinWait();
+        }
+        return false;
+    }
+
+    /** Polls egress until the result for {@code expectedBatchIdLo} arrives or timeout. */
+    public boolean awaitBatchResult(final long expectedBatchIdLo, final long timeoutMs) {
+        batchReceived = false;
+        final long deadline = System.currentTimeMillis() + timeoutMs;
+        while (System.currentTimeMillis() < deadline) {
+            cluster.pollEgress();
+            if (batchReceived && lastBatchIdLo == expectedBatchIdLo) {
                 return true;
             }
             cluster.sendKeepAlive();
@@ -148,19 +215,33 @@ public final class ClusterTestClient implements EgressListener, AutoCloseable {
             final int length,
             final Header header) {
         headerDecoder.wrap(buffer, offset);
-        if (headerDecoder.templateId() != CommandResultDecoder.TEMPLATE_ID) {
+        final int bodyOffset = offset + MessageHeaderDecoder.ENCODED_LENGTH;
+
+        if (headerDecoder.templateId() == CommandResultDecoder.TEMPLATE_ID) {
+            resultDecoder.wrap(buffer, bodyOffset, headerDecoder.blockLength(), headerDecoder.version());
+            lastCommandIdLo = resultDecoder.commandIdLo();
+            lastStatus = resultDecoder.status();
+            lastBalance = resultDecoder.resultBalance();
+            lastAllowance = resultDecoder.resultAllowance();
+            received = true;
             return;
         }
-        resultDecoder.wrap(
-                buffer,
-                offset + MessageHeaderDecoder.ENCODED_LENGTH,
-                headerDecoder.blockLength(),
-                headerDecoder.version());
-        lastCommandIdLo = resultDecoder.commandIdLo();
-        lastStatus = resultDecoder.status();
-        lastBalance = resultDecoder.resultBalance();
-        lastAllowance = resultDecoder.resultAllowance();
-        received = true;
+
+        if (headerDecoder.templateId() == TransferBatchResultDecoder.TEMPLATE_ID) {
+            batchResultDecoder.wrap(buffer, bodyOffset, headerDecoder.blockLength(), headerDecoder.version());
+            lastBatchIdLo = batchResultDecoder.batchIdLo();
+            final TransferBatchResultDecoder.ResultsDecoder results = batchResultDecoder.results();
+            lastBatchLegCount = results.count();
+            ensureBatchArrays(lastBatchLegCount);
+            for (int i = 0; i < lastBatchLegCount; i++) {
+                results.next();
+                lastBatchStatuses[i] = results.status();
+                lastBatchHasBalance[i] = results.hasBalance() != 0;
+                lastBatchBalances[i] = results.resultBalance();
+            }
+            batchReceived = true;
+            return;
+        }
     }
 
     @Override
@@ -183,6 +264,31 @@ public final class ClusterTestClient implements EgressListener, AutoCloseable {
 
     public long lastAllowance() {
         return lastAllowance;
+    }
+
+    /** Number of legs in the most recent transfer-batch result. */
+    public int lastBatchLegCount() {
+        return lastBatchLegCount;
+    }
+
+    public StatusCode lastBatchStatus(final int leg) {
+        return lastBatchStatuses[leg];
+    }
+
+    public boolean lastBatchHasBalance(final int leg) {
+        return lastBatchHasBalance[leg];
+    }
+
+    public long lastBatchBalance(final int leg) {
+        return lastBatchBalances[leg];
+    }
+
+    private void ensureBatchArrays(final int legCount) {
+        if (lastBatchStatuses.length < legCount) {
+            lastBatchStatuses = new StatusCode[legCount];
+            lastBatchBalances = new long[legCount];
+            lastBatchHasBalance = new boolean[legCount];
+        }
     }
 
     /** The member id of the current cluster leader as tracked by the client, or -1. */
