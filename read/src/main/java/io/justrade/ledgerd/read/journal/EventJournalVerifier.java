@@ -13,9 +13,8 @@ import java.util.concurrent.atomic.AtomicLong;
  * it has observed at least {@code LEDGERD_EVENT_MIN} recorded events, printing a
  * machine-parseable result line and exiting 0 on success or 1 on timeout.
  *
- * <p>Used by {@code docker/verify-read.sh} to prove the journal is recorded and
- * consumable end to end in the compose deployment. Configuration mirrors the read
- * replica's environment.
+ * <p>Proves the journal is recorded and consumable end to end. Configuration
+ * mirrors the read replica's environment.
  *
  * <pre>
  *   LEDGERD_ARCHIVE_CHANNELS  comma-separated Archive control channels (preferred)

@@ -26,7 +26,7 @@ read replica). The failure modes are:
   before the replica catches up, ADR 0006 says the replica must fall back to a
   fresh snapshot - but with a single source there is nothing to fall back to.
 
-`docker/verify-read.sh` never kills node 0, so this was unexercised. The
+The read verification script never kills node 0, so this was unexercised. The
 acceptance test `ReadReplicaArchiveFailoverFaultTest` (tagged `fault`) proves
 the gap: with the read replica pinned to node 0 and the live log enabled,
 killing node 0 leaves the write cluster committing (quorum 2 of 3) while the

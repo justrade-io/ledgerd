@@ -23,8 +23,8 @@ deployment in this repository (the compose topology runs read replica nodes only
 Separately, the read replica node only began following the live consensus log *after*
 loading a snapshot (`snapshotLogPosition > 0`). Because the write cluster takes
 no periodic snapshots by default (Aeron's `snapshotInterval` defaults to
-`Long.MAX_VALUE`) and Docker starts clean (`LEDGERD_CLEAN_START=true`), a freshly
-started cluster produced no snapshot recording, so a read replica node served
+`Long.MAX_VALUE`), a freshly started cluster produced no snapshot recording, so a
+read replica node served
 empty reads indefinitely. The read replica read path was therefore not functional in
 a running Docker deployment without an externally triggered snapshot.
 
@@ -60,9 +60,9 @@ a running Docker deployment without an externally triggered snapshot.
    another container can connect back - the same pattern the remote client uses
    for its egress endpoint.
 
-5. **Single Docker Compose topology.** `docker-compose.yml` now brings up the
-   3-node write cluster plus one read replica node (`ledgerd-read-0`) on one
-   network. The separate `docker-compose.read.yml` is removed.
+5. **Single compose topology.** One compose file brings up the 3-node write
+   cluster plus one read replica node (`ledgerd-read-0`) on one network. The
+   separate read-only compose file is removed.
 
 ## Consequences
 
