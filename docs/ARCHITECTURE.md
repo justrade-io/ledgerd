@@ -132,10 +132,13 @@ ledgerd/
 |
 |-- tests/                     Unit, property, and integration tests
 |   +-- src/testFixtures/java/io/justrade/ledgerd/testkit/   Test-only helpers (NOT the Edge SDK)
+|   |   |-- ClusterTestClient.java           Minimal AeronCluster client for integration tests
 |   |   |-- CommandFixtures.java             Encode envelopes, wrap decoders
 |   |   |-- InMemorySnapshot.java            Snapshot to/from an in-memory buffer
-|   |   |-- WorkloadGenerator.java           Deterministic pseudo-random workload
-|   |   +-- ClusterTestClient.java           Minimal AeronCluster client for integration tests
+|   |   |-- MultiNodeCluster.java            In-process multi-node cluster launcher
+|   |   |-- ParetoAccountSampler.java        Deterministic hot/cold account sampler for benchmarks
+|   |   |-- TransferBatchFixtures.java       Encode transfer batches, wrap decoders
+|   |   +-- WorkloadGenerator.java           Deterministic pseudo-random workload
 |   +-- src/test/java/io/justrade/ledgerd/      Test suites (see Test Coverage)
 |
 +-- docs/
@@ -375,11 +378,13 @@ toolkit. The cluster client here is a test harness only, never the shipped Edge 
 
 | Fixture             | Purpose                                                         |
 |---------------------|-----------------------------------------------------------------|
-| `CommandFixtures`   | Encode a `CommandEnvelope` and return a wrapped decoder         |
-| `InMemorySnapshot`  | Serialise/restore engine state via an in-memory record stream   |
-| `WorkloadGenerator` | Deterministic pseudo-random command workload (seeded)           |
-| `ClusterTestClient` | Minimal `AeronCluster` client that matches results by command id; supports an embedded media driver for fault tests |
-| `MultiNodeCluster`  | Launches an in-process multi-node cluster; stops/restarts nodes for failover and catch-up tests |
+| `ClusterTestClient`     | Minimal `AeronCluster` client that matches results by command id; supports an embedded media driver for fault tests |
+| `CommandFixtures`       | Encode a `CommandEnvelope` and return a wrapped decoder         |
+| `InMemorySnapshot`      | Serialise/restore engine state via an in-memory record stream   |
+| `MultiNodeCluster`      | Launches an in-process multi-node cluster; stops/restarts nodes for failover and catch-up tests |
+| `ParetoAccountSampler`  | Deterministic hot/cold account sampler for benchmark workloads   |
+| `TransferBatchFixtures` | Encode a `TransferBatch` and return a wrapped decoder (ADR 0012) |
+| `WorkloadGenerator`     | Deterministic pseudo-random command workload (seeded)           |
 
 Test suites are grouped by JUnit tag and Gradle task: `test` (unit), `integrationTest`
 (single-node, tag `integration`), `clusterTest` (multi-node, tag `cluster`),
@@ -405,7 +410,9 @@ and idempotency possible without the core knowing any real user identity.
 
 The reply is a `CommandResult` carrying the original `commandId` and a
 `StatusCode`: SUCCESS, INSUFFICIENT_BALANCE, INSUFFICIENT_ALLOWANCE,
-INVALID_ACCOUNT, DUPLICATE, OVERFLOW, INVALID_AMOUNT, INSUFFICIENT_RESERVED.
+INVALID_ACCOUNT, OVERFLOW, INVALID_AMOUNT, INSUFFICIENT_RESERVED. (`DUPLICATE`
+is a reserved enum value, never emitted: a retransmit replays the cached result
+with its original status.)
 
 ---
 
@@ -667,7 +674,12 @@ JVM must run with `--add-opens java.base/jdk.internal.misc=ALL-UNNAMED` and
 | `ReadReplicaArchiveModelClusterTest` / `ReadReplicaSnapshotLoadClusterTest` | Cluster | Read replica archive replication and snapshot load against a real cluster |
 | `FaultInjectionTest`        | Fault       | Leader killed mid-flight; retry applies exactly once       |
 | `ReadReplicaArchiveFailoverFaultTest` | Fault | Read replica fails over across member Archives (ADR 0008)  |
+| `RetryStormFailoverTest`    | Fault       | Leader killed then duplicate retry storm; applies exactly once |
 | `ChaosSoakTest`             | Soak        | Sustained load within the tail-latency budget              |
+| `ParetoContentionSoakTest`  | Soak        | Hot-account contention under sustained transfer load       |
+| `BatchThroughputSoakTest`   | Soak        | Batch size sweep; larger batches amortize consensus cost (ADR 0012) |
+| `TwoPhaseChurnSoakTest`     | Soak        | RESERVE/CAPTURE/RELEASE churn; conserved supply + tail budget |
+| `IdempotentRetryStormSoakTest` | Soak     | Single-node duplicate resend storm; no double-apply        |
 
 Test suites are grouped by JUnit tag and Gradle task: `test` (unit, no tag),
 `integrationTest` (tag `integration`), `clusterTest` (tag `cluster`), `faultTest`

@@ -124,8 +124,8 @@ supplies its own `ledgerd.nodeId` on the command line.
 
 Every snapshot includes balances, allowances, and the full dedup table (both single-command and
 transfer-batch entries). This means idempotency guarantees survive a restart: a node restarted
-from snapshot returns `DUPLICATE` for any command or batch already applied before the snapshot
-was taken.
+from snapshot replays the cached result (without re-applying) for any command or batch already
+applied before the snapshot was taken.
 
 ### Triggering a snapshot
 

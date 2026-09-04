@@ -364,7 +364,8 @@ client.submit(CommandType.DECREASE_ALLOWANCE, 1L, 9L, 0L, 25L);
 
 ```
 Submitting the same (clientId, clientSeq, commandId) a second time returns the cached
-result verbatim. The command is NOT re-applied. Status will be DUPLICATE.
+result verbatim: the original status and result fields, unchanged. The command is NOT
+re-applied. `StatusCode.DUPLICATE` is a reserved enum value and is never emitted.
 ```
 
 ```java
@@ -376,7 +377,7 @@ long seq1 = client.submit(CommandType.TRANSFER, 100L, 200L, 0L, 150L);
 // WriteClient does this automatically by reusing the same commandIdLo.
 // If you drive the raw wire yourself:
 //   send same (clientId=1, clientSeq=1, commandIdHi=1, commandIdLo=seq1)
-// ResultHandler: status=DUPLICATE, resultBalance=350 (cached, not recomputed)
+// ResultHandler: status=SUCCESS, resultBalance=350 (cached, not recomputed)
 ```
 
 `WriteClient` handles retransmission automatically on leader change and timeout, reusing the original
@@ -384,8 +385,9 @@ long seq1 = client.submit(CommandType.TRANSFER, 100L, 200L, 0L, 150L);
 track duplicates.
 
 > **Idempotency survives node restart**: the dedup table is included in every snapshot. A node
-> restarted from a snapshot returns `DUPLICATE` for any command applied before the snapshot was
-> taken. See [OPERATIONS.md - Snapshot Management](OPERATIONS.md#4-snapshot-management).
+> restarted from a snapshot replays the cached result (without re-applying) for any command
+> applied before the snapshot was taken. See
+> [OPERATIONS.md - Snapshot Management](OPERATIONS.md#4-snapshot-management).
 
 ---
 
@@ -599,16 +601,16 @@ long batchIdLo = client.submitTransferBatch(legs);
 | `INSUFFICIENT_BALANCE`  | 1     | Account balance is less than the requested amount.                  | DEBIT, TRANSFER sender, DELEGATED_TRANSFER owner.               |
 | `INSUFFICIENT_ALLOWANCE`| 2     | Allowance is less than the requested spend.                         | DELEGATED_TRANSFER; DECREASE_ALLOWANCE (current < delta).       |
 | `INVALID_ACCOUNT`       | 3     | Account does not exist.                                             | DEBIT (account missing), TRANSFER (sender missing), DELEGATED_TRANSFER (owner missing). |
-| `DUPLICATE`             | 4     | Cached result returned; command was not re-applied.                 | Retransmit of same `(clientId, clientSeq, commandId)`.          |
+| `DUPLICATE`             | 4     | Reserved enum value; never emitted. A retransmit replays the cached result with its original status. | Retransmit of same `(clientId, clientSeq)`; observable via `ledgerd_duplicates_detected`, not via status. |
 | `OVERFLOW`              | 5     | Operation would push balance or allowance above `Long.MAX_VALUE`.   | CREDIT large amount, TRANSFER recipient, INCREASE_ALLOWANCE, DELEGATED_TRANSFER recipient. |
 | `INVALID_AMOUNT`        | 6     | `amount` is negative.                                               | Any command submitted with `amount < 0`.                        |
 | `INSUFFICIENT_RESERVED` | 7     | Reserved (held) balance is less than the requested amount.          | RELEASE, CAPTURE (held funds too low).                          |
 | `INVALID_CHAIN`         | 8     | A transfer batch is structurally invalid (trailing `linked`, too large). | `submitTransferBatch` with a malformed chain.               |
 | `NULL_VAL`              | -1    | Uninitialized sentinel; never returned by the engine.               | Check `hasBalance`/`hasAllowance` rather than comparing to this value. |
 
-On any non-`SUCCESS` status (including `DUPLICATE`), `hasBalance` and `hasAllowance` are both
-`false`. The cached result on `DUPLICATE` carries the original `resultBalance`/`resultAllowance`
-from when the command first succeeded.
+For a freshly applied command, an error status leaves `hasBalance`/`hasAllowance` unset
+(`false`). A retransmit is not a status: the cached `CommandResult` is replayed verbatim, so its
+`status`, `has*` flags, and result fields are exactly those of the original application.
 
 ---
 

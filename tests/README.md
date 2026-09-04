@@ -28,6 +28,8 @@ so each tier can run independently in the build and in CI.
   encode a `TransferBatch` and return a wrapped decoder.
 - [InMemorySnapshot.java](src/testFixtures/java/io/justrade/ledgerd/testkit/InMemorySnapshot.java) -
   serialise/restore engine state via an in-memory record stream.
+- [ParetoAccountSampler.java](src/testFixtures/java/io/justrade/ledgerd/testkit/ParetoAccountSampler.java) -
+  deterministic hot/cold account sampler for benchmark workloads.
 - [WorkloadGenerator.java](src/testFixtures/java/io/justrade/ledgerd/testkit/WorkloadGenerator.java) -
   deterministic pseudo-random command workload (seeded).
 
@@ -37,6 +39,7 @@ so each tier can run independently in the build and in CI.
 ./gradlew test                   # unit + property
 ./gradlew integrationTest        # in-process single-node cluster
 ./gradlew clusterTest faultTest  # multi-node and fault-injection suites
+./gradlew soakTest               # sustained-load tail-latency / GC benchmarks
 ```
 
 Only `test` and `integrationTest` run in the default `check` gate.
