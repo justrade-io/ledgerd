@@ -10,6 +10,8 @@ plugins {
 dependencies {
     implementation(project(":launcher"))
     implementation(project(":write-client"))
+    implementation(project(":read"))
+    implementation(project(":read-client"))
     implementation(project(":core"))
     implementation(project(":protocol"))
     implementation(libs.bundles.aeron)

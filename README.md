@@ -116,7 +116,7 @@ walkthrough, and configuration are in
 | [`write-client`](write-client/README.md) | Write-side SDK: leader-change handling, idempotent retry, correlation |
 | [`read`](read/README.md) | CQRS read replica: Archive replication + failover, Aeron query responder, event follower |
 | [`read-client`](read-client/README.md) | Read-side SDK over plain Aeron request/response streams |
-| [`examples`](examples/README.md) | Runnable examples (QuickStart, RemoteClient) |
+| [`examples`](examples/README.md) | Runnable examples (QuickStart, BatchTransfer, RemoteClient, ReadClient) |
 | [`tests`](tests/README.md) | Unit, property, integration, cluster, fault, and soak suites |
 
 Wire and snapshot formats, data flows, and determinism rules live in
