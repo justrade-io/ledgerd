@@ -28,65 +28,21 @@ For cluster deployment, snapshot management, and observability see [OPERATIONS.m
 
 ## 1. Quick Start
 
-The fastest path: boot an in-process single-node cluster, connect a client, submit a credit and a
-transfer, and drain results.
-
-```java
-import io.justrade.ledgerd.write.client.WriteClient;
-import io.justrade.ledgerd.write.client.config.ClientConfig;
-import io.justrade.ledgerd.config.CoreConfig;
-import io.justrade.ledgerd.launcher.ClusterConfig;
-import io.justrade.ledgerd.launcher.ClusterNode;
-import io.justrade.ledgerd.protocol.CommandType;
-
-import java.nio.file.Files;
-import java.nio.file.Path;
-
-Path baseDir = Files.createTempDirectory("ledgerd-");
-ClusterConfig clusterConfig = ClusterConfig.singleNodeLocalhost(0, baseDir);
-
-try (ClusterNode node = new ClusterNode(clusterConfig, CoreConfig.defaults())) {
-
-    long[] lastIdLo = {-1L};
-    long[] lastBalance = {Long.MIN_VALUE};
-
-    ClientConfig config = ClientConfig
-            .builder(1L, ClusterConfig.ingressEndpoints(1))
-            .build();
-
-    try (WriteClient client = new WriteClient(config,
-            (idHi, idLo, status, balance, hasBalance, allowance, hasAllowance) -> {
-                lastIdLo[0] = idLo;
-                if (hasBalance) lastBalance[0] = balance;
-                System.out.println(status + " balance=" + (hasBalance ? balance : "n/a"));
-            })) {
-
-        // CREDIT account 100 with 500 units.
-        long creditId = client.submit(CommandType.CREDIT, 100L, 0L, 0L, 500L);
-        awaitResult(client, creditId, lastIdLo);   // resultBalance = 500
-
-        // TRANSFER 150 from account 100 to account 200.
-        long transferId = client.submit(CommandType.TRANSFER, 100L, 200L, 0L, 150L);
-        awaitResult(client, transferId, lastIdLo); // resultBalance = 350 (sender)
-    }
-}
-
-static void awaitResult(WriteClient client, long commandIdLo, long[] lastIdLo) {
-    long deadline = System.currentTimeMillis() + 15_000L;
-    while (System.currentTimeMillis() < deadline) {
-        client.poll();
-        if (lastIdLo[0] == commandIdLo) return;
-        Thread.onSpinWait();
-    }
-    throw new IllegalStateException("timeout waiting for commandIdLo=" + commandIdLo);
-}
-```
-
-Run the full version directly:
+The fastest path is the runnable quick-start example. It boots an in-process
+single-node cluster, connects a `WriteClient`, credits account 100 with 500, then
+transfers 150 to account 200, printing each correlated result as it arrives.
 
 ```bash
 ./gradlew :examples:run
 ```
+
+Expected output: the first result reports `SUCCESS balance=500`; the second
+`SUCCESS balance=350` (the sender's new balance after the transfer).
+
+[QuickStartExample.java](../examples/src/main/java/io/justrade/ledgerd/examples/QuickStartExample.java)
+is the single source of truth for the quick start - it includes the result-await
+loop and temp-cluster cleanup. The submit/poll loop patterns are documented in
+[Submit / Poll Event Loop Patterns](#6-submit--poll-event-loop-patterns).
 
 ---
 
@@ -792,6 +748,12 @@ try (ReadReplicaNode node = new ReadReplicaNode(replicaConfig, CoreConfig.defaul
     // across the member Archives if one becomes unreachable.
 }
 ```
+
+For an in-process replica booted alongside a single-node cluster (the quick-start
+variant), see
+[ReadClientExample.java](../examples/src/main/java/io/justrade/ledgerd/examples/ReadClientExample.java):
+it uses the single-channel `.archiveControlChannel(...)` and sets `.aeronDir(...)`
+to a sibling directory so its media driver never collides with the cluster's.
 
 Configured by environment variables via `io.justrade.ledgerd.read.ReadServiceLauncher`:
 `LEDGERD_ARCHIVE_CHANNELS` (comma-separated Archive control channels, one per

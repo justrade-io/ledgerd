@@ -90,7 +90,7 @@ public final class ReadClientExample {
             awaitWrite(write, write.submit(CommandType.TRANSFER, 100L, 200L, 0L, 150L), lastCommandIdLo);
 
             System.out.println("-> APPROVE delegate 9 to spend 200 from owner 1");
-            awaitWrite(write, write.submit(CommandType.APPROVE, 0L, 1L, 9L, 0L, 200L), lastCommandIdLo);
+            awaitWrite(write, write.submit(CommandType.APPROVE, 1L, 9L, 0L, 200L), lastCommandIdLo);
 
             System.out.println("Reading back through the read replica (eventually consistent):");
 

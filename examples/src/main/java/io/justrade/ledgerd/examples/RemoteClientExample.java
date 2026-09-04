@@ -9,7 +9,7 @@ import java.util.Random;
 
 /**
  * Connects to an already-running LEDGERD cluster (for example the three-node
- * cluster from {@code docker-compose.yml}), submits a credit and a transfer, and
+ * cluster from the operations guide), submits a credit and a transfer, and
  * prints the results. Unlike {@link QuickStartExample}, it does not start its own
  * cluster; it drives a remote one over the network.
  *
@@ -24,21 +24,22 @@ import java.util.Random;
  * <p>An optional {@code LEDGERD_SCENARIO} selects an alternate traffic pattern:
  * {@code multiasset} exercises multi-asset and holds commands; {@code risk} drives
  * a population of accounts exchanging money, plus transaction-velocity spikes and
- * money-flow hubs, so the AI risk dashboard (ADR 0012) fills with data and flags
- * accounts. Its scale is env-tunable ({@code LEDGERD_RISK_POPULATION},
- * {@code LEDGERD_RISK_BACKGROUND_TX}, {@code LEDGERD_RISK_SPIKE_ACCOUNTS},
- * {@code LEDGERD_RISK_HUBS}, {@code LEDGERD_RISK_HUB_SPOKES}, {@code LEDGERD_RISK_BURST});
- * with {@code LEDGERD_SCENARIO_LOOP=true} it repeats until the process is stopped.
+ * money-flow hubs, so downstream domain-event-journal consumers (ADR 0011) have
+ * representative data to observe. Its scale is env-tunable
+ * ({@code LEDGERD_RISK_POPULATION}, {@code LEDGERD_RISK_BACKGROUND_TX},
+ * {@code LEDGERD_RISK_SPIKE_ACCOUNTS}, {@code LEDGERD_RISK_HUBS},
+ * {@code LEDGERD_RISK_HUB_SPOKES}, {@code LEDGERD_RISK_BURST}); with
+ * {@code LEDGERD_SCENARIO_LOOP=true} it repeats until the process is stopped.
  */
 public final class RemoteClientExample {
 
     private static final long AWAIT_TIMEOUT_MS = 30_000L;
 
-    // Risk scenario (ADR 0012). A population of accounts exchanging money builds a
+    // Risk scenario (ADR 0011). A population of accounts exchanging money builds a
     // dense money-flow graph; a few accounts get a slow baseline then a fast burst
     // (velocity anomaly) and a few hubs fan out to many counterparties (high graph
-    // centrality). Scale knobs are env-overridable so the dashboard can be driven
-    // with as much data as wanted.
+    // centrality). Scale knobs are env-overridable so downstream journal consumers
+    // can be driven with as much data as wanted.
     private static final long POPULATION_BASE = 1L;
     private static final int POPULATION = 120;
     private static final long POPULATION_SEED_BALANCE = 1_000_000L;
@@ -83,7 +84,7 @@ public final class RemoteClientExample {
         final String egressEndpoint = System.getenv("LEDGERD_EGRESS_ENDPOINT");
         if (egressEndpoint != null && !egressEndpoint.isBlank()) {
             // When the client and cluster are on different hosts, advertise an
-            // endpoint the nodes can route back to (see docker/client-entrypoint.sh).
+            // endpoint the nodes can route results back to.
             configBuilder.egressChannel("aeron:udp?endpoint=" + egressEndpoint);
         }
         final ClientConfig config = configBuilder.build();
@@ -119,7 +120,7 @@ public final class RemoteClientExample {
     /**
      * Exercises the multi-asset (ADR 0009) and holds (ADR 0010) commands on fresh
      * accounts and assets so an operational check can observe both over the read
-     * HTTP API (available balances and per-asset supply). Held funds are inferred
+     * API (available balances and per-asset supply). Held funds are inferred
      * from the drop in available balance together with conserved supply, since the
      * read API exposes available balances, not the reserved bucket.
      */
@@ -142,11 +143,12 @@ public final class RemoteClientExample {
     }
 
     /**
-     * Drives the AI risk dashboard (ADR 0012): a transaction-velocity spike on one
-     * account and a money-flow hub fanning out to many counterparties, so the
-     * follower's velocity z-score and graph centrality features flag those
-     * accounts. With {@code LEDGERD_SCENARIO_LOOP=true} it repeats until stopped so the
-     * dashboard keeps showing live spike-then-decay behaviour.
+     * Drives a money-flow graph for downstream domain-event-journal consumers
+     * (ADR 0011): a transaction-velocity spike on one account and a money-flow hub
+     * fanning out to many counterparties, so a consumer can observe a velocity
+     * anomaly and high graph centrality on the journal. With
+     * {@code LEDGERD_SCENARIO_LOOP=true} it repeats until stopped so the journal
+     * keeps showing live spike-then-decay behaviour.
      */
     private static void runRiskScenario(final WriteClient client, final StatusCode[] lastStatus, final long[] lastId) {
         final boolean loop = Boolean.parseBoolean(envOrDefault("LEDGERD_SCENARIO_LOOP", "false"));
@@ -230,7 +232,7 @@ public final class RemoteClientExample {
             }
 
             System.out.printf(
-                    "OK: risk scenario committed (accounts=%d, leaderChanges=%d, completed=%d). Watch :8090.%n",
+                    "OK: risk scenario committed (accounts=%d, leaderChanges=%d, completed=%d).%n",
                     population, client.leaderChanges(), client.completed());
             if (loop) {
                 quietSleep(LOOP_PAUSE_MS);
@@ -248,7 +250,7 @@ public final class RemoteClientExample {
             final long accountA,
             final long accountB,
             final long amount) {
-        final long id = client.submit(type, 0L, accountA, accountB, 0L, amount);
+        final long id = client.submit(type, accountA, accountB, 0L, amount);
         awaitResult(client, id, lastId);
         if (lastStatus[0] != StatusCode.SUCCESS) {
             throw new IllegalStateException("risk scenario " + type + " a=" + accountA + " b=" + accountB + " amount="
