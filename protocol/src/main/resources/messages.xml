@@ -43,7 +43,7 @@
             <validValue name="INSUFFICIENT_BALANCE">1</validValue>
             <validValue name="INSUFFICIENT_ALLOWANCE">2</validValue>
             <validValue name="INVALID_ACCOUNT">3</validValue>
-            <validValue name="DUPLICATE">4</validValue>
+            <validValue name="DUPLICATE" description="Reserved. Never emitted: a retransmit replays the cached result with its original status.">4</validValue>
             <validValue name="OVERFLOW">5</validValue>
             <validValue name="INVALID_AMOUNT">6</validValue>
             <validValue name="INSUFFICIENT_RESERVED">7</validValue>
