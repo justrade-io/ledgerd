@@ -19,8 +19,11 @@ protocol. It is the implementation guide; ADR 0013 is the decision record.
 
 **Non-goals (first cut)**
 
-- `TRANSFER` edges and time-based risk (velocity, volume). Deferred to wiring the
-  domain event journal (ADR 0011) into the graph.
+- `TRANSFER` edges and time-based risk (velocity, volume). Deferred until a
+  read-side transfer-edge projection is added to the log replay path (section 9,
+  phase 3). The domain event journal (ADR 0011) is deliberately not the source:
+  it is an opt-in, lossy audit stream whose completeness contract does not match
+  a query projection.
 - A text query language. The structured query model is canonical; a text
   language can later compile into it.
 - Strong or linearizable reads (ADR 0005 keeps the eventually-consistent
@@ -359,7 +362,11 @@ All are enforced in the executor, not at the boundary:
    risk views; `GraphQueryRequest`/`GraphQueryResponse`; `read-client` builder.
 2. **Phase 2.** Variable-length BFS and `CondExists` (already specified here but
    exercisable independently), plus `delegation_cycles`.
-3. **Phase 3.** Wire the domain event journal (ADR 0011) to expose `TRANSFER`
-   edges and time-based risk (velocity, recently-active, transfer fan-out).
+3. **Phase 3.** Add a read-side `TransferEdgeStore` projection fed from the
+   engine's apply-time `TRANSFER` facts (`CommandOutcome`/`BatchOutcome`) that
+   `LiveLogSubscriber` already receives during log replay, and expose `TRANSFER`
+   edges plus time-based risk (velocity, recently-active, transfer fan-out). The
+   domain event journal (ADR 0011) is an opt-in, lossy audit stream and is
+   deliberately not used as the graph's source of truth.
 4. **Phase 4 (optional).** A text Cypher-like language compiled to `GraphQuery`
    in `read-client`, not on the read replica.

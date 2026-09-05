@@ -70,9 +70,11 @@ copied.
      `reserved`, and `exists`.
    - Node `Asset(assetId)` with property `totalSupply`.
    - Edge `ALLOWANCE(owner -> delegate, assetId)` with property `amount`.
-   `TRANSFER` edges are out of scope for the first cut; they live in the domain
-   event journal (ADR 0011) and can be added later without changing this
-   decision.
+   `TRANSFER` edges are out of scope for the first cut. They are derived from
+   the engine's apply-time outcome (`CommandOutcome`/`BatchOutcome` events that
+   the read replica already receives during log replay), not from the domain
+   event journal (ADR 0011), which is an opt-in, lossy audit stream and the
+   wrong completeness source for a query projection.
 
 5. **Two additive store capabilities, no core hot-path change.** Forward
    traversal needs a per-owner delegate iterator, and backward traversal needs a
@@ -108,8 +110,8 @@ protocol are specified in `docs/graph-query-engine.md`.
   number of allowances and a one-time O(allowances) build cost per applied
   position.
 - **Negative**: The first cut excludes `TRANSFER` edges, so time-based risk
-  (transfer volume, velocity, recently-active accounts) is deferred until the
-  event journal is wired into the graph.
+  (transfer volume, velocity, recently-active accounts) is deferred until a
+  read-side transfer-edge projection is added to the log replay path.
 - **Neutral**: The structured query model is less ergonomic than a text query
   language. The `read-client` SDK absorbs this with a fluent builder.
 
