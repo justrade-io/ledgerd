@@ -30,6 +30,7 @@
 - [Snapshot Format](#snapshot-format)
 - [Configuration](#configuration)
 - [Test Coverage](#test-coverage)
+- [Containerized Deployment](#containerized-deployment)
 - [Build and Run](#build-and-run)
 
 ---
@@ -65,6 +66,13 @@ ledgerd/
 |-- settings.gradle.kts             Gradle multi-module (8 modules)
 |-- build.gradle.kts                Shared conventions: JDK 21, spotless, checkstyle, -Werror
 |-- gradle/libs.versions.toml       Version catalog (Aeron, Agrona, SBE, JMH, ...)
+|-- Dockerfile                  Containerized build (Gradle -> Temurin 21 JRE)
+|-- .dockerignore
+|-- docker/                     Deployment topology + verification harness
+|   |-- docker-compose.yml          3-node cluster + read replica + one-off client/readcheck
+|   |-- entrypoint.sh               LEDGERD_ROLE dispatch (node / read / client / readcheck)
+|   |-- smoke-verify.sh             End-to-end smoke: load, snapshot, node kill, read failover
+|   +-- fault-verify.sh             Fault injection: kill leader mid-flight, assert exactly-once
 |
 |-- protocol/                  SBE schema + generated flyweight codecs
 |   |-- build.gradle.kts            SbeTool code generation task
@@ -105,10 +113,11 @@ ledgerd/
 |       +-- ClusterLauncher.java            main(): start one node, block until terminated
 |
 |-- write-client/                    Edge client SDK (depends only on protocol)
-|   +-- src/main/java/io/justrade/ledgerd/client/
+|   +-- src/main/java/io/justrade/ledgerd/write/client/
 |       |-- WriteClient.java                 Async submit/poll, leader-change resend, correlation
 |       |-- config/ClientConfig.java        Immutable client configuration
-|       +-- ResultHandler.java              Result callback correlated by command id
+|       |-- ResultHandler.java              Result callback correlated by command id
+|       +-- RetryPolicy.java                Pure retry-budget / leader-change resend decision
 |
 |-- read/                      Read side (CQRS query over a plain Aeron query protocol)
 |   +-- src/main/java/io/justrade/ledgerd/read/
@@ -128,7 +137,14 @@ ledgerd/
 |       |-- config/ReadClientConfig.java      Immutable read-client configuration
 |       +-- BalanceResult / AllowanceResult / TotalSupplyResult / QueryListener
 |
-|-- examples/                  Runnable examples (QuickStart, RemoteClient)
+|-- examples/                  Runnable examples + deployment-verification tools
+|   +-- src/main/java/io/justrade/ledgerd/examples/
+|       |-- QuickStartExample.java          Boot an in-process single-node cluster
+|       |-- RemoteClientExample.java        Drive a remote cluster (multiasset / risk scenarios)
+|       |-- BatchTransferExample.java       TransferBatch walkthrough (ADR 0012)
+|       |-- ReadClientExample.java          CQRS quick start: write then read back
+|       |-- LoadGenerator.java              Remote sustained load driver (Docker smoke / fault)
+|       +-- ReadCheck.java                  Read-replica convergence check (Docker harness)
 |
 |-- tests/                     Unit, property, and integration tests
 |   +-- src/testFixtures/java/io/justrade/ledgerd/testkit/   Test-only helpers (NOT the Edge SDK)
@@ -315,6 +331,20 @@ HdrHistogram latency measurement on top of an Aeron cluster client.
 | `ResultHandler`   | Callback invoked when a `CommandResult` is correlated to a request |
 | `PendingCommand`  | Pooled holder of an in-flight command's encoded bytes for verbatim resend |
 | `BackpressureException` | Signals a full in-flight window rather than silently dropping a command |
+| `RetryPolicy`     | Pure retry-budget and leader-change resend decision for one in-flight command |
+
+Leader-change handling rides the Aeron cluster client's `onNewLeader` callback.
+That callback fires only when the client receives the new leader's
+`NewLeaderEvent` on its egress subscription - never on the initial connect, which
+learns the leader from the connect handshake instead. On a leader death the
+surviving members first time out the leader heartbeat, elect a new leader, and
+then notify the client; only at that point does `WriteClient` set `retransmitAll`
+and resend every in-flight command with its original `commandId`, so the core
+dedup keeps the resend exactly-once. Until then recovery falls back to the retry
+backoff alone, so end-to-end failover recovery is dominated by the heartbeat
+timeout plus the election - observed on the order of ~15-20 s at default Aeron
+settings. Shortening that timeout trades faster failover against false-positive
+elections during network turbulence.
 
 ### read - Read Side (CQRS Query)
 
@@ -686,6 +716,57 @@ Test suites are grouped by JUnit tag and Gradle task: `test` (unit, no tag),
 (tag `fault`), and `soakTest` (tag `soak`). Only `test` and `integrationTest`
 run in the default `check` gate.
 
+Beyond the JUnit tiers, the `docker/` harness (`smoke-verify.sh`,
+`fault-verify.sh`) verifies the containerized deployment end-to-end - real bridge
+networking, process-level node kills, and the production `WriteClient` under
+load. See [Containerized Deployment](#containerized-deployment).
+
+---
+
+## Containerized Deployment
+
+A single compose topology under `docker/` materialises the ADR 0006/0007/0008
+deployment: a 3-node Raft write cluster plus one standalone read replica on one
+bridge network, with the load driver and read verification as one-off services.
+
+```mermaid
+flowchart LR
+    C["ledgerd-client\n(LoadGenerator)"] -->|" commands "| N0["ledgerd-node-0"]
+    C --> N1["ledgerd-node-1"]
+    C --> N2["ledgerd-node-2"]
+    N0 <-->|" Raft "| N1
+    N1 <--> N2
+    N2 <--> N0
+    R["ledgerd-read-0\n(read replica)"] -.->|" archive follow + failover "| N0
+    R -.-> N1
+    R -.-> N2
+    Q["ledgerd-readcheck\n(ReadCheck)"] -->|" QueryRequest "| R
+```
+
+One image (`ledgerd:local`) hosts every role; `entrypoint.sh` dispatches on
+`LEDGERD_ROLE` to a cluster node, the read replica, the load driver, or the read
+verification. Nodes advertise DNS names (`ledgerd-node-0`, ...) on the bridge
+network, the read replica sets `LEDGERD_LOCAL_HOST` and fails over across all
+three member Archive endpoints, and the client / readcheck advertise their own
+service name as their egress / response endpoint so results route back across the
+network.
+
+Two scripts drive deployment-level verification, distinct from the in-process
+JUnit tiers:
+
+- `smoke-verify.sh` - build, start the topology, drive a deterministic load,
+  assert read-replica convergence, trigger a snapshot on the leader, kill node 0,
+  and assert the surviving 2-node quorum still commits and the read replica fails
+  over (ADR 0008).
+- `fault-verify.sh` - kill the current leader mid-flight while the production
+  `WriteClient` is under sustained load, and assert exactly-once across the
+  leadership change.
+
+The client and readcheck launch embedded media drivers whose term buffers map
+into `/dev/shm`, so those services raise `shm_size` above Docker's 64 MB default.
+This harness verifies correctness and HA, not latency: tail-latency contracts are
+asserted by `soakTest` and JMH on bare metal.
+
 ---
 
 ## Build and Run
@@ -706,6 +787,10 @@ run in the default `check` gate.
 
 # Run a read node (eventually-consistent Aeron query API)
 ./gradlew :read:run
+
+# Containerized deployment verification (Docker + Compose)
+./docker/smoke-verify.sh
+./docker/fault-verify.sh
 ```
 
 Toolchain: JDK 21 LTS. Aeron 1.48, Agrona 2.2, SBE 1.35. The dependency chain

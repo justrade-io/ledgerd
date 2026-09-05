@@ -15,7 +15,11 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-TOTAL="${LEDGERD_TOTAL:-50000}"
+# The load must outlast the failover (leader heartbeat timeout + election, on the
+# order of ~20s at default Aeron settings) so the kill lands mid-flight and the
+# client observes the onNewLeader retransmit. At ~200k cmds/s this needs millions
+# of commands; lower the value only if the failover is tuned faster.
+TOTAL="${LEDGERD_TOTAL:-3000000}"
 COMPOSE_FILE="docker/docker-compose.yml"
 LOG="/tmp/ledgerd-fault-load.log"
 
@@ -98,11 +102,16 @@ fi
 echo "==> load summary:"
 cat "$LOG"
 
-# Note: WriteClient.leaderChanges may stay 0 even across a real leadership
-# change in this scenario (the client can recover via time-based retry rather
-# than the onNewLeader retransmit-all path). The exactly-once assertions below
-# (load exit code + read replica convergence) are the real oracle, not this
-# counter, so it is printed for information only.
+# The kill must have produced an observable leadership change for the test to be
+# meaningful (otherwise the load finished before the failover and the "mid-flight"
+# kill never happened). onNewLeader fires when the client receives the new
+# leader's NewLeaderEvent, so leaderChanges reflects the actual failover.
+leader_changes="$(grep -oE 'leaderChanges=[0-9]+' "$LOG" | head -n1 | sed 's/leaderChanges=//' || true)"
+if [[ -z "$leader_changes" || "$leader_changes" -lt 1 ]]; then
+  echo "expected at least one leader change after the kill, got: ${leader_changes:-none}" >&2
+  exit 1
+fi
+echo "   observed leaderChanges=$leader_changes"
 
 echo "==> verify exactly-once: read replica converges to supply=$TOTAL"
 compose run -T --rm --no-deps \
