@@ -1,0 +1,142 @@
+# Full LEDGERD topology (ADR 0006/0007/0008): a 3-node Raft write cluster plus
+# one standalone read replica on a single user-defined bridge network. The load
+# driver (ledgerd-client) and read verification (ledgerd-readcheck) are one-off
+# services driven by `docker compose run`, not started by `up`.
+#
+# Networking notes:
+# - Cluster members advertise DNS names (ledgerd-node-0/1/2), resolvable on the
+#   bridge network. Ports follow PORT_BASE=20100 with PORT_STRIDE=100 per node:
+#   ingress, consensus, log, catchup, archive.
+# - The read replica advertises LEDGERD_LOCAL_HOST=ledgerd-read-0 so each node's
+#   Archive can connect back to it, and fails over across all three Archive
+#   endpoints (ADR 0008).
+# - The client and readcheck advertise their own service name as the egress /
+#   response endpoint so nodes can route results back across the network.
+
+name: ledgerd
+
+x-cluster-members: &cluster-members "0,ledgerd-node-0:20100,ledgerd-node-0:20101,ledgerd-node-0:20102,ledgerd-node-0:20103,ledgerd-node-0:20104|1,ledgerd-node-1:20200,ledgerd-node-1:20201,ledgerd-node-1:20202,ledgerd-node-1:20203,ledgerd-node-1:20204|2,ledgerd-node-2:20300,ledgerd-node-2:20301,ledgerd-node-2:20302,ledgerd-node-2:20303,ledgerd-node-2:20304"
+x-archive-channels: &archive-channels "aeron:udp?endpoint=ledgerd-node-0:20104,aeron:udp?endpoint=ledgerd-node-1:20204,aeron:udp?endpoint=ledgerd-node-2:20304"
+x-ingress-endpoints: &ingress-endpoints "0=ledgerd-node-0:20100,1=ledgerd-node-1:20200,2=ledgerd-node-2:20300"
+x-ledgerd-image: &ledgerd-image
+  image: ledgerd:local
+  build:
+    context: ..
+    dockerfile: Dockerfile
+
+services:
+  ledgerd-node-0:
+    <<: *ledgerd-image
+    hostname: ledgerd-node-0
+    environment:
+      LEDGERD_ROLE: node
+      LEDGERD_NODE_ID: "0"
+      LEDGERD_HOST: ledgerd-node-0
+      LEDGERD_BASE_DIR: /data
+      LEDGERD_METRICS_PORT: "9100"
+      LEDGERD_CLUSTER_MEMBERS: *cluster-members
+    volumes:
+      - node0-data:/data
+    ports:
+      - "9100:9100"
+    networks:
+      - ledgerd
+
+  ledgerd-node-1:
+    <<: *ledgerd-image
+    hostname: ledgerd-node-1
+    environment:
+      LEDGERD_ROLE: node
+      LEDGERD_NODE_ID: "1"
+      LEDGERD_HOST: ledgerd-node-1
+      LEDGERD_BASE_DIR: /data
+      LEDGERD_METRICS_PORT: "9101"
+      LEDGERD_CLUSTER_MEMBERS: *cluster-members
+    volumes:
+      - node1-data:/data
+    ports:
+      - "9101:9101"
+    networks:
+      - ledgerd
+
+  ledgerd-node-2:
+    <<: *ledgerd-image
+    hostname: ledgerd-node-2
+    environment:
+      LEDGERD_ROLE: node
+      LEDGERD_NODE_ID: "2"
+      LEDGERD_HOST: ledgerd-node-2
+      LEDGERD_BASE_DIR: /data
+      LEDGERD_METRICS_PORT: "9102"
+      LEDGERD_CLUSTER_MEMBERS: *cluster-members
+    volumes:
+      - node2-data:/data
+    ports:
+      - "9102:9102"
+    networks:
+      - ledgerd
+
+  ledgerd-read-0:
+    <<: *ledgerd-image
+    hostname: ledgerd-read-0
+    environment:
+      LEDGERD_ROLE: read
+      LEDGERD_LOCAL_HOST: ledgerd-read-0
+      LEDGERD_AERON_DIR: /data/driver
+      LEDGERD_QUERY_CHANNEL: "aeron:udp?endpoint=ledgerd-read-0:44000"
+      LEDGERD_ARCHIVE_CHANNELS: *archive-channels
+    volumes:
+      - read0-data:/data
+    depends_on:
+      - ledgerd-node-0
+      - ledgerd-node-1
+      - ledgerd-node-2
+    networks:
+      - ledgerd
+
+  ledgerd-client:
+    <<: *ledgerd-image
+    hostname: ledgerd-client
+    # The client launches its own embedded media driver, which maps its term
+    # buffers into /dev/shm; Docker's 64MB default is too small for Aeron.
+    shm_size: "512m"
+    environment:
+      LEDGERD_ROLE: client
+      LEDGERD_CLIENT_ID: "1"
+      LEDGERD_TOTAL: "10000"
+      LEDGERD_MAX_IN_FLIGHT: "1024"
+      LEDGERD_INGRESS_ENDPOINTS: *ingress-endpoints
+      LEDGERD_EGRESS_ENDPOINT: ledgerd-client
+    depends_on:
+      - ledgerd-node-0
+      - ledgerd-node-1
+      - ledgerd-node-2
+    networks:
+      - ledgerd
+
+  ledgerd-readcheck:
+    <<: *ledgerd-image
+    hostname: ledgerd-readcheck
+    # ReadClient also launches an embedded media driver into /dev/shm.
+    shm_size: "512m"
+    environment:
+      LEDGERD_ROLE: readcheck
+      LEDGERD_QUERY_HOST: ledgerd-read-0
+      LEDGERD_RESPONSE_HOST: ledgerd-readcheck
+      LEDGERD_EXPECT_SUPPLY: "0"
+      LEDGERD_EXPECT_BALANCE_A: "0"
+      LEDGERD_EXPECT_BALANCE_B: "0"
+    depends_on:
+      - ledgerd-read-0
+    networks:
+      - ledgerd
+
+networks:
+  ledgerd:
+    driver: bridge
+
+volumes:
+  node0-data:
+  node1-data:
+  node2-data:
+  read0-data:

@@ -1,0 +1,12 @@
+.git
+.gradle
+**/build
+.idea
+.vscode
+.qwen
+*.iml
+out
+gen
+tmp
+*.log
+docs/sessions
