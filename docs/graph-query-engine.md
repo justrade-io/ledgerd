@@ -19,11 +19,11 @@ protocol. It is the implementation guide; ADR 0013 is the decision record.
 
 **Non-goals (first cut)**
 
-- `TRANSFER` edges and time-based risk (velocity, volume). Deferred until a
-  read-side transfer-edge projection is added to the log replay path (section 9,
-  phase 3). The domain event journal (ADR 0011) is deliberately not the source:
-  it is an opt-in, lossy audit stream whose completeness contract does not match
-  a query projection.
+- `TRANSFER` edges and time-based risk (velocity, volume, recently-active
+  accounts). Deferred until a read-side transfer-edge projection is added to
+  the log replay path (section 9, phase 3). The domain event journal (ADR 0011)
+  is deliberately not the source: it is an opt-in, lossy audit stream whose
+  completeness contract does not match a query projection.
 - A text query language. The structured query model is canonical; a text
   language can later compile into it.
 - Strong or linearizable reads (ADR 0005 keeps the eventually-consistent
@@ -44,8 +44,8 @@ flowchart LR
     Owner -- "ALLOWANCE\nprop: amount" --> Delegate
 ```
 
-- **Node `Account(assetId, accountId)`** - properties `balance` (available),
-  `reserved`, `exists`. Sourced from `BalanceStore`.
+- **Node `Account(assetId, accountId)`** - properties `balance` (available) and
+  `reserved`. Sourced from `BalanceStore`.
 - **Node `Asset(assetId)`** - property `totalSupply`. Sourced from
   `BalanceStore.forEachSupplySorted`.
 - **Edge `ALLOWANCE(owner -> delegate, assetId)`** - property `amount`. Sourced
@@ -261,8 +261,8 @@ expandSteps(index, steps, i, b, out, deadline):
 
 `eval(where, b)` walks the `Condition` tree. `CondLeaf` resolves the bound
 variable's property and applies the operator against the literal. `CondExists`
-checks a single-hop edge existence from the anchor variable (used for
-dormant-allowance queries: `NOT EXISTS` an inbound edge with a non-zero amount).
+checks a single-hop edge existence from the anchor variable (for example
+`NOT EXISTS { (d)<-[:ALLOWANCE]-() }`, accounts that receive no allowance).
 
 ### 5.5 Aggregation and projection
 
@@ -370,3 +370,27 @@ All are enforced in the executor, not at the boundary:
    deliberately not used as the graph's source of truth.
 4. **Phase 4 (optional).** A text Cypher-like language compiled to `GraphQuery`
    in `read-client`, not on the read replica.
+
+### 9.1 Transfer-edge retention
+
+`TransferEdgeStore` is the first graph projection that is unbounded by nature:
+every committed transfer appends a record, unlike `BalanceStore` and
+`AllowanceStore`, whose size is bounded by account and allowance count. It is
+therefore always bounded, with one knob and a safe default:
+
+- **`transferEdgeWindow`** - the maximum number of retained transfer edges
+  (count-based, fixed capacity, power of two, default 1 048 576). When full, the
+  oldest edges are evicted as new transfers arrive, so memory stays bounded
+  regardless of volume.
+
+One knob is enough because every risk view that consumes `TRANSFER` edges -
+velocity, volume, recently-active, fan-out - is a windowed metric. Velocity and
+volume are therefore reported as "rate over the retained window", which is the
+correct semantics for risk. No risk signal needs all-time transfer history, so a
+bounded window is not a limitation, and it removes the need for a full-history
+mode, an acknowledgement flag, and a startup guard: the window cannot overflow
+memory.
+
+Full-history and forensic questions belong to the domain event journal (ADR
+0011), the durable, replayable audit stream. The graph projection answers "what
+is the recent risk picture", never "what happened historically".

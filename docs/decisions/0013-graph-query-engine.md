@@ -76,14 +76,14 @@ copied.
    event journal (ADR 0011), which is an opt-in, lossy audit stream and the
    wrong completeness source for a query projection.
 
-5. **Two additive store capabilities, no core hot-path change.** Forward
-   traversal needs a per-owner delegate iterator, and backward traversal needs a
-   reverse (delegate -> owners) view. Forward iteration is an additive
-   `forEachDelegate` accessor on `AllowanceStore` (cold read path, never the
-   consensus hot path). The reverse view is an `AllowanceReverseIndex`
-   projection maintained by the read replica during log replay and invalidated
-   on every `appliedPosition` advance; it is not added to `core`, so the
-   deterministic single-command and batch hot paths are untouched.
+5. **Two additive capabilities, no core hot-path change.** Forward traversal
+   needs a per-owner delegate iterator, and backward traversal needs a reverse
+   (delegate -> owners) view. Forward iteration is an additive `forEachDelegate`
+   accessor on `AllowanceStore` (cold read path, never the consensus hot path).
+   The reverse view is an `AllowanceReverseIndex` projection rebuilt lazily by
+   the read replica from `AllowanceStore.forEachSorted` and invalidated on every
+   `appliedPosition` advance; it is not added to `core`, so the deterministic
+   single-command and batch hot paths are untouched.
 
 6. **Bounded execution with fail-closed semantics.** Every query carries a
    wall-clock budget, a row ceiling, and a traversal depth cap, all checked in
@@ -106,8 +106,8 @@ protocol are specified in `docs/graph-query-engine.md`.
 - **Positive**: Allocation and CPU are confined to the read replica and bounded
   per query, so a query cannot stall replication or starve the point-lookup path.
 - **Negative**: Inbound (delegate -> owners) traversal requires the read replica
-  to maintain a reverse projection, which is extra memory proportional to the
-  number of allowances and a one-time O(allowances) build cost per applied
+  to build and cache a reverse projection, which is extra memory proportional to
+  the number of allowances and a one-time O(allowances) build cost per applied
   position.
 - **Negative**: The first cut excludes `TRANSFER` edges, so time-based risk
   (transfer volume, velocity, recently-active accounts) is deferred until a
