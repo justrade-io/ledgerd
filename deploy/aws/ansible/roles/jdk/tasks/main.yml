@@ -1,0 +1,37 @@
+---
+- name: Create JDK install directory
+  ansible.builtin.file:
+    path: "{{ jdk_home }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Check for existing JDK
+  ansible.builtin.stat:
+    path: "{{ jdk_home }}/bin/java"
+  register: jdk_binary
+
+- name: Download Temurin JDK {{ jdk_major }}
+  ansible.builtin.get_url:
+    url: "https://api.adoptium.net/v3/binary/latest/{{ jdk_major }}/ga/linux/x64/jdk/hotspot/normal/eclipse?project=jdk"
+    dest: "/tmp/temurin-{{ jdk_major }}.tar.gz"
+    mode: "0644"
+    timeout: 600
+  when: not jdk_binary.stat.exists
+
+- name: Extract JDK
+  ansible.builtin.unarchive:
+    src: "/tmp/temurin-{{ jdk_major }}.tar.gz"
+    dest: "{{ jdk_home }}"
+    remote_src: true
+    extra_opts: [--strip-components=1]
+    owner: root
+    group: root
+  when: not jdk_binary.stat.exists
+
+- name: Clean up JDK archive
+  ansible.builtin.file:
+    path: "/tmp/temurin-{{ jdk_major }}.tar.gz"
+    state: absent
+  when: not jdk_binary.stat.exists

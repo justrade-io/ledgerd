@@ -18,6 +18,7 @@ import io.justrade.ledgerd.telemetry.AtomicCounterSink;
 import io.justrade.ledgerd.telemetry.CoreMetrics;
 import io.justrade.ledgerd.telemetry.CounterSink;
 import java.util.Arrays;
+import java.util.Locale;
 import org.agrona.BitUtil;
 import org.agrona.BufferUtil;
 import org.agrona.DirectBuffer;
@@ -63,6 +64,21 @@ public final class ReadReplicaNode implements AutoCloseable {
     private static final long STARTUP_CONNECT_TIMEOUT_MS = 10_000L;
     private static final long LIVE_LOG_RECONNECT_BACKOFF_MS = 250L;
     private static final System.Logger LOG = System.getLogger(ReadReplicaNode.class.getName());
+
+    /** System property selecting the media driver threading mode (default SHARED). */
+    private static final String THREADING_MODE_PROP = "ledgerd.threadingMode";
+
+    /** System property for the UDP socket send buffer (SO_SNDBUF) in bytes. */
+    private static final String SOCKET_SNDBUF_PROP = "ledgerd.socketSndbufLength";
+
+    /** System property for the UDP socket receive buffer (SO_RCVBUF) in bytes. */
+    private static final String SOCKET_RCVBUF_PROP = "ledgerd.socketRcvbufLength";
+
+    /** Default UDP socket send buffer in bytes (16 MB). */
+    private static final int DEFAULT_SOCKET_SNDBUF_LENGTH = 16 * 1024 * 1024;
+
+    /** Default UDP socket receive buffer in bytes (16 MB). */
+    private static final int DEFAULT_SOCKET_RCVBUF_LENGTH = 16 * 1024 * 1024;
 
     private final MediaDriver mediaDriver;
     private final Aeron aeron;
@@ -170,7 +186,9 @@ public final class ReadReplicaNode implements AutoCloseable {
         try {
             driver = MediaDriver.launch(new MediaDriver.Context()
                     .aeronDirectoryName(aeronDir)
-                    .threadingMode(ThreadingMode.SHARED)
+                    .threadingMode(resolveThreadingMode())
+                    .socketSndbufLength(Integer.getInteger(SOCKET_SNDBUF_PROP, DEFAULT_SOCKET_SNDBUF_LENGTH))
+                    .socketRcvbufLength(Integer.getInteger(SOCKET_RCVBUF_PROP, DEFAULT_SOCKET_RCVBUF_LENGTH))
                     .dirDeleteOnStart(true)
                     .dirDeleteOnShutdown(true));
             aeronClient = Aeron.connect(new Aeron.Context().aeronDirectoryName(aeronDir));
@@ -231,6 +249,17 @@ public final class ReadReplicaNode implements AutoCloseable {
                     // Best-effort cleanup after a failed startup.
                 }
             }
+        }
+    }
+
+    private static ThreadingMode resolveThreadingMode() {
+        final String value = System.getProperty(THREADING_MODE_PROP, ThreadingMode.SHARED.name());
+        try {
+            return ThreadingMode.valueOf(value.trim().toUpperCase(Locale.ROOT));
+        } catch (final IllegalArgumentException e) {
+            throw new IllegalArgumentException(
+                    THREADING_MODE_PROP + " must be one of INVOKER, SHARED, SHARED_NETWORK, DEDICATED, was: " + value,
+                    e);
         }
     }
 

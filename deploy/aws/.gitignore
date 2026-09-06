@@ -1,0 +1,19 @@
+# Terraform local state and provider cache
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.*
+terraform/*.tfplan
+
+# Generated SSH key (POC only; never commit)
+.ssh/
+*.pem
+
+# Auto-generated Ansible inventory
+ansible/inventory/hosts.yml
+
+# Ansible artifacts
+*.retry
+
+# Locally built distribution and bench results
+build/
+bench/results/

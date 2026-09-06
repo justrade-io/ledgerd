@@ -1,0 +1,49 @@
+---
+# Preflight on the control node: the distribution tar must exist before we try
+# to copy it to the instances. Build it first with:
+#   ./gradlew :examples:distTar
+- name: Preflight
+  hosts: localhost
+  gather_facts: false
+  vars:
+    dist_tar: "{{ playbook_dir }}/../../../examples/build/distributions/examples.tar"
+  tasks:
+    - name: Verify distribution tar exists
+      ansible.builtin.stat:
+        path: "{{ dist_tar }}"
+      register: dist_stat
+      failed_when: not dist_stat.stat.exists
+
+- name: Base (JDK + distribution)
+  hosts: nodes,read,bench
+  become: true
+  vars:
+    ledgerd_dist_tar: "{{ playbook_dir }}/../../../examples/build/distributions/examples.tar"
+  roles:
+    - jdk
+    - common
+
+- name: Cluster nodes
+  hosts: nodes
+  become: true
+  roles:
+    - ledgerd-node
+
+- name: Read replica
+  hosts: read
+  become: true
+  roles:
+    - ledgerd-read
+
+- name: Monitoring (Prometheus + Grafana)
+  hosts: monitor
+  become: true
+  roles:
+    - prometheus
+    - grafana
+
+- name: Bench driver
+  hosts: bench
+  become: true
+  roles:
+    - bench

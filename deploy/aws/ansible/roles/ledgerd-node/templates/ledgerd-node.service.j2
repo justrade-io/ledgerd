@@ -1,0 +1,31 @@
+[Unit]
+Description=LEDGERD cluster node {{ ledgerd_node_id }}
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={{ ledgerd_user }}
+Group={{ ledgerd_user }}
+Environment=JAVA_HOME={{ jdk_home }}
+ExecStart={{ jdk_home }}/bin/java \
+  -Xms{{ ledgerd_heap }} -Xmx{{ ledgerd_heap }} \
+  -XX:+UseZGC -XX:+AlwaysPreTouch -XX:+ExitOnOutOfMemoryError \
+  --add-opens java.base/jdk.internal.misc=ALL-UNNAMED \
+  --add-opens java.base/sun.nio.ch=ALL-UNNAMED \
+  -Dledgerd.nodeId={{ ledgerd_node_id }} \
+  -Dledgerd.cleanStart={{ ledgerd_clean_start | lower }} \
+  -Dledgerd.metricsPort={{ ledgerd_metrics_base_port + (ledgerd_node_id | int) }} \
+  -Dledgerd.threadingMode={{ ledgerd_threading_mode }} \
+  -Dledgerd.socketSndbufLength={{ ledgerd_socket_buf_length }} \
+  -Dledgerd.socketRcvbufLength={{ ledgerd_socket_buf_length }} \
+  -cp "{{ ledgerd_lib_dir }}/*" \
+  io.justrade.ledgerd.launcher.ClusterLauncher \
+  --config=/etc/ledgerd/node.properties
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=1048576
+LimitMEMLOCK=infinity
+
+[Install]
+WantedBy=multi-user.target

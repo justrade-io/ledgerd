@@ -1,0 +1,45 @@
+---
+- name: Format data volume
+  community.general.filesystem:
+    fstype: ext4
+    dev: "{{ ledgerd_data_device }}"
+  when: ledgerd_data_device | length > 0
+
+- name: Mount data volume
+  ansible.posix.mount:
+    path: "{{ ledgerd_data_root }}"
+    src: "{{ ledgerd_data_device }}"
+    fstype: ext4
+    state: mounted
+  when: ledgerd_data_device | length > 0
+
+- name: Ensure data directory ownership
+  ansible.builtin.file:
+    path: "{{ ledgerd_data_root }}"
+    state: directory
+    owner: "{{ ledgerd_user }}"
+    group: "{{ ledgerd_user }}"
+    mode: "0755"
+
+- name: Render node properties
+  ansible.builtin.template:
+    src: node.properties.j2
+    dest: /etc/ledgerd/node.properties
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install node systemd unit
+  ansible.builtin.template:
+    src: ledgerd-node.service.j2
+    dest: /etc/systemd/system/ledgerd-node.service
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Enable and start node
+  ansible.builtin.systemd:
+    name: ledgerd-node
+    daemon_reload: true
+    enabled: true
+    state: started

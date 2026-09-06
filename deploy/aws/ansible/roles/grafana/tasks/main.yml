@@ -1,0 +1,92 @@
+---
+- name: Create grafana user
+  ansible.builtin.user:
+    name: grafana
+    system: true
+    create_home: false
+    shell: /usr/sbin/nologin
+
+- name: Create grafana directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: grafana
+    group: grafana
+    mode: "0755"
+  loop:
+    - /opt/grafana
+    - /etc/grafana
+    - /etc/grafana/provisioning/datasources
+    - /etc/grafana/provisioning/dashboards
+    - /var/lib/grafana
+    - /var/log/grafana
+
+- name: Check grafana binary
+  ansible.builtin.stat:
+    path: /opt/grafana/bin/grafana
+  register: grafana_binary
+
+- name: Download Grafana
+  ansible.builtin.get_url:
+    url: "https://dl.grafana.com/oss/release/grafana-{{ grafana_version }}.linux-amd64.tar.gz"
+    dest: "/tmp/grafana-{{ grafana_version }}.tar.gz"
+    mode: "0644"
+    timeout: 600
+  when: not grafana_binary.stat.exists
+
+- name: Extract Grafana
+  ansible.builtin.unarchive:
+    src: "/tmp/grafana-{{ grafana_version }}.tar.gz"
+    dest: /opt/grafana
+    remote_src: true
+    extra_opts: [--strip-components=1]
+    owner: grafana
+    group: grafana
+  when: not grafana_binary.stat.exists
+
+- name: Render grafana config
+  ansible.builtin.template:
+    src: grafana.ini.j2
+    dest: /etc/grafana/grafana.ini
+    owner: grafana
+    group: grafana
+    mode: "0644"
+
+- name: Provision Prometheus datasource
+  ansible.builtin.template:
+    src: datasources.yml.j2
+    dest: /etc/grafana/provisioning/datasources/prometheus.yml
+    owner: grafana
+    group: grafana
+    mode: "0644"
+
+- name: Provision dashboard provider
+  ansible.builtin.template:
+    src: dashboards.yml.j2
+    dest: /etc/grafana/provisioning/dashboards/provider.yml
+    owner: grafana
+    group: grafana
+    mode: "0644"
+
+- name: Provision LEDGERD dashboard
+  ansible.builtin.copy:
+    src: ledgerd-dashboard.json
+    dest: /etc/grafana/provisioning/dashboards/ledgerd.json
+    owner: grafana
+    group: grafana
+    mode: "0644"
+
+- name: Install grafana systemd unit
+  ansible.builtin.template:
+    src: grafana.service.j2
+    dest: /etc/systemd/system/grafana.service
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Enable and start Grafana
+  ansible.builtin.systemd:
+    name: grafana
+    daemon_reload: true
+    enabled: true
+    state: started

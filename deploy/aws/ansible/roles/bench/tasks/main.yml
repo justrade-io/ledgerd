@@ -1,0 +1,24 @@
+---
+- name: Install bench script
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../bench/run-bench.sh"
+    dest: /usr/local/bin/ledgerd-bench
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Render bench environment
+  ansible.builtin.template:
+    src: bench.env.j2
+    dest: /etc/ledgerd/bench.env
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Create bench results directory
+  ansible.builtin.file:
+    path: "{{ ledgerd_data_root }}/bench"
+    state: directory
+    owner: "{{ ledgerd_user }}"
+    group: "{{ ledgerd_user }}"
+    mode: "0755"

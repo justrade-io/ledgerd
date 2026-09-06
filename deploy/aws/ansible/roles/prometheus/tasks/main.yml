@@ -1,0 +1,65 @@
+---
+- name: Create prometheus user
+  ansible.builtin.user:
+    name: prometheus
+    system: true
+    create_home: false
+    shell: /usr/sbin/nologin
+
+- name: Create prometheus directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: prometheus
+    group: prometheus
+    mode: "0755"
+  loop:
+    - /opt/prometheus
+    - /etc/prometheus
+    - /var/lib/prometheus
+
+- name: Check prometheus binary
+  ansible.builtin.stat:
+    path: /opt/prometheus/prometheus
+  register: prometheus_binary
+
+- name: Download Prometheus
+  ansible.builtin.get_url:
+    url: "https://github.com/prometheus/prometheus/releases/download/v{{ prometheus_version }}/prometheus-{{ prometheus_version }}.linux-amd64.tar.gz"
+    dest: "/tmp/prometheus-{{ prometheus_version }}.tar.gz"
+    mode: "0644"
+    timeout: 600
+  when: not prometheus_binary.stat.exists
+
+- name: Extract Prometheus
+  ansible.builtin.unarchive:
+    src: "/tmp/prometheus-{{ prometheus_version }}.tar.gz"
+    dest: /opt/prometheus
+    remote_src: true
+    extra_opts: [--strip-components=1]
+    owner: prometheus
+    group: prometheus
+  when: not prometheus_binary.stat.exists
+
+- name: Render prometheus config
+  ansible.builtin.template:
+    src: prometheus.yml.j2
+    dest: /etc/prometheus/prometheus.yml
+    owner: prometheus
+    group: prometheus
+    mode: "0644"
+
+- name: Install prometheus systemd unit
+  ansible.builtin.template:
+    src: prometheus.service.j2
+    dest: /etc/systemd/system/prometheus.service
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Enable and start Prometheus
+  ansible.builtin.systemd:
+    name: prometheus
+    daemon_reload: true
+    enabled: true
+    state: started

@@ -1,0 +1,49 @@
+---
+- name: Create ledgerd system user
+  ansible.builtin.user:
+    name: "{{ ledgerd_user }}"
+    system: true
+    create_home: false
+    shell: /usr/sbin/nologin
+
+- name: Create install and data directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ ledgerd_user }}"
+    group: "{{ ledgerd_user }}"
+    mode: "0755"
+  loop:
+    - "{{ ledgerd_install_root }}"
+    - "{{ ledgerd_data_root }}"
+
+- name: Copy distribution archive
+  ansible.builtin.copy:
+    src: "{{ ledgerd_dist_tar }}"
+    dest: /tmp/ledgerd-dist.tar
+    owner: "{{ ledgerd_user }}"
+    group: "{{ ledgerd_user }}"
+    mode: "0644"
+
+- name: Extract distribution
+  ansible.builtin.unarchive:
+    src: /tmp/ledgerd-dist.tar
+    dest: "{{ ledgerd_install_root }}"
+    remote_src: true
+    owner: "{{ ledgerd_user }}"
+    group: "{{ ledgerd_user }}"
+
+# Aeron uses UDP sockets with large buffers to avoid drops under burst load.
+# Bump the OS max (rmem_max/wmem_max) so SO_RCVBUF/SO_SNDBUF can actually be
+# raised, and set the defaults for any socket that does not request a size.
+- name: Tune UDP socket buffers for Aeron
+  ansible.posix.sysctl:
+    name: "{{ item.name }}"
+    value: "{{ item.value }}"
+    sysctl_set: true
+    reload: true
+  loop:
+    - { name: net.core.rmem_max, value: "{{ ledgerd_os_socket_max }}" }
+    - { name: net.core.wmem_max, value: "{{ ledgerd_os_socket_max }}" }
+    - { name: net.core.rmem_default, value: "{{ ledgerd_socket_buf_length }}" }
+    - { name: net.core.wmem_default, value: "{{ ledgerd_socket_buf_length }}" }

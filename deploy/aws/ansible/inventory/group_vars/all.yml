@@ -1,0 +1,48 @@
+# Shared deployment variables for LEDGERD on EC2 (POC).
+
+ledgerd_user: ledgerd
+ledgerd_install_root: /opt/ledgerd
+ledgerd_data_root: /var/lib/ledgerd
+
+# The distTar produced by `./gradlew :examples:installDist` (or :examples:distTar)
+# has a top-level directory named after the project ("examples") with lib/ inside.
+ledgerd_dist_name: examples
+ledgerd_lib_dir: "{{ ledgerd_install_root }}/{{ ledgerd_dist_name }}/lib"
+
+# Node data EBS device. On Nitro instances (c6i) the /dev/sdf attachment surfaces
+# as /dev/nvme1n1 (root is /dev/nvme0n1). Override for non-Nitro instance types.
+ledgerd_data_device: /dev/nvme1n1
+
+ledgerd_base_port: 20100
+ledgerd_port_stride: 100
+ledgerd_metrics_base_port: 9100
+ledgerd_query_port: 44000
+ledgerd_clean_start: true
+
+# JDK
+jdk_major: "21"
+jdk_home: /opt/jdk-21
+
+# Observability stack versions
+prometheus_version: "2.53.1"
+grafana_version: "11.1.4"
+
+# --- Aeron media driver + JVM tuning ---
+
+# Media driver threading mode: SHARED | SHARED_NETWORK | DEDICATED | INVOKER.
+# SHARED_NETWORK is a good default for 4-vCPU instances (c6i.xlarge): the
+# conductor and the UDP receiver/sender each get a thread, leaving CPU for the
+# consensus and service agents. Use DEDICATED on 8+ vCPU for the lowest latency.
+ledgerd_threading_mode: SHARED_NETWORK
+
+# UDP socket buffers (SO_RCVBUF / SO_SNDBUF) in bytes. Must be <= the OS max
+# set by ledgerd_os_socket_max below.
+ledgerd_socket_buf_length: 16777216   # 16 MB
+
+# net.core.rmem_max / wmem_max in bytes. The kernel doubles the requested
+# SO_RCVBUF/SO_SNDBUF for bookkeeping, so keep this >= 2x the socket buffer.
+ledgerd_os_socket_max: 33554432       # 32 MB
+
+# JVM heap for a cluster node / read replica. The engine keeps its stores in
+# off-heap Agrona buffers, so heap is mostly the object graph + SBE flyweights.
+ledgerd_heap: 2g

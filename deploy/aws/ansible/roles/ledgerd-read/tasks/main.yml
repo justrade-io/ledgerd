@@ -1,0 +1,23 @@
+---
+- name: Create read replica data directory
+  ansible.builtin.file:
+    path: "{{ ledgerd_data_root }}/driver"
+    state: directory
+    owner: "{{ ledgerd_user }}"
+    group: "{{ ledgerd_user }}"
+    mode: "0755"
+
+- name: Install read replica systemd unit
+  ansible.builtin.template:
+    src: ledgerd-read.service.j2
+    dest: /etc/systemd/system/ledgerd-read.service
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Enable and start read replica
+  ansible.builtin.systemd:
+    name: ledgerd-read
+    daemon_reload: true
+    enabled: true
+    state: started

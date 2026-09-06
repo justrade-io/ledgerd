@@ -35,6 +35,21 @@ import org.agrona.concurrent.status.CountersManager;
  */
 public final class ClusterNode implements AutoCloseable {
 
+    /** System property selecting the media driver threading mode (default SHARED). */
+    private static final String THREADING_MODE_PROP = "ledgerd.threadingMode";
+
+    /** System property for the UDP socket send buffer (SO_SNDBUF) in bytes. */
+    private static final String SOCKET_SNDBUF_PROP = "ledgerd.socketSndbufLength";
+
+    /** System property for the UDP socket receive buffer (SO_RCVBUF) in bytes. */
+    private static final String SOCKET_RCVBUF_PROP = "ledgerd.socketRcvbufLength";
+
+    /** Default UDP socket send buffer in bytes (16 MB). */
+    private static final int DEFAULT_SOCKET_SNDBUF_LENGTH = 16 * 1024 * 1024;
+
+    /** Default UDP socket receive buffer in bytes (16 MB). */
+    private static final int DEFAULT_SOCKET_RCVBUF_LENGTH = 16 * 1024 * 1024;
+
     /**
      * Creates the {@link ClusteredService} hosted by this node, given the core
      * configuration and the node's mirrored metrics. Allows alternative services
@@ -93,7 +108,9 @@ public final class ClusterNode implements AutoCloseable {
 
         final MediaDriver.Context mediaDriverContext = new MediaDriver.Context()
                 .aeronDirectoryName(config.aeronDirectoryName())
-                .threadingMode(ThreadingMode.SHARED)
+                .threadingMode(resolveThreadingMode())
+                .socketSndbufLength(Integer.getInteger(SOCKET_SNDBUF_PROP, DEFAULT_SOCKET_SNDBUF_LENGTH))
+                .socketRcvbufLength(Integer.getInteger(SOCKET_RCVBUF_PROP, DEFAULT_SOCKET_RCVBUF_LENGTH))
                 .dirDeleteOnStart(true)
                 .dirDeleteOnShutdown(true);
 
@@ -157,6 +174,17 @@ public final class ClusterNode implements AutoCloseable {
             container.close();
             clusteredMediaDriver.close();
             throw e;
+        }
+    }
+
+    private static ThreadingMode resolveThreadingMode() {
+        final String value = System.getProperty(THREADING_MODE_PROP, ThreadingMode.SHARED.name());
+        try {
+            return ThreadingMode.valueOf(value.trim().toUpperCase(Locale.ROOT));
+        } catch (final IllegalArgumentException e) {
+            throw new IllegalArgumentException(
+                    THREADING_MODE_PROP + " must be one of INVOKER, SHARED, SHARED_NETWORK, DEDICATED, was: " + value,
+                    e);
         }
     }
 
