@@ -139,11 +139,37 @@ ssh -i ../.ssh/ledgerd-key.pem ubuntu@<bench-ip>
 sudo LEDGERD_TOTAL=100000 LEDGERD_CONCURRENCY=4 /usr/local/bin/ledgerd-bench
 ```
 
+### Batch load (high throughput)
+
+`/usr/local/bin/ledgerd-batch` drives `BatchLoadGenerator` processes submitting
+transfer batches (ADR 0012). Throughput is measured in legs/s, one to three
+orders of magnitude higher than single commands because each batch amortizes the
+consensus append.
+
+```bash
+ssh -i ../.ssh/ledgerd-key.pem ubuntu@<bench-ip>
+sudo LEDGERD_TOTAL=1000000 LEDGERD_CONCURRENCY=4 \
+  SWEEP_LEGS_PER_BATCH=256,1024,2048,4096 SKIP_READCHECK=1 \
+  /usr/local/bin/ledgerd-batch
+```
+
+`SKIP_READCHECK=1` skips the read-replica convergence check, useful for pure
+throughput sweeps (the read replica can lag behind bursty batch load).
+
 ### Grafana
 
-Open `http://<monitor-ip>:3000` (admin/admin) and select the `LEDGERD Overview`
-dashboard. It shows command throughput, backpressure events, leader elections,
-and balance count, scraped by Prometheus every 5s.
+Open `http://<monitor-ip>:3000` (admin/admin). Three dashboards are provisioned:
+
+- `LEDGERD Overview` - node-side command throughput, cumulative commands,
+  balance count, and leader elections (scraped from each node's `/metrics`).
+- `LEDGERD Client Bench` - single-command in-flight sweep (p50/p99/p99.9 per
+  `max_in_flight`) and client-side backpressure.
+- `LEDGERD Client Batch Bench` - transfer-batch sweep (legs/s, batches/s,
+  p50/p99 per `legs_per_batch`).
+
+The client dashboards are served by the bench results exporter on `:9200`, which
+reads `/var/lib/ledgerd/bench/results.csv` (single-command) and
+`batch-results.csv` (batch). Prometheus scrapes every 5s.
 
 ## 5. Optional: fault injection
 
@@ -213,6 +239,45 @@ fixed, pre-touched heap:
 For a zero-GC operational window, switch to `-XX:+UnlockExperimentalVMOptions
 -XX:+UseEpsilonGC` with a heap sized for the full state; for Shenandoah use
 `-XX:+UseShenandoahGC`.
+
+## Benchmark findings
+
+Measured on a 3-node `c6i.xlarge` cluster in `ap-southeast-1` (single AZ).
+
+### Single-command throughput
+
+Bounded by the consensus append rate (one Raft round-trip per command). p50
+grows with concurrency as the leader saturates:
+
+| Concurrency | p50 | p99 |
+|---|---|---|
+| 1 | 0.63 ms | 5.5 ms |
+| 2 | 1.0 ms | 10.1 ms |
+| 4 | 4.2 ms | 21.6 ms |
+| 8 | 11.1 ms | 40.4 ms |
+
+### Transfer-batch throughput (ADR 0012)
+
+Each batch amortizes the consensus append, so legs/s is one to three orders of
+magnitude higher than single commands. The ceiling is ~1.7M legs/s, bounded by
+the single service agent thread (~0.56 us/leg end-to-end), not consensus:
+
+| legsPerBatch | batches/s | legs/s | p50 |
+|---|---|---|---|
+| 16 | 14,278 | 0.23M | 3.9 ms |
+| 64 | 11,420 | 0.73M | 5.7 ms |
+| 256 | 4,565 | 1.17M | 12.2 ms |
+| 1024 | 1,561 | 1.60M | 35.7 ms |
+| 4096 | 430 | 1.76M | 134.6 ms |
+
+Notes:
+
+- The read replica (single agent thread) can lag behind bursty batch load, so
+  read convergence can exceed the default 60s `ReadCheck` timeout; use
+  `SKIP_READCHECK=1` for pure throughput sweeps.
+- `ledgerd_commands_processed` counts consensus commands, one per batch not per
+  leg; the useful throughput is legs/s on the `LEDGERD Client Batch Bench`
+  dashboard.
 
 ## Production notes
 

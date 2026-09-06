@@ -7,5 +7,9 @@ scrape_configs:
     static_configs:
       - targets:
 {% for host in (groups['nodes'] | sort) %}
-        - "{{ hostvars[host]['ansible_host'] }}:{{ ledgerd_metrics_base_port + (hostvars[host]['ledgerd_node_id'] | int) }}"
+        - "{{ hostvars[host]['ledgerd_private_ip'] }}:{{ ledgerd_metrics_base_port + (hostvars[host]['ledgerd_node_id'] | int) }}"
 {% endfor %}
+  - job_name: ledgerd-bench
+    static_configs:
+      - targets:
+        - "{{ hostvars['bench-0']['ledgerd_private_ip'] }}:9200"

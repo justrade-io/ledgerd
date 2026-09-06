@@ -46,6 +46,12 @@ public final class ClusterLauncher {
             coreConfig = coreConfig.withEventJournal(capacity);
         }
 
+        // Transfer-batch capacities (ADR 0012), tunable for high-throughput batches.
+        final int maxBatchSize = Integer.getInteger("ledgerd.maxBatchSize", CoreConfig.DEFAULT_MAX_BATCH_SIZE);
+        final int batchDedupWindow =
+                Integer.getInteger("ledgerd.batchDedupWindow", CoreConfig.DEFAULT_BATCH_DEDUP_WINDOW);
+        coreConfig = coreConfig.withBatch(maxBatchSize, batchDedupWindow);
+
         final ClusterNode node = new ClusterNode(clusterConfig, coreConfig, cleanStart);
         Runtime.getRuntime().addShutdownHook(new Thread(node::close, "ledgerd-shutdown"));
 

@@ -41,6 +41,23 @@ explicitly.
 | Zero-GC operational window (trading sessions)  | Epsilon GC + sized heap      |
 | Non-critical / monitoring nodes                | G1                           |
 
+### Media driver tuning
+
+The launcher and read service accept these `-D` system properties:
+
+| Property                     | Default  | Values                                             | Purpose                              |
+|------------------------------|----------|----------------------------------------------------|--------------------------------------|
+| `ledgerd.threadingMode`      | `SHARED` | `SHARED`, `SHARED_NETWORK`, `DEDICATED`, `INVOKER` | Aeron media driver threading mode.   |
+| `ledgerd.socketSndbufLength` | 16 MB    | bytes                                              | UDP socket send buffer (SO_SNDBUF).  |
+| `ledgerd.socketRcvbufLength` | 16 MB    | bytes                                              | UDP socket receive buffer (SO_RCVBUF). |
+
+Threading modes trade CPU for isolation: `SHARED` (one thread for conductor +
+receiver + sender), `SHARED_NETWORK` (conductor plus a shared network thread),
+`DEDICATED` (three threads, lowest tail latency). Use `SHARED_NETWORK` on 4 vCPU
+and `DEDICATED` on 8+ vCPU. Socket buffers must not exceed the OS max
+(`net.core.rmem_max` / `net.core.wmem_max`); the kernel doubles a requested
+socket buffer for bookkeeping, so size the OS max at least 2x the socket buffer.
+
 ---
 
 ## 2. Running a Single Node
@@ -253,6 +270,17 @@ CoreConfig config = CoreConfig.of(
         1 << 8);  // dedupWindow
 ```
 
+Custom capacities can also be set at launch via `-D` system properties (powers of two):
+
+```bash
+./gradlew :launcher:run -Dledgerd.maxBatchSize=4096 -Dledgerd.batchDedupWindow=1024
+```
+
+`batchDedupWindow` only needs to cover the client's `maxBatchInFlight`, not
+`maxBatchSize`: the batch dedup ring preallocates `batchDedupWindow * maxBatchSize`
+per-leg arrays, which is the dominant heap consumer on the batch path. Sizing it
+to `maxBatchSize` (for example 4096 x 4096) exhausts a small heap and OOMs the node.
+
 ---
 
 ## 7. Prometheus Metrics
@@ -270,7 +298,7 @@ curl http://localhost:9100/healthz   # returns "ok"
 
 | Metric name                    | Description                                                        |
 |--------------------------------|--------------------------------------------------------------------|
-| `ledgerd_commands_processed`      | Total commands applied (excluding duplicates).                     |
+| `ledgerd_commands_processed`      | Total consensus commands applied, one per batch not per leg.       |
 | `ledgerd_duplicates_detected`     | Commands returned from dedup cache without re-applying.            |
 | `ledgerd_insufficient_balance`    | Commands rejected with `INSUFFICIENT_BALANCE`.                     |
 | `ledgerd_insufficient_allowance`  | Commands rejected with `INSUFFICIENT_ALLOWANCE`.                   |

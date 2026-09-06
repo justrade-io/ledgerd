@@ -46,3 +46,10 @@ ledgerd_os_socket_max: 33554432       # 32 MB
 # JVM heap for a cluster node / read replica. The engine keeps its stores in
 # off-heap Agrona buffers, so heap is mostly the object graph + SBE flyweights.
 ledgerd_heap: 2g
+
+# CoreConfig transfer-batch capacities (ADR 0012). maxBatchSize bounds the legs
+# per batch; batchDedupWindow bounds the per-client batch dedup ring and only
+# needs to cover maxBatchInFlight, NOT maxBatchSize (the ring preallocates
+# batchDedupWindow x maxBatchSize per-leg arrays, the dominant heap consumer).
+ledgerd_max_batch_size: 4096
+ledgerd_batch_dedup_window: 1024

@@ -1,0 +1,64 @@
+{
+  "uid": "ledgerd-batch-bench",
+  "title": "LEDGERD Client Batch Bench",
+  "tags": ["ledgerd", "bench", "batch"],
+  "refresh": "5s",
+  "time": { "from": "now-1h", "to": "now" },
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Throughput (legs/s)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        { "expr": "ledgerd_batch_legs_per_sec", "legendFormat": "legs/batch={{legs_per_batch}}", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "ops", "custom": { "drawStyle": "line", "fillOpacity": 10 } }
+      }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Consensus rate (batches/s)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        { "expr": "ledgerd_batch_batches_per_sec", "legendFormat": "legs/batch={{legs_per_batch}}", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "ops", "custom": { "drawStyle": "line", "fillOpacity": 10 } }
+      }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "p50 latency (ms)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "targets": [
+        { "expr": "ledgerd_batch_p50_us / 1000", "legendFormat": "legs/batch={{legs_per_batch}}", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "ms", "custom": { "drawStyle": "line", "fillOpacity": 10 } }
+      }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "p99 latency (ms)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "targets": [
+        { "expr": "ledgerd_batch_p99_us / 1000", "legendFormat": "legs/batch={{legs_per_batch}}", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "ms", "custom": { "drawStyle": "line", "fillOpacity": 10 } }
+      }
+    }
+  ]
+}

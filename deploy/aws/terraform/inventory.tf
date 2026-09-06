@@ -20,29 +20,33 @@ locals {
         nodes = {
           hosts = {
             for i in range(var.node_count) : "node-${i}" => {
-              ansible_host    = aws_instance.node[i].private_ip
-              ledgerd_node_id = i
+              ansible_host       = aws_instance.node[i].public_ip
+              ledgerd_private_ip = aws_instance.node[i].private_ip
+              ledgerd_node_id    = i
             }
           }
         }
         read = {
           hosts = {
             read-0 = {
-              ansible_host = aws_instance.read.private_ip
+              ansible_host       = aws_instance.read.public_ip
+              ledgerd_private_ip = aws_instance.read.private_ip
             }
           }
         }
         bench = {
           hosts = {
             bench-0 = {
-              ansible_host = aws_instance.bench.private_ip
+              ansible_host       = aws_instance.bench.public_ip
+              ledgerd_private_ip = aws_instance.bench.private_ip
             }
           }
         }
         monitor = {
           hosts = {
             (var.split_bench_monitor ? "monitor" : "bench-0") = {
-              ansible_host = var.split_bench_monitor ? aws_instance.monitor[0].private_ip : aws_instance.bench.private_ip
+              ansible_host       = var.split_bench_monitor ? aws_instance.monitor[0].public_ip : aws_instance.bench.public_ip
+              ledgerd_private_ip = var.split_bench_monitor ? aws_instance.monitor[0].private_ip : aws_instance.bench.private_ip
             }
           }
         }

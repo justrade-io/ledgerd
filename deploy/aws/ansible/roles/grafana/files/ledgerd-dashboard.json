@@ -3,10 +3,10 @@
   "title": "LEDGERD Overview",
   "tags": ["ledgerd"],
   "refresh": "5s",
-  "time": { "from": "now-15m", "to": "now" },
+  "time": { "from": "now-1h", "to": "now" },
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "panels": [
     {
       "id": 1,
@@ -24,37 +24,41 @@
     {
       "id": 2,
       "type": "timeseries",
-      "title": "Backpressure events",
+      "title": "Commands processed (cumulative)",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
       "targets": [
-        { "expr": "sum(increase(ledgerd_backpressure_events[1m]))", "legendFormat": "events/min", "refId": "A" }
+        { "expr": "sum(ledgerd_commands_processed)", "legendFormat": "commands", "refId": "A" }
       ],
       "fieldConfig": {
-        "defaults": { "custom": { "drawStyle": "bars", "fillOpacity": 60 } }
+        "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 10 } }
       }
     },
     {
       "id": 3,
       "type": "timeseries",
-      "title": "Leader elections",
+      "title": "Balance count",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
       "targets": [
-        { "expr": "sum(ledgerd_leader_elections)", "legendFormat": "elections", "refId": "A" }
+        { "expr": "max(ledgerd_balance_count)", "legendFormat": "accounts", "refId": "A" }
       ],
-      "fieldConfig": { "defaults": { "unit": "short" } }
+      "fieldConfig": {
+        "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 10 } }
+      }
     },
     {
       "id": 4,
       "type": "timeseries",
-      "title": "Balance count",
+      "title": "Leader elections",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
       "targets": [
-        { "expr": "max(ledgerd_balance_count)", "legendFormat": "accounts", "refId": "A" }
+        { "expr": "sum(ledgerd_leader_elections)", "legendFormat": "elections", "refId": "A" }
       ],
-      "fieldConfig": { "defaults": { "unit": "short" } }
+      "fieldConfig": {
+        "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 10 } }
+      }
     }
   ]
 }

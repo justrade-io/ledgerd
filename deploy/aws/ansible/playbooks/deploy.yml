@@ -6,7 +6,7 @@
   hosts: localhost
   gather_facts: false
   vars:
-    dist_tar: "{{ playbook_dir }}/../../../examples/build/distributions/examples.tar"
+    dist_tar: "{{ playbook_dir }}/../../../../examples/build/distributions/examples.tar"
   tasks:
     - name: Verify distribution tar exists
       ansible.builtin.stat:
@@ -18,7 +18,7 @@
   hosts: nodes,read,bench
   become: true
   vars:
-    ledgerd_dist_tar: "{{ playbook_dir }}/../../../examples/build/distributions/examples.tar"
+    ledgerd_dist_tar: "{{ playbook_dir }}/../../../../examples/build/distributions/examples.tar"
   roles:
     - jdk
     - common

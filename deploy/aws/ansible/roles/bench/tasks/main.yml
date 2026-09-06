@@ -22,3 +22,26 @@
     owner: "{{ ledgerd_user }}"
     group: "{{ ledgerd_user }}"
     mode: "0755"
+
+- name: Install bench exporter
+  ansible.builtin.copy:
+    src: bench_exporter.py
+    dest: /usr/local/bin/ledgerd-bench-exporter.py
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install bench exporter systemd unit
+  ansible.builtin.template:
+    src: ledgerd-bench-exporter.service.j2
+    dest: /etc/systemd/system/ledgerd-bench-exporter.service
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Enable and start bench exporter
+  ansible.builtin.systemd:
+    name: ledgerd-bench-exporter
+    daemon_reload: true
+    enabled: true
+    state: started

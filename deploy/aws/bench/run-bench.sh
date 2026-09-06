@@ -35,7 +35,7 @@ field() {
 }
 
 run_once() {
-  local total=$1 max_in_flight=$2 concurrency=$3
+  local total=$1 max_in_flight=$2 concurrency=$3 expected_supply=$4
   echo ""
   echo "==> run: TOTAL=$total MAX_IN_FLIGHT=$max_in_flight CONCURRENCY=$concurrency"
 
@@ -43,7 +43,7 @@ run_once() {
   for ((i = 1; i <= concurrency; i++)); do
     local log="$RESULTS_DIR/client-$i.log"
     echo "   client $i -> $log"
-    LEDGERD_CLIENT_ID="$i" \
+    LEDGERD_CLIENT_ID="$((client_id_base + i))" \
       LEDGERD_TOTAL="$total" \
       LEDGERD_MAX_IN_FLIGHT="$max_in_flight" \
       LEDGERD_INGRESS_ENDPOINTS="$LEDGERD_INGRESS_ENDPOINTS" \
@@ -109,11 +109,10 @@ run_once() {
   echo "              p50<=${agg_p50}us p99<=${agg_p99}us p99.9<=${agg_p999}us max=${agg_max}us"
   echo "              backpressure=$agg_bp leaderChanges=$agg_lc"
 
-  local expected=$((total * concurrency))
-  echo "==> verify read replica converges to supply=$expected"
-  LEDGERD_EXPECT_SUPPLY="$expected" \
+  echo "==> verify read replica converges to supply=$expected_supply"
+  LEDGERD_EXPECT_SUPPLY="$expected_supply" \
     LEDGERD_EXPECT_BALANCE_A=0 \
-    LEDGERD_EXPECT_BALANCE_B="$expected" \
+    LEDGERD_EXPECT_BALANCE_B="$expected_supply" \
     LEDGERD_QUERY_HOST="$LEDGERD_QUERY_HOST" \
     LEDGERD_RESPONSE_HOST="$LEDGERD_RESPONSE_HOST" \
     "$JAVA" --add-opens java.base/jdk.internal.misc=ALL-UNNAMED \
@@ -121,13 +120,34 @@ run_once() {
     -cp "$CP" io.justrade.ledgerd.examples.ReadCheck
 }
 
+SUPPLY_STATE="$RESULTS_DIR/supply_state"
+
+# The cluster supply only grows: each LoadGenerator run credits TOTAL per client,
+# so every run (sweep iteration or single run) adds TOTAL * CONCURRENCY. Persist
+# the running expected supply so re-running the harness continues correctly.
+expected_supply=$(cat "$SUPPLY_STATE" 2>/dev/null || echo 0)
+
+# The engine dedups by (clientId, clientSeq); a restarted client with the same
+# clientId reuses clientSeq from 0, so re-running would collide with the cached
+# results. Give every run a fresh clientId range.
+CLIENT_ID_STATE="$RESULTS_DIR/client_id_state"
+client_id_base=$(cat "$CLIENT_ID_STATE" 2>/dev/null || echo 1000)
+
 if [[ -n "${SWEEP_IN_FLIGHT:-}" ]]; then
   IFS=',' read -ra values <<<"$SWEEP_IN_FLIGHT"
   for mif in "${values[@]}"; do
-    run_once "$TOTAL" "$mif" "$CONCURRENCY"
+    expected_supply=$((expected_supply + TOTAL * CONCURRENCY))
+    run_once "$TOTAL" "$mif" "$CONCURRENCY" "$expected_supply"
+    echo "$expected_supply" >"$SUPPLY_STATE"
+    client_id_base=$((client_id_base + CONCURRENCY))
+    echo "$client_id_base" >"$CLIENT_ID_STATE"
   done
 else
-  run_once "$TOTAL" "$MAX_IN_FLIGHT" "$CONCURRENCY"
+  expected_supply=$((expected_supply + TOTAL * CONCURRENCY))
+  run_once "$TOTAL" "$MAX_IN_FLIGHT" "$CONCURRENCY" "$expected_supply"
+  echo "$expected_supply" >"$SUPPLY_STATE"
+  client_id_base=$((client_id_base + CONCURRENCY))
+  echo "$client_id_base" >"$CLIENT_ID_STATE"
 fi
 
 echo ""

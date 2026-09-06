@@ -17,6 +17,14 @@
     - "{{ ledgerd_install_root }}"
     - "{{ ledgerd_data_root }}"
 
+- name: Create config directory
+  ansible.builtin.file:
+    path: /etc/ledgerd
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
 - name: Copy distribution archive
   ansible.builtin.copy:
     src: "{{ ledgerd_dist_tar }}"
