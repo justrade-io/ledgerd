@@ -1,0 +1,100 @@
+---
+# Resets all persistent LEDGERD state so the next bench run starts from a clean
+# slate: cluster supply returns to 0, the read replica rebuilds from the fresh
+# log, and the bench driver's accumulated results + supply/client-id state are
+# cleared.
+#
+# The bench harness persists an expected supply in
+#   {{ ledgerd_data_root }}/bench/supply_state
+# and a client-id cursor in
+#   {{ ledgerd_data_root }}/bench/client_id_state
+# both of which assume the cluster supply only grows across runs. Wiping the
+# cluster without wiping those two files would make the next ReadCheck expect
+# the old cumulative supply and fail, so this playbook clears them together.
+#
+# Usage:
+#   ansible-playbook -i inventory/hosts.yml playbooks/reset.yml
+#   ansible-playbook -i inventory/hosts.yml playbooks/reset.yml -e reset_restart=false
+- name: Reset LEDGERD state for a clean bench run
+  hosts: nodes,read,bench
+  become: true
+  gather_facts: false
+  vars:
+    reset_restart: true
+    reset_wait_health: true
+  tasks:
+    - name: Stop cluster node
+      ansible.builtin.systemd:
+        name: ledgerd-node
+        state: stopped
+      when: "'nodes' in group_names"
+
+    - name: Stop read replica
+      ansible.builtin.systemd:
+        name: ledgerd-read
+        state: stopped
+      when: "'read' in group_names"
+
+    # The node baseDir is an EBS mount point, so delete its CONTENTS rather than
+    # the mount point itself. The guard prevents a misconfigured data root from
+    # ever resolving to the filesystem root.
+    - name: Wipe node data volume contents
+      ansible.builtin.command:
+        cmd: find {{ ledgerd_data_root }} -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+      when:
+        - "'nodes' in group_names"
+        - ledgerd_data_root | length > 0
+        - ledgerd_data_root != "/"
+      changed_when: true
+
+    - name: Remove read replica media driver directory
+      ansible.builtin.file:
+        path: "{{ ledgerd_data_root }}/driver"
+        state: absent
+      when: "'read' in group_names"
+
+    - name: Remove bench results and state
+      ansible.builtin.file:
+        path: "{{ ledgerd_data_root }}/bench"
+        state: absent
+      when: "'bench' in group_names"
+
+    - name: Recreate bench results directory
+      ansible.builtin.file:
+        path: "{{ ledgerd_data_root }}/bench"
+        state: directory
+        owner: "{{ ledgerd_user }}"
+        group: "{{ ledgerd_user }}"
+        mode: "0755"
+      when: "'bench' in group_names"
+
+    - name: Start cluster node
+      ansible.builtin.systemd:
+        name: ledgerd-node
+        state: started
+      when:
+        - reset_restart
+        - "'nodes' in group_names"
+
+    - name: Start read replica
+      ansible.builtin.systemd:
+        name: ledgerd-read
+        state: started
+      when:
+        - reset_restart
+        - "'read' in group_names"
+
+    # /healthz is a liveness probe (returns ok once the process is up), not a
+    # leadership probe; leader election is validated by the bench harness itself.
+    - name: Wait for node health
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ ledgerd_metrics_base_port + (ledgerd_node_id | int) }}/healthz"
+        status_code: 200
+      register: node_health
+      until: node_health.status == 200
+      retries: 60
+      delay: 5
+      when:
+        - reset_restart
+        - reset_wait_health
+        - "'nodes' in group_names"

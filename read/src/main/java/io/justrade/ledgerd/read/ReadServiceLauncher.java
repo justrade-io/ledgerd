@@ -39,6 +39,14 @@ public final class ReadServiceLauncher {
         final ReadReplicaConfig replicaConfig = resolveReadReplicaConfig();
 
         try (ReadReplicaNode node = new ReadReplicaNode(replicaConfig, CoreConfig.defaults())) {
+            // Optional Prometheus metrics + replication-aware /healthz endpoint,
+            // enabled with -Dledgerd.metricsPort=<port>.
+            final Integer metricsPort = Integer.getInteger("ledgerd.metricsPort");
+            if (metricsPort != null) {
+                final ReadMetricsHttpServer metricsServer =
+                        new ReadMetricsHttpServer(node.countersManager(), node.health(), metricsPort);
+                Runtime.getRuntime().addShutdownHook(new Thread(metricsServer::close, "ledgerd-read-metrics-shutdown"));
+            }
             LOG.log(
                     System.Logger.Level.INFO,
                     "LEDGERD read replica service started: queryChannel={0} archiveChannels={1} liveLog={2} healthy={3}",

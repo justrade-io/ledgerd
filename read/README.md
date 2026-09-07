@@ -44,6 +44,8 @@ LEDGERD_ARCHIVE_CHANNELS="aeron:udp?endpoint=localhost:20104" ./gradlew :read:ru
 - Query channel and stream id via `LEDGERD_QUERY_CHANNEL` (default
   `aeron:udp?endpoint=localhost:44000`) and `LEDGERD_QUERY_STREAM_ID` (default
   `300`).
+- Optional Prometheus `/metrics` and replication-aware `/healthz` endpoint via
+  `-Dledgerd.metricsPort=<port>` (disabled by default).
 - `CoreConfig` via `--config=<file>` or `-Dledgerd.core.*`.
 
 See [../docs/OPERATIONS.md](../docs/OPERATIONS.md#8-read-service-aeron-query-api)

@@ -9,6 +9,10 @@ scrape_configs:
 {% for host in (groups['nodes'] | sort) %}
         - "{{ hostvars[host]['ledgerd_private_ip'] }}:{{ ledgerd_metrics_base_port + (hostvars[host]['ledgerd_node_id'] | int) }}"
 {% endfor %}
+  - job_name: ledgerd-read
+    static_configs:
+      - targets:
+        - "{{ hostvars['read-0']['ledgerd_private_ip'] }}:{{ ledgerd_read_metrics_port }}"
   - job_name: ledgerd-bench
     static_configs:
       - targets:

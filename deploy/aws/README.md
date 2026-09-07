@@ -184,7 +184,30 @@ ssh -i ../.ssh/ledgerd-key.pem ubuntu@<node-ip> sudo systemctl stop ledgerd-node
 The remaining 2-node quorum elects a new leader; the in-flight client observes
 `leaderChanges>=1` and the run must still complete with `nonSuccess=0`.
 
-## 6. Cleanup
+## 6. Reset state between bench runs
+
+The bench harness assumes the cluster supply only grows across runs and caches
+the running expectation in `/var/lib/ledgerd/bench/supply_state` (plus a
+client-id cursor in `client_id_state`). To start a fresh bench run from supply 0,
+wipe the cluster, the read replica driver, and the bench state together:
+
+```bash
+cd deploy/aws/ansible
+
+# Stop services, wipe state, restart, and wait for each node's /healthz.
+ansible-playbook -i inventory/hosts.yml playbooks/reset.yml
+
+# Wipe only, leave services stopped (re-run deploy.yml to bring them back).
+ansible-playbook -i inventory/hosts.yml playbooks/reset.yml -e reset_restart=false
+```
+
+Clearing `/var/lib/ledgerd/bench` removes `results.csv`, `batch-results.csv`,
+the client logs, and the `supply_state` / `client_id_state` cursors. The
+`reset.yml` playbook wipes all of these together because a reset cluster with a
+stale `supply_state` would make the next `ReadCheck` expect the old cumulative
+supply and time out.
+
+## 7. Cleanup
 
 ```bash
 cd deploy/aws/terraform

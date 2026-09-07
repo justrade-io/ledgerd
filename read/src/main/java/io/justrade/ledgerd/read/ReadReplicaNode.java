@@ -60,7 +60,16 @@ import org.agrona.concurrent.status.CountersManager;
  */
 public final class ReadReplicaNode implements AutoCloseable {
 
+    /** Max fragments drained per snapshot-replay poll. */
     private static final int FRAGMENT_LIMIT = 64;
+
+    /**
+     * Max fragments drained per live-log poll. Larger than the snapshot limit so
+     * the agent applies more committed work per cycle under batch load (a single
+     * 4096-leg batch spans ~90 MTU fragments).
+     */
+    private static final int LIVE_LOG_FRAGMENT_LIMIT = 256;
+
     private static final long STARTUP_CONNECT_TIMEOUT_MS = 10_000L;
     private static final long LIVE_LOG_RECONNECT_BACKOFF_MS = 250L;
     private static final System.Logger LOG = System.getLogger(ReadReplicaNode.class.getName());
@@ -85,6 +94,7 @@ public final class ReadReplicaNode implements AutoCloseable {
     private final ArchiveSource source;
     private final BalanceEngine engine;
     private final CoreMetrics metrics;
+    private final CountersManager countersManager;
     private final QueryResponder queryResponder;
     private final ReadReplicaConfig replicaConfig;
     private final SnapshotManager snapshotManager;
@@ -141,7 +151,8 @@ public final class ReadReplicaNode implements AutoCloseable {
         this.snapshotManager = new SnapshotManager(coreConfig.maxBatchSize());
         this.health = new ReplicationHealth();
 
-        this.metrics = newMetrics();
+        this.countersManager = newCountersManager();
+        this.metrics = newMetrics(countersManager);
         this.engine = new BalanceEngine(coreConfig, metrics);
 
         // The service snapshot recording is prefixed with cluster-schema framing
@@ -266,6 +277,16 @@ public final class ReadReplicaNode implements AutoCloseable {
     /** Whether the replica is currently following a healthy Archive source. */
     public boolean isHealthy() {
         return health.isHealthy();
+    }
+
+    /** Exposes the off-heap counters manager for cross-thread metric reads. */
+    public CountersManager countersManager() {
+        return countersManager;
+    }
+
+    /** Replication health (applied position, active endpoint, failovers); read-only externally. */
+    public ReplicationHealth health() {
+        return health;
     }
 
     /** The cluster log position the engine has applied; read on the agent thread only. */
@@ -400,7 +421,7 @@ public final class ReadReplicaNode implements AutoCloseable {
         if (liveLog == null) {
             return 0;
         }
-        final int fragments = liveLog.poll(FRAGMENT_LIMIT);
+        final int fragments = liveLog.poll(LIVE_LOG_FRAGMENT_LIMIT);
         if (fragments > 0) {
             lastActivityMs = clock.time();
             final long position = liveLog.lastPosition();
@@ -603,7 +624,7 @@ public final class ReadReplicaNode implements AutoCloseable {
         throw new IllegalStateException("Timed out resolving replay subscription endpoint");
     }
 
-    private static CoreMetrics newMetrics() {
+    private static CountersManager newCountersManager() {
         final int counterCount = CounterSink.Counter.COUNT;
         final int gaugeCount = CounterSink.Gauge.COUNT;
         final int totalSlots = counterCount + gaugeCount;
@@ -611,14 +632,19 @@ public final class ReadReplicaNode implements AutoCloseable {
                 totalSlots * CountersManager.COUNTER_LENGTH, BitUtil.CACHE_LINE_LENGTH));
         final UnsafeBuffer metaBuf = new UnsafeBuffer(BufferUtil.allocateDirectAligned(
                 totalSlots * CountersManager.METADATA_LENGTH, BitUtil.CACHE_LINE_LENGTH));
-        final CountersManager cm = new CountersManager(metaBuf, valuesBuf);
-        final AtomicCounter[] counters = new AtomicCounter[counterCount];
-        final AtomicCounter[] gauges = new AtomicCounter[gaugeCount];
-        for (int i = 0; i < counterCount; i++) {
-            counters[i] = cm.newCounter("ledgerd.read.replica.counter." + i, CounterSink.TYPE_COUNTER);
+        return new CountersManager(metaBuf, valuesBuf);
+    }
+
+    private static CoreMetrics newMetrics(final CountersManager cm) {
+        final AtomicCounter[] counters = new AtomicCounter[CounterSink.Counter.COUNT];
+        for (final CounterSink.Counter counter : CounterSink.Counter.values()) {
+            counters[counter.ordinal()] =
+                    cm.newCounter("ledgerd.read." + counter.name().toLowerCase(Locale.ROOT), CounterSink.TYPE_COUNTER);
         }
-        for (int i = 0; i < gaugeCount; i++) {
-            gauges[i] = cm.newCounter("ledgerd.read.replica.gauge." + i, CounterSink.TYPE_GAUGE);
+        final AtomicCounter[] gauges = new AtomicCounter[CounterSink.Gauge.COUNT];
+        for (final CounterSink.Gauge gauge : CounterSink.Gauge.values()) {
+            gauges[gauge.ordinal()] =
+                    cm.newCounter("ledgerd.read." + gauge.name().toLowerCase(Locale.ROOT), CounterSink.TYPE_GAUGE);
         }
         return new CoreMetrics(new AtomicCounterSink(counters, gauges));
     }

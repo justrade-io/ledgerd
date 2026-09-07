@@ -17,6 +17,9 @@ ledgerd_base_port: 20100
 ledgerd_port_stride: 100
 ledgerd_metrics_base_port: 9100
 ledgerd_query_port: 44000
+# The read replica is a separate host, so it can reuse the metrics base port
+# (9100) without colliding with a cluster node's metrics endpoint.
+ledgerd_read_metrics_port: 9100
 ledgerd_clean_start: true
 
 # JDK

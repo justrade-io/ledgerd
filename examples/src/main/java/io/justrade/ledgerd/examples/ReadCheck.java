@@ -19,6 +19,7 @@ import io.justrade.ledgerd.read.client.config.ReadClientConfig;
  *   LEDGERD_EXPECT_BALANCE_B  expected balance of account 200 (default expectedSupply)
  *   LEDGERD_QUERY_HOST        read replica host (default localhost:44000)
  *   LEDGERD_RESPONSE_HOST     routable host for this client's response channel
+ *   LEDGERD_READ_TIMEOUT_MS   per-assertion convergence timeout (default 60000)
  * </pre>
  *
  * <p>Exits non-zero if any assertion times out. Deliberately not part of the
@@ -28,7 +29,7 @@ public final class ReadCheck {
 
     private static final long ACCOUNT_A = 100L;
     private static final long ACCOUNT_B = 200L;
-    private static final long READ_TIMEOUT_MS = 60_000L;
+    private static final long READ_TIMEOUT_MS = envLong("LEDGERD_READ_TIMEOUT_MS", 60_000L);
 
     private ReadCheck() {}
 

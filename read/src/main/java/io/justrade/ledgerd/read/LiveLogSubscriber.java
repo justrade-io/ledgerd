@@ -1,5 +1,6 @@
 package io.justrade.ledgerd.read;
 
+import io.aeron.FragmentAssembler;
 import io.aeron.Subscription;
 import io.aeron.archive.client.AeronArchive;
 import io.aeron.archive.client.RecordingDescriptorConsumer;
@@ -18,11 +19,15 @@ import org.agrona.DirectBuffer;
  * real-time. This provides live log following between snapshots, reducing read
  * staleness from the snapshot interval to microseconds.
  *
- * <p>Each consensus log fragment starts with a cluster-schema
- * {@link io.aeron.cluster.codecs.MessageHeader}; when its templateId is
- * {@link SessionMessageHeaderDecoder#TEMPLATE_ID} the fragment contains a
- * wrapped service message. The subscriber skips the consensus framing and feeds
- * the raw service message to the engine.
+ * <p>A consensus log message larger than one MTU fragment - for example a
+ * transfer batch (ADR 0012) - is split into multiple fragments by the Archive
+ * replay. A {@link FragmentAssembler} reassembles those fragments into a single
+ * service message before {@link #onFragment} is invoked, so the engine always
+ * sees a complete message. The assembled message still begins with a
+ * cluster-schema {@link io.aeron.cluster.codecs.MessageHeader}; when its
+ * templateId is {@link SessionMessageHeaderDecoder#TEMPLATE_ID} the message
+ * contains a wrapped service message. The subscriber skips the consensus
+ * framing and feeds the raw service message to the engine.
  *
  * <p>Single-writer: this class owns no thread. The read replica node's single agent
  * thread calls {@link #connect()} (reconnecting after each snapshot load) and
@@ -49,7 +54,7 @@ final class LiveLogSubscriber implements AutoCloseable {
     private final TransferBatchDecoder transferBatchDecoder = new TransferBatchDecoder();
     private final CommandOutcome outcome = new CommandOutcome();
     private final BatchOutcome batchOutcome;
-    private final FragmentHandler fragmentHandler = this::onFragment;
+    private final FragmentHandler fragmentHandler = new FragmentAssembler(this::onFragment);
 
     private Subscription subscription;
     private long lastPosition;
