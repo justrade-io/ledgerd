@@ -7,6 +7,14 @@
     group: root
     mode: "0755"
 
+- name: Install batch bench script
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../bench/run-batch.sh"
+    dest: /usr/local/bin/ledgerd-batch
+    owner: root
+    group: root
+    mode: "0755"
+
 - name: Render bench environment
   ansible.builtin.template:
     src: bench.env.j2

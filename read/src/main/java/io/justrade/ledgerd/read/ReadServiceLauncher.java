@@ -38,7 +38,16 @@ public final class ReadServiceLauncher {
     public static void main(final String[] args) throws InterruptedException {
         final ReadReplicaConfig replicaConfig = resolveReadReplicaConfig();
 
-        try (ReadReplicaNode node = new ReadReplicaNode(replicaConfig, CoreConfig.defaults())) {
+        // Transfer-batch capacities (ADR 0012) must match the write cluster, or
+        // larger batches are rejected by the engine's leg-count guard. The nodes
+        // set these via -Dledgerd.maxBatchSize / -Dledgerd.batchDedupWindow.
+        CoreConfig coreConfig = CoreConfig.defaults();
+        final int maxBatchSize = Integer.getInteger("ledgerd.maxBatchSize", CoreConfig.DEFAULT_MAX_BATCH_SIZE);
+        final int batchDedupWindow =
+                Integer.getInteger("ledgerd.batchDedupWindow", CoreConfig.DEFAULT_BATCH_DEDUP_WINDOW);
+        coreConfig = coreConfig.withBatch(maxBatchSize, batchDedupWindow);
+
+        try (ReadReplicaNode node = new ReadReplicaNode(replicaConfig, coreConfig)) {
             // Optional Prometheus metrics + replication-aware /healthz endpoint,
             // enabled with -Dledgerd.metricsPort=<port>.
             final Integer metricsPort = Integer.getInteger("ledgerd.metricsPort");

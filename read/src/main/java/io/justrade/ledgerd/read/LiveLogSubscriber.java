@@ -54,7 +54,8 @@ final class LiveLogSubscriber implements AutoCloseable {
     private final TransferBatchDecoder transferBatchDecoder = new TransferBatchDecoder();
     private final CommandOutcome outcome = new CommandOutcome();
     private final BatchOutcome batchOutcome;
-    private final FragmentHandler fragmentHandler = new FragmentAssembler(this::onFragment);
+    private final FragmentAssembler assembler = new FragmentAssembler(this::onFragment);
+    private final FragmentHandler fragmentHandler = this::onRawFragment;
 
     private Subscription subscription;
     private long lastPosition;
@@ -173,9 +174,19 @@ final class LiveLogSubscriber implements AutoCloseable {
         }
     }
 
+    private void onRawFragment(
+            final DirectBuffer buffer, final int offset, final int length, final io.aeron.logbuffer.Header header) {
+        // Track the raw fragment position, not the assembled message's header.
+        // FragmentAssembler reports the FIRST frame's position to the delegate
+        // (its nextTermOffset is captured from the first frame), which would
+        // freeze appliedLogPosition for a large multi-fragment batch. The raw
+        // header advances with every consumed fragment.
+        lastPosition = header.position();
+        assembler.onFragment(buffer, offset, length, header);
+    }
+
     private void onFragment(
             final DirectBuffer buffer, final int offset, final int length, final io.aeron.logbuffer.Header header) {
-        lastPosition = header.position();
         if (length < CONSENSUS_FRAMING_LENGTH) {
             return; // fragment too short to carry a service message
         }

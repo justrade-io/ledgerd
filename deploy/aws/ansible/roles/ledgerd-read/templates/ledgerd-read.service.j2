@@ -20,6 +20,8 @@ ExecStart={{ jdk_home }}/bin/java \
   -Dledgerd.threadingMode={{ ledgerd_threading_mode }} \
   -Dledgerd.socketSndbufLength={{ ledgerd_socket_buf_length }} \
   -Dledgerd.socketRcvbufLength={{ ledgerd_socket_buf_length }} \
+  -Dledgerd.maxBatchSize={{ ledgerd_max_batch_size }} \
+  -Dledgerd.batchDedupWindow={{ ledgerd_batch_dedup_window }} \
   -Dledgerd.metricsPort={{ ledgerd_read_metrics_port }} \
   -cp "{{ ledgerd_lib_dir }}/*" \
   io.justrade.ledgerd.read.ReadServiceLauncher
