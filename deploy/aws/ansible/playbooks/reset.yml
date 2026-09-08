@@ -12,16 +12,22 @@
 # cluster without wiping those two files would make the next ReadCheck expect
 # the old cumulative supply and fail, so this playbook clears them together.
 #
+# The monitoring stack (Prometheus TSDB) keeps its own history under
+# /var/lib/prometheus, separate from application state. It is wiped as well so
+# Grafana starts from a clean slate; set -e reset_monitoring=false to keep it.
+#
 # Usage:
 #   ansible-playbook -i inventory/hosts.yml playbooks/reset.yml
 #   ansible-playbook -i inventory/hosts.yml playbooks/reset.yml -e reset_restart=false
+#   ansible-playbook -i inventory/hosts.yml playbooks/reset.yml -e reset_monitoring=false
 - name: Reset LEDGERD state for a clean bench run
-  hosts: nodes,read,bench
+  hosts: nodes,read,bench,monitor
   become: true
   gather_facts: false
   vars:
     reset_restart: true
     reset_wait_health: true
+    reset_monitoring: true
   tasks:
     - name: Stop cluster node
       ansible.builtin.systemd:
@@ -67,6 +73,34 @@
         group: "{{ ledgerd_user }}"
         mode: "0755"
       when: "'bench' in group_names"
+
+    # Prometheus keeps its TSDB history under /var/lib/prometheus, independent
+    # of application state, so Grafana would otherwise keep showing pre-reset
+    # series. Wipe the TSDB contents (not the mount point) for a clean view.
+    - name: Stop Prometheus
+      ansible.builtin.systemd:
+        name: prometheus
+        state: stopped
+      when:
+        - reset_monitoring
+        - "'monitor' in group_names"
+
+    - name: Wipe Prometheus TSDB contents
+      ansible.builtin.command:
+        cmd: find /var/lib/prometheus -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+      when:
+        - reset_monitoring
+        - "'monitor' in group_names"
+      changed_when: true
+
+    - name: Start Prometheus
+      ansible.builtin.systemd:
+        name: prometheus
+        state: started
+      when:
+        - reset_monitoring
+        - reset_restart
+        - "'monitor' in group_names"
 
     - name: Start cluster node
       ansible.builtin.systemd:
