@@ -14,21 +14,23 @@ import org.HdrHistogram.Histogram;
  * {@link BatchLoadGenerator} into a single combined histogram, then prints its
  * percentiles as a one-line JSON summary for the bench harness.
  *
- * <p>Usage: {@code BenchAggregator <histogram-dir> [glob]} where the directory
- * holds the {@code *.hlog} files produced during a single run. The optional glob
- * scopes the merge to one generator (e.g. {@code client-*.hlog} vs
- * {@code batch-client-*.hlog}); it defaults to {@code *.hlog}.
+ * <p>Usage: {@code BenchAggregator <histogram-dir> [glob] [output.hgrm]} where the
+ * directory holds the {@code *.hlog} files produced during a single run. The
+ * optional glob scopes the merge to one generator (e.g. {@code client-*.hlog}
+ * vs {@code batch-client-*.hlog}); it defaults to {@code *.hlog}. When an
+ * output path is given, the merged percentile distribution is also written in
+ * the {@code .hgrm} format consumed by HdrHistogram's plotFiles.html.
  */
 public final class BenchAggregator {
 
     private BenchAggregator() {}
 
     public static void main(final String[] args) throws IOException {
-        if (args.length < 1 || args.length > 2) {
-            throw new IllegalArgumentException("usage: BenchAggregator <histogram-dir> [glob]");
+        if (args.length < 1 || args.length > 3) {
+            throw new IllegalArgumentException("usage: BenchAggregator <histogram-dir> [glob] [output.hgrm]");
         }
         final Path dir = Path.of(args[0]);
-        final String glob = args.length == 2 ? args[1] : "*.hlog";
+        final String glob = args.length >= 2 ? args[1] : "*.hlog";
         final List<Histogram> histograms = readAll(dir, glob);
         if (histograms.isEmpty()) {
             throw new IllegalStateException("no " + glob + " histograms found in " + dir);
@@ -41,6 +43,10 @@ public final class BenchAggregator {
                 TimeUnit.NANOSECONDS.toMicros(merged.getValueAtPercentile(99.0)),
                 TimeUnit.NANOSECONDS.toMicros(merged.getValueAtPercentile(99.9)),
                 TimeUnit.NANOSECONDS.toMicros(merged.getMaxValue()));
+
+        if (args.length == 3) {
+            BenchHistogram.writePercentileDistribution(Path.of(args[2]), merged);
+        }
     }
 
     private static List<Histogram> readAll(final Path dir, final String glob) throws IOException {

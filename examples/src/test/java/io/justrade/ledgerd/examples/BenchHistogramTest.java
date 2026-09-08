@@ -1,7 +1,11 @@
 package io.justrade.ledgerd.examples;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import org.HdrHistogram.Histogram;
 import org.junit.jupiter.api.Test;
 
@@ -43,5 +47,25 @@ final class BenchHistogramTest {
 
         assertEquals(a.getTotalCount() + b.getTotalCount(), merged.getTotalCount());
         assertEquals(b.getMaxValue(), merged.getMaxValue());
+    }
+
+    @Test
+    void percentileDistributionWritesHgrmFormat() throws IOException {
+        final Histogram histogram = new Histogram(HIGHEST_TRACKABLE_VALUE, SIGNIFICANT_FIGURES);
+        for (long value = 1_000_000L; value <= 10_000_000L; value += 1_000_000L) {
+            histogram.recordValue(value);
+        }
+        final Path path = Files.createTempFile("bench", ".hgrm");
+        try {
+            BenchHistogram.writePercentileDistribution(path, histogram);
+            final String content = Files.readString(path);
+            assertTrue(content.contains("Percentile"));
+            assertTrue(content.contains("TotalCount"));
+            assertTrue(content.contains("1/(1-Percentile)"));
+            // The Value column must stay in native nanoseconds, not be scaled.
+            assertTrue(content.contains(Long.toString(histogram.getMaxValue())));
+        } finally {
+            Files.deleteIfExists(path);
+        }
     }
 }

@@ -1,7 +1,9 @@
 package io.justrade.ledgerd.examples;
 
 import java.io.IOException;
+import java.io.PrintStream;
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.zip.DataFormatException;
@@ -60,6 +62,21 @@ public final class BenchHistogram {
     /** Writes a histogram to disk in its compressed wire form. */
     public static void write(final Path path, final Histogram histogram) throws IOException {
         Files.write(path, encode(histogram));
+    }
+
+    /**
+     * Writes the histogram's percentile distribution in the {@code .hgrm} text
+     * format consumed by HdrHistogram's plotFiles.html visualizer.
+     *
+     * <p>Uses five percentile ticks per half-distance and a scaling ratio of
+     * {@code 1.0} so the Value column stays in the histogram's native unit
+     * (nanoseconds). The two-argument overload interprets its {@code Double}
+     * argument as a scaling ratio, not a tick count, so it must not be used.
+     */
+    public static void writePercentileDistribution(final Path path, final Histogram histogram) throws IOException {
+        try (PrintStream out = new PrintStream(Files.newOutputStream(path), true, StandardCharsets.UTF_8)) {
+            histogram.outputPercentileDistribution(out, 5, 1.0);
+        }
     }
 
     /** Reads a histogram previously written by {@link #write}. */

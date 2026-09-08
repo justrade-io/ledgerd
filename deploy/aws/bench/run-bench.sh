@@ -169,7 +169,7 @@ merge_histograms() {
   local merged
   merged="$("$JAVA" --add-opens java.base/jdk.internal.misc=ALL-UNNAMED \
     --add-opens java.base/sun.nio.ch=ALL-UNNAMED \
-    -cp "$CP" io.justrade.ledgerd.examples.BenchAggregator "$RESULTS_DIR" 'client-*.hlog')"
+    -cp "$CP" io.justrade.ledgerd.examples.BenchAggregator "$RESULTS_DIR" 'client-*.hlog' "$RESULTS_DIR/merged.hgrm")"
 
   if [[ ! -f "$MERGED_FILE" ]]; then
     echo "timestamp,total,max_in_flight,concurrency,samples,p50_us,p99_us,p999_us,max_us" >"$MERGED_FILE"
@@ -183,6 +183,7 @@ merge_histograms() {
   m="$(jq -r '.max_us' <<<"$merged")"
   echo "$ts,$total,$max_in_flight,$concurrency,$samples,$p50,$p99,$p999,$m" >>"$MERGED_FILE"
   echo "   merged: samples=$samples p50=${p50}us p99=${p99}us p99.9=${p999}us max=${m}us"
+  echo "   plot data: $RESULTS_DIR/merged.hgrm"
   rm -f "$RESULTS_DIR"/client-*.hlog
 }
 
