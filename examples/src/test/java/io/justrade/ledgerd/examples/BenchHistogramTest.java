@@ -1,6 +1,7 @@
 package io.justrade.ledgerd.examples;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
@@ -62,8 +63,9 @@ final class BenchHistogramTest {
             assertTrue(content.contains("Percentile"));
             assertTrue(content.contains("TotalCount"));
             assertTrue(content.contains("1/(1-Percentile)"));
-            // The Value column must stay in native nanoseconds, not be scaled.
-            assertTrue(content.contains(Long.toString(histogram.getMaxValue())));
+            // The Value column must be scaled to milliseconds, so the raw
+            // nanosecond value must not appear.
+            assertFalse(content.contains(Long.toString(histogram.getMaxValue())));
         } finally {
             Files.deleteIfExists(path);
         }
