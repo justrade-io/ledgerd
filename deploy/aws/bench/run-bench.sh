@@ -193,7 +193,7 @@ run_once() {
 merge_histograms() {
   local total=$1 max_in_flight=$2 concurrency=$3 rate=$4
   local merged
-  local hgrm_name="merged-inflight-$max_in_flight-rate-$(fmt_rate "$rate").hgrm"
+  local hgrm_name="inflight-$max_in_flight-rate-$(fmt_rate "$rate").hgrm"
   merged="$("$JAVA" --add-opens java.base/jdk.internal.misc=ALL-UNNAMED \
     --add-opens java.base/sun.nio.ch=ALL-UNNAMED \
     -cp "$CP" io.justrade.ledgerd.examples.BenchAggregator "$RESULTS_DIR" 'client-*.hlog' "$RESULTS_DIR/$hgrm_name")"

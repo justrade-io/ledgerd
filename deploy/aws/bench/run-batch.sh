@@ -221,7 +221,7 @@ run_batch_once() {
 merge_histograms() {
   local total=$1 legs_per_batch=$2 max_bif=$3 concurrency=$4 num_batches=$5 actual_legs=$6 rate=$7
   local merged
-  local hgrm_name="batch-merged-lpb-$legs_per_batch-rate-$(fmt_rate "$rate").hgrm"
+  local hgrm_name="batch-lpb-$legs_per_batch-rate-$(fmt_rate "$rate").hgrm"
   merged="$("$JAVA" --add-opens java.base/jdk.internal.misc=ALL-UNNAMED \
     --add-opens java.base/sun.nio.ch=ALL-UNNAMED \
     -cp "$CP" io.justrade.ledgerd.examples.BenchAggregator "$RESULTS_DIR" 'batch-client-*.hlog' "$RESULTS_DIR/$hgrm_name")"
