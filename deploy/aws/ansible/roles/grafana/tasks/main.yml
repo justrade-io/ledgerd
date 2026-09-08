@@ -68,26 +68,27 @@
     group: grafana
     mode: "0644"
 
-- name: Provision LEDGERD dashboard
+- name: Remove stale dashboard definitions
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/grafana/provisioning/dashboards/ledgerd.json
+    - /etc/grafana/provisioning/dashboards/ledgerd-bench.json
+    - /etc/grafana/provisioning/dashboards/ledgerd-batch-bench.json
+
+- name: Provision LEDGERD cluster dashboard
   ansible.builtin.copy:
-    src: ledgerd-dashboard.json
-    dest: /etc/grafana/provisioning/dashboards/ledgerd.json
+    src: ledgerd-cluster-dashboard.json
+    dest: /etc/grafana/provisioning/dashboards/ledgerd-cluster.json
     owner: grafana
     group: grafana
     mode: "0644"
 
-- name: Provision LEDGERD bench dashboard
+- name: Provision LEDGERD correctness dashboard
   ansible.builtin.copy:
-    src: ledgerd-bench-dashboard.json
-    dest: /etc/grafana/provisioning/dashboards/ledgerd-bench.json
-    owner: grafana
-    group: grafana
-    mode: "0644"
-
-- name: Provision LEDGERD batch bench dashboard
-  ansible.builtin.copy:
-    src: ledgerd-batch-bench-dashboard.json
-    dest: /etc/grafana/provisioning/dashboards/ledgerd-batch-bench.json
+    src: ledgerd-correctness-dashboard.json
+    dest: /etc/grafana/provisioning/dashboards/ledgerd-correctness.json
     owner: grafana
     group: grafana
     mode: "0644"
@@ -96,6 +97,22 @@
   ansible.builtin.copy:
     src: ledgerd-read-dashboard.json
     dest: /etc/grafana/provisioning/dashboards/ledgerd-read.json
+    owner: grafana
+    group: grafana
+    mode: "0644"
+
+- name: Provision LEDGERD single-command bench dashboard
+  ansible.builtin.copy:
+    src: ledgerd-bench-single-dashboard.json
+    dest: /etc/grafana/provisioning/dashboards/ledgerd-bench-single.json
+    owner: grafana
+    group: grafana
+    mode: "0644"
+
+- name: Provision LEDGERD batch bench dashboard
+  ansible.builtin.copy:
+    src: ledgerd-bench-batch-dashboard.json
+    dest: /etc/grafana/provisioning/dashboards/ledgerd-bench-batch.json
     owner: grafana
     group: grafana
     mode: "0644"

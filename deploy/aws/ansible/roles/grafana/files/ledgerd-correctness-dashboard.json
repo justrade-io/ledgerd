@@ -1,0 +1,163 @@
+{
+  "uid": "ledgerd-correctness",
+  "title": "LEDGERD Correctness",
+  "description": "Correctness and capacity counters for the ledger. Any rising value here usually indicates a problem to investigate.",
+  "tags": ["ledgerd"],
+  "refresh": "5s",
+  "time": { "from": "now-1h", "to": "now" },
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "panels": [
+    {
+      "id": 1,
+      "type": "row",
+      "title": "Rejections",
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "panels": []
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Insufficient balance",
+      "description": "Commands rejected because the source account had insufficient balance.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
+      "targets": [
+        { "expr": "sum(ledgerd_insufficient_balance)", "legendFormat": "insufficient balance", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 10 } }
+      }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Insufficient allowance",
+      "description": "Commands rejected because the delegate lacked spending allowance.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
+      "targets": [
+        { "expr": "sum(ledgerd_insufficient_allowance)", "legendFormat": "insufficient allowance", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 10 } }
+      }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Invalid account",
+      "description": "Commands referencing a non-existent or invalid account.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 9 },
+      "targets": [
+        { "expr": "sum(ledgerd_invalid_account)", "legendFormat": "invalid account", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 10 } }
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Invalid amount",
+      "description": "Commands with a negative or malformed amount.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 9 },
+      "targets": [
+        { "expr": "sum(ledgerd_invalid_amount)", "legendFormat": "invalid amount", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 10 } }
+      }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Overflow",
+      "description": "Amount operations that would overflow checked 64-bit arithmetic.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 17 },
+      "targets": [
+        { "expr": "sum(ledgerd_overflow)", "legendFormat": "overflow", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 10 } }
+      }
+    },
+    {
+      "id": 7,
+      "type": "row",
+      "title": "Duplication",
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 25 },
+      "panels": []
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Duplicates detected",
+      "description": "Duplicate commands detected and deduplicated (expected during client retries).",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 26 },
+      "targets": [
+        { "expr": "sum(ledgerd_duplicates_detected)", "legendFormat": "duplicates", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 10 } }
+      }
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Dedup evicted",
+      "description": "Dedup entries evicted before their window expired. A rising count means the dedup window is too small.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 26 },
+      "targets": [
+        { "expr": "sum(ledgerd_dedup_evicted)", "legendFormat": "dedup evicted", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 10 } }
+      }
+    },
+    {
+      "id": 10,
+      "type": "row",
+      "title": "Backpressure & journal",
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 34 },
+      "panels": []
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Server backpressure",
+      "description": "Server-side backpressure events (service in-flight window full).",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 35 },
+      "targets": [
+        { "expr": "sum(ledgerd_backpressure_events)", "legendFormat": "server backpressure", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 10 } }
+      }
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Event journal overflow",
+      "description": "Domain events dropped because the event journal ring was full; size the ring larger (ADR 0011).",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 35 },
+      "targets": [
+        { "expr": "sum(ledgerd_event_journal_overflow)", "legendFormat": "journal overflow", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 10 } }
+      }
+    }
+  ]
+}

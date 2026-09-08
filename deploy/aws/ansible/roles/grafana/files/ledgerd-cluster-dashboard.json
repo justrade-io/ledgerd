@@ -1,0 +1,136 @@
+{
+  "uid": "ledgerd-cluster",
+  "title": "LEDGERD Cluster",
+  "description": "Operational summary of the LEDGERD write cluster: traffic, topology, snapshot timing, and state size.",
+  "tags": ["ledgerd"],
+  "refresh": "5s",
+  "time": { "from": "now-1h", "to": "now" },
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "panels": [
+    {
+      "id": 1,
+      "type": "row",
+      "title": "Traffic",
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "panels": []
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Throughput (commands/s)",
+      "description": "Consensus commands per second across the cluster.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
+      "targets": [
+        { "expr": "sum(rate(ledgerd_commands_processed[1m]))", "legendFormat": "commands/s", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "ops", "custom": { "drawStyle": "line", "fillOpacity": 10 } }
+      }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Commands (cumulative)",
+      "description": "Cumulative consensus commands processed by the leader and replicated to followers.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
+      "targets": [
+        { "expr": "sum(ledgerd_commands_processed)", "legendFormat": "commands", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 10 } }
+      }
+    },
+    {
+      "id": 4,
+      "type": "row",
+      "title": "Topology",
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 },
+      "panels": []
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Leader elections",
+      "description": "Number of leader elections. A rising count during a run indicates cluster instability.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 10 },
+      "targets": [
+        { "expr": "sum(ledgerd_leader_elections)", "legendFormat": "elections", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 10 } }
+      }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Balance count",
+      "description": "Number of distinct accounts with a non-zero balance.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 10 },
+      "targets": [
+        { "expr": "max(ledgerd_balance_count)", "legendFormat": "accounts", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 10 } }
+      }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Allowance owners",
+      "description": "Number of accounts with an active allowance owner.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 18 },
+      "targets": [
+        { "expr": "max(ledgerd_allowance_owner_count)", "legendFormat": "owners", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 10 } }
+      }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Dedup clients",
+      "description": "Number of clients currently tracked in the dedup window.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 18 },
+      "targets": [
+        { "expr": "max(ledgerd_dedup_client_count)", "legendFormat": "clients", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 10 } }
+      }
+    },
+    {
+      "id": 9,
+      "type": "row",
+      "title": "Snapshot",
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 26 },
+      "panels": []
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Snapshot timing",
+      "description": "Time to write and read a state snapshot (nanoseconds).",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 27 },
+      "targets": [
+        { "expr": "max(ledgerd_snapshot_write_nanos)", "legendFormat": "write", "refId": "A" },
+        { "expr": "max(ledgerd_snapshot_read_nanos)", "legendFormat": "read", "refId": "B" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "ns", "custom": { "drawStyle": "line", "fillOpacity": 10 } }
+      }
+    }
+  ]
+}

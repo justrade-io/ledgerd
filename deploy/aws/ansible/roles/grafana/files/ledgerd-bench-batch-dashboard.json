@@ -1,19 +1,29 @@
 {
-  "uid": "ledgerd-batch-bench",
-  "title": "LEDGERD Client Batch Bench",
+  "uid": "ledgerd-bench-batch",
+  "title": "LEDGERD Bench: Transfer Batch",
+  "description": "Transfer-batch load benchmark (ADR 0012). Throughput is measured in legs/s; latency is the merged batch end-to-end latency across clients.",
   "tags": ["ledgerd", "bench", "batch"],
   "refresh": "5s",
   "time": { "from": "now-1h", "to": "now" },
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 2,
+  "version": 1,
   "panels": [
     {
       "id": 1,
+      "type": "row",
+      "title": "Throughput",
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "panels": []
+    },
+    {
+      "id": 2,
       "type": "timeseries",
-      "title": "Throughput (legs/s)",
+      "title": "Transfer legs (legs/s)",
+      "description": "Transfer legs per second across all concurrent clients.",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
       "targets": [
         { "expr": "ledgerd_batch_legs_per_sec", "legendFormat": "legs/batch={{legs_per_batch}}", "refId": "A" }
       ],
@@ -22,11 +32,12 @@
       }
     },
     {
-      "id": 2,
+      "id": 3,
       "type": "timeseries",
-      "title": "Consensus rate (batches/s)",
+      "title": "Consensus appends (batches/s)",
+      "description": "Consensus batch appends per second; each batch carries legs_per_batch transfer legs.",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
       "targets": [
         { "expr": "ledgerd_batch_batches_per_sec", "legendFormat": "legs/batch={{legs_per_batch}}", "refId": "A" }
       ],
@@ -35,11 +46,20 @@
       }
     },
     {
-      "id": 3,
+      "id": 4,
+      "type": "row",
+      "title": "Latency (merged)",
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 },
+      "panels": []
+    },
+    {
+      "id": 5,
       "type": "timeseries",
-      "title": "p50 latency merged (ms)",
+      "title": "p50 latency (ms)",
+      "description": "True combined batch p50 across all concurrent clients (HdrHistogram merge).",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 10 },
       "targets": [
         { "expr": "ledgerd_batch_p50_us / 1000", "legendFormat": "legs/batch={{legs_per_batch}}", "refId": "A" }
       ],
@@ -48,11 +68,12 @@
       }
     },
     {
-      "id": 4,
+      "id": 6,
       "type": "timeseries",
-      "title": "p99 latency merged (ms)",
+      "title": "p99 latency (ms)",
+      "description": "True combined batch p99 across all concurrent clients (HdrHistogram merge).",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 10 },
       "targets": [
         { "expr": "ledgerd_batch_p99_us / 1000", "legendFormat": "legs/batch={{legs_per_batch}}", "refId": "A" }
       ],
@@ -61,11 +82,12 @@
       }
     },
     {
-      "id": 5,
+      "id": 7,
       "type": "timeseries",
-      "title": "p99.9 latency merged (ms)",
+      "title": "p99.9 latency (ms)",
+      "description": "True combined batch p99.9 across all concurrent clients (HdrHistogram merge).",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 18 },
       "targets": [
         { "expr": "ledgerd_batch_p999_us / 1000", "legendFormat": "legs/batch={{legs_per_batch}}", "refId": "A" }
       ],
@@ -74,11 +96,12 @@
       }
     },
     {
-      "id": 6,
+      "id": 8,
       "type": "timeseries",
-      "title": "max latency merged (ms)",
+      "title": "max latency (ms)",
+      "description": "True combined batch max across all concurrent clients (HdrHistogram merge).",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 18 },
       "targets": [
         { "expr": "ledgerd_batch_max_us / 1000", "legendFormat": "legs/batch={{legs_per_batch}}", "refId": "A" }
       ],

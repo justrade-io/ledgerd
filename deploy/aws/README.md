@@ -174,20 +174,27 @@ throughput sweeps (the read replica can lag behind bursty batch load).
 
 ### Grafana
 
-Open `http://<monitor-ip>:3000` (admin/admin). Four dashboards are provisioned:
+Open `http://<monitor-ip>:3000` (admin/admin). Five dashboards are provisioned
+into the `LEDGERD` folder:
 
-- `LEDGERD Overview` - node-side command throughput, cumulative commands,
-  balance count, leader elections, correctness counters (duplicates,
-  insufficient balance, backpressure, dedup evictions), and snapshot timing
-  (scraped from each node's `/metrics`).
+- `LEDGERD Cluster` - operational summary: traffic, topology (leader elections,
+  state size), and snapshot timing (scraped from each node's `/metrics`).
+- `LEDGERD Correctness` - correctness and capacity counters: rejections
+  (insufficient balance/allowance, invalid account/amount, overflow),
+  duplication (duplicates, dedup evictions), backpressure, and event-journal
+  overflow. Rising values here indicate a problem to investigate.
 - `LEDGERD Read Replica` - replication health: applied position, archive
   failovers, integrity failures, and liveness (scraped from the read replica's
   `/metrics`).
-- `LEDGERD Client Bench` - single-command in-flight sweep. Latency is the true
-  combined percentile merged across clients (`ledgerd_bench_p50_us` etc.); the
-  `_max_us` series show the conservative per-client max for comparison.
-- `LEDGERD Client Batch Bench` - transfer-batch sweep (legs/s, batches/s,
+- `LEDGERD Bench: Single Command` - single-command in-flight sweep. Latency is
+  the true combined percentile merged across clients (`ledgerd_bench_p50_us`
+  etc.); the `_max_us` series show the conservative per-client max for
+  comparison.
+- `LEDGERD Bench: Transfer Batch` - transfer-batch sweep (legs/s, batches/s,
   p50/p99/p99.9/max per `legs_per_batch`).
+
+Each dashboard is organised into collapsible rows, and every panel carries a
+description explaining what the metric means and what a rising value indicates.
 
 The client dashboards are served by the bench results exporter on `:9200`, which
 reads `/var/lib/ledgerd/bench/results.csv` + `merged-results.csv`

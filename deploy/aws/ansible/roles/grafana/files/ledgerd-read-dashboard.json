@@ -1,6 +1,7 @@
 {
   "uid": "ledgerd-read",
   "title": "LEDGERD Read Replica",
+  "description": "Read replica replication health: how far behind the leader, archive failovers, integrity failures, and liveness.",
   "tags": ["ledgerd", "read"],
   "refresh": "5s",
   "time": { "from": "now-1h", "to": "now" },
@@ -10,10 +11,19 @@
   "panels": [
     {
       "id": 1,
+      "type": "row",
+      "title": "Replication",
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "panels": []
+    },
+    {
+      "id": 2,
       "type": "timeseries",
       "title": "Applied position",
+      "description": "Last log position applied by the read replica. Lag versus the leader indicates replication delay.",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
       "targets": [
         { "expr": "ledgerd_read_applied_position", "legendFormat": "applied position", "refId": "A" }
       ],
@@ -22,11 +32,34 @@
       }
     },
     {
-      "id": 2,
+      "id": 3,
+      "type": "timeseries",
+      "title": "Replication healthy",
+      "description": "Replication health flag (1 = healthy, 0 = stale).",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
+      "targets": [
+        { "expr": "ledgerd_read_healthy", "legendFormat": "healthy", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 10 } }
+      }
+    },
+    {
+      "id": 4,
+      "type": "row",
+      "title": "Failures",
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 },
+      "panels": []
+    },
+    {
+      "id": 5,
       "type": "timeseries",
       "title": "Archive failovers",
+      "description": "Number of times the read replica switched to a different archive or leader.",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 10 },
       "targets": [
         { "expr": "ledgerd_read_failovers", "legendFormat": "failovers", "refId": "A" }
       ],
@@ -35,26 +68,14 @@
       }
     },
     {
-      "id": 3,
+      "id": 6,
       "type": "timeseries",
       "title": "Integrity failures",
+      "description": "Replication integrity failures. Any non-zero value indicates a divergence from the write cluster.",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 10 },
       "targets": [
         { "expr": "ledgerd_read_integrity_failures", "legendFormat": "integrity failures", "refId": "A" }
-      ],
-      "fieldConfig": {
-        "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 10 } }
-      }
-    },
-    {
-      "id": 4,
-      "type": "timeseries",
-      "title": "Replication healthy",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
-      "targets": [
-        { "expr": "ledgerd_read_healthy", "legendFormat": "healthy", "refId": "A" }
       ],
       "fieldConfig": {
         "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 10 } }
