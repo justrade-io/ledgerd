@@ -75,11 +75,14 @@ public final class LoadGenerator {
             // reorder a transfer ahead of the credit and cause INSUFFICIENT_BALANCE.
             submit(client, CommandType.CREDIT, ACCOUNT_A, 0L, total);
             drain(client);
+            final long transferStartNanos = System.nanoTime();
             for (int i = 0; i < total; i++) {
                 submit(client, CommandType.TRANSFER, ACCOUNT_A, ACCOUNT_B, 1L);
             }
 
             drain(client);
+            final double transferSeconds = (System.nanoTime() - transferStartNanos) / 1_000_000_000.0;
+            final long commandsPerSec = Math.round(total / transferSeconds);
 
             final Histogram histogram = client.latencyHistogram();
             final long p50Us = TimeUnit.NANOSECONDS.toMicros(histogram.getValueAtPercentile(50.0));
@@ -104,7 +107,7 @@ public final class LoadGenerator {
             System.out.printf(
                     "{\"event\":\"summary\",\"clientId\":%d,\"submitted\":%d,\"completed\":%d,"
                             + "\"expired\":%d,\"nonSuccess\":%d,\"leaderChanges\":%d,\"backpressure\":%d,"
-                            + "\"p50_us\":%d,\"p99_us\":%d,\"p999_us\":%d,\"max_us\":%d}%n",
+                            + "\"p50_us\":%d,\"p99_us\":%d,\"p999_us\":%d,\"max_us\":%d,\"commandsPerSec\":%d}%n",
                     clientId,
                     client.submitted(),
                     client.completed(),
@@ -115,7 +118,8 @@ public final class LoadGenerator {
                     p50Us,
                     p99Us,
                     p999Us,
-                    maxUs);
+                    maxUs,
+                    commandsPerSec);
 
             writeHistogram(histogram);
 

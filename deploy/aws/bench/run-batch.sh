@@ -27,6 +27,7 @@ RESULTS_DIR="${LEDGERD_RESULTS_DIR:-/var/lib/ledgerd/bench}"
 RESULTS_FILE="$RESULTS_DIR/batch-results.csv"
 MERGED_FILE="$RESULTS_DIR/batch-merged-results.csv"
 RECONCILE_FILE="$RESULTS_DIR/batch-reconcile.csv"
+SUMMARY_FILE="$RESULTS_DIR/batch-summary.md"
 SUPPLY_STATE="$RESULTS_DIR/supply_state"
 
 JAVA="${LEDGERD_JAVA:-/opt/jdk-21/bin/java}"
@@ -59,6 +60,28 @@ node_counters() {
 $(metric_max ledgerd_leader_elections) $(metric_max ledgerd_backpressure_events)"
 }
 
+# Format a throughput value with K/M suffix for the summary table.
+fmt_rate() {
+  local n=$1
+  if ((n >= 1000000)); then
+    awk -v n="$n" 'BEGIN { printf "%.2fM", n / 1000000 }'
+  elif ((n >= 1000)); then
+    awk -v n="$n" 'BEGIN { printf "%.0fK", n / 1000 }'
+  else
+    echo "$n"
+  fi
+}
+
+# Format a microsecond latency value as us (sub-ms) or ms (>= 1ms).
+fmt_latency() {
+  local us=$1
+  if ((us >= 1000)); then
+    awk -v u="$us" 'BEGIN { printf "%.2fms", u / 1000 }'
+  else
+    echo "${us}us"
+  fi
+}
+
 # The cluster supply only grows; persist the running expected supply so both the
 # single-command and batch harnesses continue correctly across re-runs.
 expected_supply=$(cat "$SUPPLY_STATE" 2>/dev/null || echo 0)
@@ -68,6 +91,11 @@ expected_supply=$(cat "$SUPPLY_STATE" 2>/dev/null || echo 0)
 # results. Give every run a fresh clientId range.
 CLIENT_ID_STATE="$RESULTS_DIR/client_id_state"
 client_id_base=$(cat "$CLIENT_ID_STATE" 2>/dev/null || echo 1000)
+
+# Consolidated latency table: one row per sweep iteration. The rate column is
+# the achieved transfer throughput (legs/s).
+printf '| rate (legs/s) | p50 | p90 | p95 | p99 | p99.9 | p99.99 | max |\n' >"$SUMMARY_FILE"
+printf '|---|---|---|---|---|---|---|---|\n' >>"$SUMMARY_FILE"
 
 run_batch_once() {
   local total=$1 legs_per_batch=$2 max_bif=$3 concurrency=$4
@@ -164,7 +192,7 @@ run_batch_once() {
   echo "              p50<=${agg_p50}us p99<=${agg_p99}us p99.9<=${agg_p999}us max=${agg_max}us"
   echo "              backpressure=$agg_bp leaderChanges=$agg_lc"
 
-  merge_histograms "$total" "$legs_per_batch" "$max_bif" "$concurrency" "$num_batches" "$actual_legs"
+  merge_histograms "$total" "$legs_per_batch" "$max_bif" "$concurrency" "$num_batches" "$actual_legs" "$agg_lps"
 
   if [[ -n "${LEDGERD_NODE_METRICS:-}" ]]; then
     reconcile "$legs_per_batch" "$num_batches" "$concurrency" "$base_commands" "$base_dups" "$base_lc" "$base_bp"
@@ -188,28 +216,38 @@ run_batch_once() {
   fi
 }
 
-# Merges this run's per-client histograms into one combined percentile set.
+# Merges this run's per-client histograms into one combined percentile set and
+# appends a row to the consolidated latency summary table.
 merge_histograms() {
-  local total=$1 legs_per_batch=$2 max_bif=$3 concurrency=$4 num_batches=$5 actual_legs=$6
+  local total=$1 legs_per_batch=$2 max_bif=$3 concurrency=$4 num_batches=$5 actual_legs=$6 rate=$7
   local merged
   merged="$("$JAVA" --add-opens java.base/jdk.internal.misc=ALL-UNNAMED \
     --add-opens java.base/sun.nio.ch=ALL-UNNAMED \
     -cp "$CP" io.justrade.ledgerd.examples.BenchAggregator "$RESULTS_DIR" 'batch-client-*.hlog' "$RESULTS_DIR/batch-merged.hgrm")"
 
   if [[ ! -f "$MERGED_FILE" ]]; then
-    echo "timestamp,total_legs,legs_per_batch,max_batch_in_flight,concurrency,batches,legs,samples,p50_us,p99_us,p999_us,max_us" >"$MERGED_FILE"
+    echo "timestamp,total_legs,legs_per_batch,max_batch_in_flight,concurrency,batches,legs,samples,p50_us,p90_us,p95_us,p99_us,p999_us,p9999_us,max_us" >"$MERGED_FILE"
   fi
-  local ts samples p50 p99 p999 m
+  local ts samples p50 p90 p95 p99 p999 p9999 m
   ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   samples="$(jq -r '.samples' <<<"$merged")"
   p50="$(jq -r '.p50_us' <<<"$merged")"
+  p90="$(jq -r '.p90_us' <<<"$merged")"
+  p95="$(jq -r '.p95_us' <<<"$merged")"
   p99="$(jq -r '.p99_us' <<<"$merged")"
   p999="$(jq -r '.p999_us' <<<"$merged")"
+  p9999="$(jq -r '.p9999_us' <<<"$merged")"
   m="$(jq -r '.max_us' <<<"$merged")"
-  echo "$ts,$total,$legs_per_batch,$max_bif,$concurrency,$num_batches,$actual_legs,$samples,$p50,$p99,$p999,$m" >>"$MERGED_FILE"
+  echo "$ts,$total,$legs_per_batch,$max_bif,$concurrency,$num_batches,$actual_legs,$samples,$p50,$p90,$p95,$p99,$p999,$p9999,$m" >>"$MERGED_FILE"
   echo "   merged: samples=$samples p50=${p50}us p99=${p99}us p99.9=${p999}us max=${m}us"
   echo "   plot data: $RESULTS_DIR/batch-merged.hgrm"
   rm -f "$RESULTS_DIR"/batch-client-*.hlog
+
+  printf '| %s | %s | %s | %s | %s | %s | %s | %s |\n' \
+    "$(fmt_rate "$rate")" \
+    "$(fmt_latency "$p50")" "$(fmt_latency "$p90")" "$(fmt_latency "$p95")" \
+    "$(fmt_latency "$p99")" "$(fmt_latency "$p999")" "$(fmt_latency "$p9999")" \
+    "$(fmt_latency "$m")" >>"$SUMMARY_FILE"
 }
 
 # Reconciles the server-side command delta and read-replica integrity against
@@ -265,5 +303,8 @@ else
   echo "$client_id_base" >"$CLIENT_ID_STATE"
 fi
 
+echo ""
+echo "==> latency summary:"
+cat "$SUMMARY_FILE"
 echo ""
 echo "==> batch bench complete. results: $RESULTS_FILE"

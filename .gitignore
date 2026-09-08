@@ -54,6 +54,9 @@ gradle-app.setting
 __pycache__/
 *.pyc
 
+# Locally downloaded bench results
+bench-results/
+
 # Eclipse Gradle plugin generated files
 # Eclipse Core
 .project

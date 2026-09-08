@@ -37,11 +37,15 @@ public final class BenchAggregator {
         }
         final Histogram merged = BenchHistogram.merge(histograms.toArray(new Histogram[0]));
         System.out.printf(
-                "{\"event\":\"merged\",\"samples\":%d,\"p50_us\":%d,\"p99_us\":%d,\"p999_us\":%d,\"max_us\":%d}%n",
+                "{\"event\":\"merged\",\"samples\":%d,\"p50_us\":%d,\"p90_us\":%d,\"p95_us\":%d,"
+                        + "\"p99_us\":%d,\"p999_us\":%d,\"p9999_us\":%d,\"max_us\":%d}%n",
                 merged.getTotalCount(),
                 TimeUnit.NANOSECONDS.toMicros(merged.getValueAtPercentile(50.0)),
+                TimeUnit.NANOSECONDS.toMicros(merged.getValueAtPercentile(90.0)),
+                TimeUnit.NANOSECONDS.toMicros(merged.getValueAtPercentile(95.0)),
                 TimeUnit.NANOSECONDS.toMicros(merged.getValueAtPercentile(99.0)),
                 TimeUnit.NANOSECONDS.toMicros(merged.getValueAtPercentile(99.9)),
+                TimeUnit.NANOSECONDS.toMicros(merged.getValueAtPercentile(99.99)),
                 TimeUnit.NANOSECONDS.toMicros(merged.getMaxValue()));
 
         if (args.length == 3) {
