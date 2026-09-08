@@ -221,9 +221,10 @@ run_batch_once() {
 merge_histograms() {
   local total=$1 legs_per_batch=$2 max_bif=$3 concurrency=$4 num_batches=$5 actual_legs=$6 rate=$7
   local merged
+  local hgrm_name="batch-merged-lpb-$legs_per_batch-rate-$(fmt_rate "$rate").hgrm"
   merged="$("$JAVA" --add-opens java.base/jdk.internal.misc=ALL-UNNAMED \
     --add-opens java.base/sun.nio.ch=ALL-UNNAMED \
-    -cp "$CP" io.justrade.ledgerd.examples.BenchAggregator "$RESULTS_DIR" 'batch-client-*.hlog' "$RESULTS_DIR/batch-merged-lpb-$legs_per_batch.hgrm")"
+    -cp "$CP" io.justrade.ledgerd.examples.BenchAggregator "$RESULTS_DIR" 'batch-client-*.hlog' "$RESULTS_DIR/$hgrm_name")"
 
   if [[ ! -f "$MERGED_FILE" ]]; then
     echo "timestamp,total_legs,legs_per_batch,max_batch_in_flight,concurrency,batches,legs,samples,p50_us,p90_us,p95_us,p99_us,p999_us,p9999_us,max_us" >"$MERGED_FILE"
@@ -240,7 +241,7 @@ merge_histograms() {
   m="$(jq -r '.max_us' <<<"$merged")"
   echo "$ts,$total,$legs_per_batch,$max_bif,$concurrency,$num_batches,$actual_legs,$samples,$p50,$p90,$p95,$p99,$p999,$p9999,$m" >>"$MERGED_FILE"
   echo "   merged: samples=$samples p50=${p50}us p99=${p99}us p99.9=${p999}us max=${m}us"
-  echo "   plot data: $RESULTS_DIR/batch-merged-lpb-$legs_per_batch.hgrm"
+  echo "   plot data: $RESULTS_DIR/$hgrm_name"
   rm -f "$RESULTS_DIR"/batch-client-*.hlog
 
   printf '| %s | %s | %s | %s | %s | %s | %s | %s |\n' \
