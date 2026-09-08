@@ -31,14 +31,17 @@ CP="${LEDGERD_CP:-/opt/ledgerd/examples/lib/*}"
 
 mkdir -p "$RESULTS_DIR"
 
-# Sum a named Prometheus metric across the node metric endpoints.
-metric_sum() {
-  local metric=$1 sum=0 value
+# Max of a named Prometheus metric across the node metric endpoints. The core
+# counters are replicated state, so every node reports the same cumulative value;
+# take the max to read the leader's (most up-to-date) number rather than 3x it.
+metric_max() {
+  local metric=$1 max=0 value
   for endpoint in ${LEDGERD_NODE_METRICS//,/ }; do
     value="$(curl -s "http://$endpoint/metrics" | awk -v m="$metric" '$0 ~ "^" m " " {print $2; exit}')"
-    sum=$((sum + ${value:-0}))
+    value=${value:-0}
+    ((value > max)) && max=$value
   done
-  echo "$sum"
+  echo "$max"
 }
 
 # Read a named Prometheus metric from the read replica endpoint.
@@ -49,8 +52,8 @@ read_metric() {
 
 # Snapshot the four counters reconciled per run as a single whitespace line.
 node_counters() {
-  echo "$(metric_sum ledgerd_commands_processed) $(metric_sum ledgerd_duplicates_detected) \
-$(metric_sum ledgerd_leader_elections) $(metric_sum ledgerd_backpressure_events)"
+  echo "$(metric_max ledgerd_commands_processed) $(metric_max ledgerd_duplicates_detected) \
+$(metric_max ledgerd_leader_elections) $(metric_max ledgerd_backpressure_events)"
 }
 
 run_once() {
