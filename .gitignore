@@ -50,6 +50,10 @@ gradle-app.setting
 # Cache of project
 .gradletasknamecache
 
+### Python template
+__pycache__/
+*.pyc
+
 # Eclipse Gradle plugin generated files
 # Eclipse Core
 .project

@@ -58,12 +58,14 @@ deploy/aws/
       ledgerd-read/          read replica systemd unit
       prometheus/            scrape config for node /metrics
       grafana/               datasource + LEDGERD dashboard
-      bench/                 bench.env + ledgerd-bench script
+      bench/                 bench.env + ledgerd-bench / ledgerd-batch scripts
     playbooks/
       deploy.yml
       bench.yml
+      batch.yml
   bench/
-    run-bench.sh             load/bench driver (copied to the bench host)
+    run-bench.sh             single-command load/bench driver (copied to the bench host)
+    run-batch.sh             transfer-batch load/bench driver (copied to the bench host)
   README.md
 ```
 
@@ -147,6 +149,20 @@ orders of magnitude higher than single commands because each batch amortizes the
 consensus append.
 
 ```bash
+cd deploy/aws/ansible
+
+# Default: 1000000 legs/client x 4 concurrent clients, legsPerBatch=256.
+ansible-playbook -i inventory/hosts.yml playbooks/batch.yml
+
+# Sweep legs per batch, 4 concurrent clients, 1M legs each.
+ansible-playbook -i inventory/hosts.yml playbooks/batch.yml \
+  -e ledgerd_total=1000000 -e ledgerd_concurrency=4 \
+  -e sweep_legs_per_batch=16,64,256,1024,4096 -e skip_readcheck=1
+```
+
+Alternatively, SSH into the bench host and drive it directly:
+
+```bash
 ssh -i ../.ssh/ledgerd-key.pem ubuntu@<bench-ip>
 sudo LEDGERD_TOTAL=1000000 LEDGERD_CONCURRENCY=4 \
   SWEEP_LEGS_PER_BATCH=256,1024,2048,4096 SKIP_READCHECK=1 \
@@ -158,18 +174,26 @@ throughput sweeps (the read replica can lag behind bursty batch load).
 
 ### Grafana
 
-Open `http://<monitor-ip>:3000` (admin/admin). Three dashboards are provisioned:
+Open `http://<monitor-ip>:3000` (admin/admin). Four dashboards are provisioned:
 
 - `LEDGERD Overview` - node-side command throughput, cumulative commands,
-  balance count, and leader elections (scraped from each node's `/metrics`).
-- `LEDGERD Client Bench` - single-command in-flight sweep (p50/p99/p99.9 per
-  `max_in_flight`) and client-side backpressure.
+  balance count, leader elections, correctness counters (duplicates,
+  insufficient balance, backpressure, dedup evictions), and snapshot timing
+  (scraped from each node's `/metrics`).
+- `LEDGERD Read Replica` - replication health: applied position, archive
+  failovers, integrity failures, and liveness (scraped from the read replica's
+  `/metrics`).
+- `LEDGERD Client Bench` - single-command in-flight sweep. Latency is the true
+  combined percentile merged across clients (`ledgerd_bench_p50_us` etc.); the
+  `_max_us` series show the conservative per-client max for comparison.
 - `LEDGERD Client Batch Bench` - transfer-batch sweep (legs/s, batches/s,
-  p50/p99 per `legs_per_batch`).
+  p50/p99/p99.9/max per `legs_per_batch`).
 
 The client dashboards are served by the bench results exporter on `:9200`, which
-reads `/var/lib/ledgerd/bench/results.csv` (single-command) and
-`batch-results.csv` (batch). Prometheus scrapes every 5s.
+reads `/var/lib/ledgerd/bench/results.csv` + `merged-results.csv`
+(single-command), `batch-results.csv` + `batch-merged-results.csv` (batch), and
+the `reconcile.csv` / `batch-reconcile.csv` server-side reconciliation files.
+Prometheus scrapes every 5s.
 
 ## 5. Optional: fault injection
 
@@ -202,10 +226,11 @@ ansible-playbook -i inventory/hosts.yml playbooks/reset.yml -e reset_restart=fal
 ```
 
 Clearing `/var/lib/ledgerd/bench` removes `results.csv`, `batch-results.csv`,
-the client logs, and the `supply_state` / `client_id_state` cursors. The
-`reset.yml` playbook wipes all of these together because a reset cluster with a
-stale `supply_state` would make the next `ReadCheck` expect the old cumulative
-supply and time out.
+`merged-results.csv`, `batch-merged-results.csv`, `reconcile.csv`,
+`batch-reconcile.csv`, the client logs, and the `supply_state` /
+`client_id_state` cursors. The `reset.yml` playbook wipes all of these together
+because a reset cluster with a stale `supply_state` would make the next
+`ReadCheck` expect the old cumulative supply and time out.
 
 ## 7. Cleanup
 

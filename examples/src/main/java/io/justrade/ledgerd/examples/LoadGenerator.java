@@ -6,6 +6,9 @@ import io.justrade.ledgerd.write.client.BackpressureException;
 import io.justrade.ledgerd.write.client.ResultHandler;
 import io.justrade.ledgerd.write.client.WriteClient;
 import io.justrade.ledgerd.write.client.config.ClientConfig;
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.file.Path;
 import java.util.concurrent.TimeUnit;
 import org.HdrHistogram.Histogram;
 
@@ -79,6 +82,11 @@ public final class LoadGenerator {
             drain(client);
 
             final Histogram histogram = client.latencyHistogram();
+            final long p50Us = TimeUnit.NANOSECONDS.toMicros(histogram.getValueAtPercentile(50.0));
+            final long p99Us = TimeUnit.NANOSECONDS.toMicros(histogram.getValueAtPercentile(99.0));
+            final long p999Us = TimeUnit.NANOSECONDS.toMicros(histogram.getValueAtPercentile(99.9));
+            final long maxUs = TimeUnit.NANOSECONDS.toMicros(histogram.getMaxValue());
+
             System.out.printf(
                     "load: clientId=%d submitted=%d completed=%d expired=%d nonSuccess=%d leaderChanges=%d"
                             + " backpressure=%d p50=%dus p99=%dus p99.9=%dus max=%dus%n",
@@ -89,10 +97,27 @@ public final class LoadGenerator {
                     nonSuccess[0],
                     client.leaderChanges(),
                     client.backpressureEvents(),
-                    TimeUnit.NANOSECONDS.toMicros(histogram.getValueAtPercentile(50.0)),
-                    TimeUnit.NANOSECONDS.toMicros(histogram.getValueAtPercentile(99.0)),
-                    TimeUnit.NANOSECONDS.toMicros(histogram.getValueAtPercentile(99.9)),
-                    TimeUnit.NANOSECONDS.toMicros(histogram.getMaxValue()));
+                    p50Us,
+                    p99Us,
+                    p999Us,
+                    maxUs);
+            System.out.printf(
+                    "{\"event\":\"summary\",\"clientId\":%d,\"submitted\":%d,\"completed\":%d,"
+                            + "\"expired\":%d,\"nonSuccess\":%d,\"leaderChanges\":%d,\"backpressure\":%d,"
+                            + "\"p50_us\":%d,\"p99_us\":%d,\"p999_us\":%d,\"max_us\":%d}%n",
+                    clientId,
+                    client.submitted(),
+                    client.completed(),
+                    client.expired(),
+                    nonSuccess[0],
+                    client.leaderChanges(),
+                    client.backpressureEvents(),
+                    p50Us,
+                    p99Us,
+                    p999Us,
+                    maxUs);
+
+            writeHistogram(histogram);
 
             final long expected = (long) total + 1L;
             if (client.completed() != expected || client.expired() != 0L || nonSuccess[0] != 0L) {
@@ -140,6 +165,19 @@ public final class LoadGenerator {
                 throw new IllegalStateException("drain timeout: pending=" + client.pendingCount());
             }
             client.poll();
+        }
+    }
+
+    /** Persists the latency histogram when the harness requests a cross-client merge. */
+    private static void writeHistogram(final Histogram histogram) {
+        final String path = System.getenv("LEDGERD_HISTOGRAM_PATH");
+        if (path == null || path.isBlank()) {
+            return;
+        }
+        try {
+            BenchHistogram.write(Path.of(path), histogram);
+        } catch (final IOException e) {
+            throw new UncheckedIOException("failed to write histogram to " + path, e);
         }
     }
 

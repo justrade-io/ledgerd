@@ -6,12 +6,12 @@
   "time": { "from": "now-1h", "to": "now" },
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 3,
+  "version": 4,
   "panels": [
     {
       "id": 1,
       "type": "timeseries",
-      "title": "p50 latency (ms)",
+      "title": "p50 latency merged (ms)",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
       "targets": [
@@ -24,7 +24,7 @@
     {
       "id": 2,
       "type": "timeseries",
-      "title": "p99 latency (ms)",
+      "title": "p99 latency merged (ms)",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
       "targets": [
@@ -37,7 +37,7 @@
     {
       "id": 3,
       "type": "timeseries",
-      "title": "p99.9 latency (ms)",
+      "title": "p99.9 latency merged (ms)",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
       "targets": [
@@ -58,6 +58,32 @@
       ],
       "fieldConfig": {
         "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 10 } }
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "p50 max-of-client (ms)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "targets": [
+        { "expr": "ledgerd_bench_p50_max_us / 1000", "legendFormat": "in-flight={{max_in_flight}}", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "ms", "custom": { "drawStyle": "line", "fillOpacity": 10 } }
+      }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "p99 max-of-client (ms)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "targets": [
+        { "expr": "ledgerd_bench_p99_max_us / 1000", "legendFormat": "in-flight={{max_in_flight}}", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "ms", "custom": { "drawStyle": "line", "fillOpacity": 10 } }
       }
     }
   ]

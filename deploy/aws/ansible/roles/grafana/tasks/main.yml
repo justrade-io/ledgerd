@@ -92,6 +92,14 @@
     group: grafana
     mode: "0644"
 
+- name: Provision LEDGERD read replica dashboard
+  ansible.builtin.copy:
+    src: ledgerd-read-dashboard.json
+    dest: /etc/grafana/provisioning/dashboards/ledgerd-read.json
+    owner: grafana
+    group: grafana
+    mode: "0644"
+
 - name: Install grafana systemd unit
   ansible.builtin.template:
     src: grafana.service.j2

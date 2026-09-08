@@ -15,6 +15,7 @@ locals {
         ledgerd_cluster_members   = local.cluster_members
         ledgerd_ingress_endpoints = local.ingress_endpoints
         ledgerd_archive_channels  = local.archive_channels
+        ledgerd_read_private_ip   = aws_instance.read.private_ip
       }
       children = {
         nodes = {

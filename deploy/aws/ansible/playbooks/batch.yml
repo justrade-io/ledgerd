@@ -1,0 +1,31 @@
+---
+# Runs the batch load/bench harness on the bench host. Tunables via -e:
+#   ledgerd_total, ledgerd_legs_per_batch, ledgerd_max_batch_in_flight,
+#   ledgerd_concurrency.
+# A comma list in SWEEP_LEGS_PER_BATCH repeats the run per value, e.g.:
+#   ansible-playbook -i inventory/hosts.yml playbooks/batch.yml \
+#     -e ledgerd_total=1000000 -e ledgerd_concurrency=4 \
+#     -e SWEEP_LEGS_PER_BATCH=16,64,256,1024 -e SKIP_READCHECK=1
+- name: Run LEDGERD batch load/bench
+  hosts: bench
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Run batch bench harness
+      ansible.builtin.command:
+        cmd: /usr/local/bin/ledgerd-batch
+      environment:
+        LEDGERD_TOTAL: "{{ ledgerd_total | default(1000000) }}"
+        LEDGERD_LEGS_PER_BATCH: "{{ ledgerd_legs_per_batch | default(256) }}"
+        LEDGERD_MAX_BATCH_IN_FLIGHT: "{{ ledgerd_max_batch_in_flight | default(16) }}"
+        LEDGERD_CONCURRENCY: "{{ ledgerd_concurrency | default(4) }}"
+        SWEEP_LEGS_PER_BATCH: "{{ sweep_legs_per_batch | default('') }}"
+        SKIP_READCHECK: "{{ skip_readcheck | default(0) }}"
+      register: batch_result
+      changed_when: false
+      async: 7200
+      poll: 15
+
+    - name: Batch bench output
+      ansible.builtin.debug:
+        var: batch_result.stdout_lines

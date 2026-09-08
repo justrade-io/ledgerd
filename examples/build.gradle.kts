@@ -15,6 +15,9 @@ dependencies {
     implementation(project(":core"))
     implementation(project(":protocol"))
     implementation(libs.bundles.aeron)
+
+    testImplementation(libs.junit.jupiter)
+    testRuntimeOnly(libs.junit.platform.launcher)
 }
 
 application {

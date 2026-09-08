@@ -1,4 +1,10 @@
 ---
+- name: Install jq for bench summary parsing
+  ansible.builtin.apt:
+    name: jq
+    state: present
+    update_cache: true
+
 - name: Install bench script
   ansible.builtin.copy:
     src: "{{ playbook_dir }}/../../bench/run-bench.sh"

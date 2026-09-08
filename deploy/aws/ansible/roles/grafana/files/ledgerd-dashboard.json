@@ -6,7 +6,7 @@
   "time": { "from": "now-1h", "to": "now" },
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 2,
+  "version": 3,
   "panels": [
     {
       "id": 1,
@@ -55,6 +55,67 @@
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
       "targets": [
         { "expr": "sum(ledgerd_leader_elections)", "legendFormat": "elections", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 10 } }
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Correctness counters (cumulative)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 16 },
+      "targets": [
+        { "expr": "sum(ledgerd_duplicates_detected)", "legendFormat": "duplicates", "refId": "A" },
+        { "expr": "sum(ledgerd_insufficient_balance)", "legendFormat": "insufficient balance", "refId": "B" },
+        { "expr": "sum(ledgerd_insufficient_allowance)", "legendFormat": "insufficient allowance", "refId": "C" },
+        { "expr": "sum(ledgerd_invalid_account)", "legendFormat": "invalid account", "refId": "D" },
+        { "expr": "sum(ledgerd_overflow)", "legendFormat": "overflow", "refId": "E" },
+        { "expr": "sum(ledgerd_invalid_amount)", "legendFormat": "invalid amount", "refId": "F" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 10 } }
+      }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Backpressure & dedup evictions (cumulative)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 24 },
+      "targets": [
+        { "expr": "sum(ledgerd_backpressure_events)", "legendFormat": "server backpressure", "refId": "A" },
+        { "expr": "sum(ledgerd_dedup_evicted)", "legendFormat": "dedup evicted", "refId": "B" },
+        { "expr": "sum(ledgerd_event_journal_overflow)", "legendFormat": "event journal overflow", "refId": "C" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 10 } }
+      }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Snapshot timing (ns)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 32 },
+      "targets": [
+        { "expr": "max(ledgerd_snapshot_write_nanos)", "legendFormat": "write", "refId": "A" },
+        { "expr": "max(ledgerd_snapshot_read_nanos)", "legendFormat": "read", "refId": "B" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "ns", "custom": { "drawStyle": "line", "fillOpacity": 10 } }
+      }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "State gauges",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 40 },
+      "targets": [
+        { "expr": "max(ledgerd_allowance_owner_count)", "legendFormat": "allowance owners", "refId": "A" },
+        { "expr": "max(ledgerd_dedup_client_count)", "legendFormat": "dedup clients", "refId": "B" }
       ],
       "fieldConfig": {
         "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 10 } }

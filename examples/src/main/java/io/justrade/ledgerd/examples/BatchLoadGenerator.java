@@ -9,6 +9,9 @@ import io.justrade.ledgerd.write.client.TransferLeg;
 import io.justrade.ledgerd.write.client.TransferLegResult;
 import io.justrade.ledgerd.write.client.WriteClient;
 import io.justrade.ledgerd.write.client.config.ClientConfig;
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.file.Path;
 import java.util.concurrent.TimeUnit;
 import org.HdrHistogram.Histogram;
 
@@ -108,6 +111,13 @@ public final class BatchLoadGenerator {
             final double seconds = (System.nanoTime() - startNanos) / 1_000_000_000.0;
 
             final Histogram histogram = client.latencyHistogram();
+            final double legsPerSec = actualLegs / seconds;
+            final double batchesPerSec = batchesSubmitted / seconds;
+            final long p50Us = TimeUnit.NANOSECONDS.toMicros(histogram.getValueAtPercentile(50.0));
+            final long p99Us = TimeUnit.NANOSECONDS.toMicros(histogram.getValueAtPercentile(99.0));
+            final long p999Us = TimeUnit.NANOSECONDS.toMicros(histogram.getValueAtPercentile(99.9));
+            final long maxUs = TimeUnit.NANOSECONDS.toMicros(histogram.getMaxValue());
+
             System.out.printf(
                     "batchload: clientId=%d batches=%d legs=%d legsPerBatch=%d maxBatchInFlight=%d"
                             + " nonSuccess=%d leaderChanges=%d backpressure=%d"
@@ -121,12 +131,33 @@ public final class BatchLoadGenerator {
                     nonSuccess[0],
                     client.leaderChanges(),
                     client.backpressureEvents(),
-                    actualLegs / seconds,
-                    batchesSubmitted / seconds,
-                    TimeUnit.NANOSECONDS.toMicros(histogram.getValueAtPercentile(50.0)),
-                    TimeUnit.NANOSECONDS.toMicros(histogram.getValueAtPercentile(99.0)),
-                    TimeUnit.NANOSECONDS.toMicros(histogram.getValueAtPercentile(99.9)),
-                    TimeUnit.NANOSECONDS.toMicros(histogram.getMaxValue()));
+                    legsPerSec,
+                    batchesPerSec,
+                    p50Us,
+                    p99Us,
+                    p999Us,
+                    maxUs);
+            System.out.printf(
+                    "{\"event\":\"summary\",\"clientId\":%d,\"batches\":%d,\"legs\":%d,"
+                            + "\"legsPerBatch\":%d,\"maxBatchInFlight\":%d,\"nonSuccess\":%d,"
+                            + "\"leaderChanges\":%d,\"backpressure\":%d,\"legsPerSec\":%d,\"batchesPerSec\":%d,"
+                            + "\"p50_us\":%d,\"p99_us\":%d,\"p999_us\":%d,\"max_us\":%d}%n",
+                    clientId,
+                    batchesSubmitted,
+                    actualLegs,
+                    legsPerBatch,
+                    maxBatchInFlight,
+                    nonSuccess[0],
+                    client.leaderChanges(),
+                    client.backpressureEvents(),
+                    Math.round(legsPerSec),
+                    Math.round(batchesPerSec),
+                    p50Us,
+                    p99Us,
+                    p999Us,
+                    maxUs);
+
+            writeHistogram(histogram);
 
             if (nonSuccess[0] != 0L || batchResults[0] != batchesSubmitted) {
                 throw new IllegalStateException("batch load incomplete: completed=" + batchResults[0] + " expected="
@@ -198,6 +229,19 @@ public final class BatchLoadGenerator {
                         "batch drain timeout: completed=" + batchResults[0] + " expected=" + expected);
             }
             client.poll();
+        }
+    }
+
+    /** Persists the latency histogram when the harness requests a cross-client merge. */
+    private static void writeHistogram(final Histogram histogram) {
+        final String path = System.getenv("LEDGERD_HISTOGRAM_PATH");
+        if (path == null || path.isBlank()) {
+            return;
+        }
+        try {
+            BenchHistogram.write(Path.of(path), histogram);
+        } catch (final IOException e) {
+            throw new UncheckedIOException("failed to write histogram to " + path, e);
         }
     }
 
