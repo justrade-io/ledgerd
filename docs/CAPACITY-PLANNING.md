@@ -154,9 +154,9 @@ rest stay sparse.
 
 ## 7. Validation plan
 
-The model is deterministic but the tables are unproven at scale. Validate each
-claim before production. Existing harness covers some of it; the rest needs new
-tests or benchmarks.
+The model is deterministic, and every claim is now covered by an automated test
+or benchmark (below). The worked tables remain guidance rather than a hard SLA,
+so validate against a production-shaped workload before go-live.
 
 ### What exists today
 
