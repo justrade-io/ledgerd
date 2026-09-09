@@ -23,6 +23,7 @@ dependencies {
 
     testImplementation(libs.junit.jupiter)
     testImplementation(libs.jqwik)
+    testImplementation(libs.jol.core)
     testRuntimeOnly(libs.junit.platform.launcher)
 }
 
@@ -69,9 +70,24 @@ val soakTest by tasks.registering(Test::class) {
     shouldRunAfter(faultTest)
 }
 
+// Heap-constrained boot: a single-node cluster plus a Pareto workload under a
+// fixed -Xmx, verifying the heap = heapLive / 0.65 sizing formula end to end.
+// Opt-in only, NOT wired into `check`.
+val capacityTest by tasks.registering(Test::class) {
+    description = "Boots a single-node cluster under a fixed heap and applies a Pareto workload without OOM."
+    group = "verification"
+    minHeapSize = "2g"
+    maxHeapSize = "2g"
+    jvmArgs("-XX:+UseZGC", "-XX:+ExitOnOutOfMemoryError")
+    useJUnitPlatform {
+        includeTags("capacity")
+    }
+    shouldRunAfter(soakTest)
+}
+
 tasks.named<Test>("test") {
     useJUnitPlatform {
-        excludeTags("integration", "cluster", "fault", "soak")
+        excludeTags("integration", "cluster", "fault", "soak", "capacity")
     }
 }
 

@@ -7,6 +7,7 @@ affinity = "3.23.3"
 junit = "5.11.4"
 jqwik = "1.9.2"
 jmh = "1.37"
+jol = "0.17"
 checkstyle = "10.20.1"
 jacoco = "0.8.12"
 errorprone = "2.36.0"
@@ -36,6 +37,7 @@ junit-platform-launcher = { group = "org.junit.platform", name = "junit-platform
 jqwik = { group = "net.jqwik", name = "jqwik", version.ref = "jqwik" }
 jmh-core = { group = "org.openjdk.jmh", name = "jmh-core", version.ref = "jmh" }
 jmh-annprocess = { group = "org.openjdk.jmh", name = "jmh-generator-annprocess", version.ref = "jmh" }
+jol-core = { group = "org.openjdk.jol", name = "jol-core", version.ref = "jol" }
 
 [bundles]
 aeron = ["aeron-client", "aeron-driver", "aeron-archive", "aeron-cluster", "agrona"]

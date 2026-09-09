@@ -165,46 +165,41 @@ tests or benchmarks.
 | Batch throughput ceiling ~1.7M legs/s | `BatchThroughputSoakTest` | `./gradlew soakTest` |
 | Zero steady-state allocation | JMH `-prof gc`, `ParetoContentionSoakTest` GC bound | `./gradlew :core:jmh -Pjmh.profilers=gc` |
 | Hot-path latency budget | `BalanceEngineBenchmark` + `jmhBudgetCheck` | `./gradlew :core:jmhBudgetCheck` |
-| Snapshot round-trip at 16K accounts | `SnapshotBenchmark` (`accounts=1024,16384`) | `./gradlew :core:jmh` |
+| Snapshot round-trip up to 1M accounts, single and multi-asset | `SnapshotBenchmark` (`accounts=1024,16384,1000000`, `assets=1,32`) | `./gradlew :core:jmh` |
 | Pareto hot/cold tail latency | `ParetoContentionSoakTest` (8 hot + 1000 cold) | `./gradlew soakTest` |
 
-### Gaps to close (new work)
+### How the model is verified
 
-1. **Resize threshold and per-asset allocation.** A unit test driving
-   `BalanceStore` and asserting `Long2LongHashMap.capacity()` / `resizeThreshold()`:
-   one touched asset preallocates `accountCapacity`, inserting past
-   `0.65 * accountCapacity` grows it. Verifies terms (1) and the safe-fill table.
-2. **Account-scale sweep.** Extend the JMH harness (or add
-   `CapacityScaleBenchmark`) with `@Param` account counts 100K / 500K / 1M,
-   asserting `mapLookup` stays flat and `creditDispatch` does not cliff. Verifies
-   the O(1) claim at scale.
-3. **Asset-scale sweep.** `@Param` asset counts 1 / 8 / 32 / 128 with
-   alternating asset ids, measuring the last-asset cache warm/cold delta. Verifies
-   ADR 0009's single-extra-lookup claim and cache-miss cost.
-4. **Memory footprint.** A JOL-based (`org.openjdk.jol`) or `Runtime`-measured
-   test computing retained bytes for (assets x accountCapacity) and for
-   `BatchDedupRing(batchDedupWindow, maxBatchSize)`, comparing against the 16 B /
-   10 B factors. Verifies terms (1) and (5).
-5. **Snapshot scale.** Extend `SnapshotBenchmark` `accounts` to 1M and add a
-   multi-asset dimension, measuring write/read time and serialized size. Verifies
-   snapshot cost at production account counts.
-6. **Heap-constrained boot.** Launch a single-node cluster with a fixed `-Xmx`
-   and a target config from the mapping table; assert it boots and applies a
-   Pareto workload without OOM. Verifies the full `heap = heapLive / 0.65` formula
-   end to end.
+The former gaps are now covered as follows:
 
-Suggested new files (kept out of the `check` gate where heavy):
+1. **Resize threshold and per-asset allocation.** `CapacityModelTest` measures
+   JOL retained bytes: one touched asset preallocates `accountCapacity * 16`,
+   every asset pays the same capacity, and inserting past `0.65 * accountCapacity`
+   doubles the backing arrays. Verifies term (1) and the safe-fill table.
+2. **Account-scale sweep.** `CapacityScaleBenchmark$AccountScale` sweeps 100K /
+   500K / 1M accounts; its `mapLookup` and `creditDispatch` methods reuse the
+   `jmhBudgetCheck` budgets (50 ns / 500 ns), so the CI gate fails if either
+   cliffs. Verifies the O(1) claim at scale.
+3. **Asset-scale sweep.** `CapacityScaleBenchmark$AssetScale` sweeps 1 / 8 / 32 /
+   128 assets, comparing warm single-asset lookup against round-robin cold lookup.
+   Verifies ADR 0009's single-extra-lookup claim and cache-miss cost.
+4. **Memory footprint.** `CapacityModelTest` compares JOL retained bytes against
+   the 16 B / 10 B / 51 B factors for `BalanceStore`, `BatchDedupRing`, and
+   `DedupRing`. Verifies terms (1), (4), and (5).
+5. **Snapshot scale.** `SnapshotBenchmark` now sweeps up to 1M accounts with a
+   single- and multi-asset dimension, measuring write/read time and serialized
+   size. Verifies snapshot cost at production account counts.
+6. **Heap-constrained boot.** `HeapConstrainedBootTest` (tag `capacity`) runs
+   under the opt-in `capacityTest` task with `-Xmx 2g`: a single-node cluster
+   boots alongside an engine filled to the 32-asset / 16-batch-client Pareto live
+   set. Verifies the full `heap = heapLive / 0.65` formula end to end.
 
-```
-tests/src/test/java/io/justrade/ledgerd/core/CapacityModelTest.java
-core/src/jmh/java/io/justrade/ledgerd/bench/CapacityScaleBenchmark.java
-```
-
-Run order after adding them:
+### Verification run order
 
 ```bash
 ./gradlew test                                  # unit, includes CapacityModelTest
 ./gradlew :core:jmh -PquickBench                # smoke: scale sweep does not cliff
 ./gradlew :core:jmh -Pjmh.profilers=gc          # zero-allocation confirmation
 ./gradlew soakTest                              # tail latency + GC bound
+./gradlew capacityTest                          # heap-constrained boot under -Xmx 2g
 ```
