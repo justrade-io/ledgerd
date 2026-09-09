@@ -17,6 +17,7 @@ import io.justrade.ledgerd.read.client.config.ReadClientConfig;
  *   LEDGERD_EXPECT_SUPPLY     expected total supply for asset 0 (required)
  *   LEDGERD_EXPECT_BALANCE_A  expected balance of account 100 (default 0)
  *   LEDGERD_EXPECT_BALANCE_B  expected balance of account 200 (default expectedSupply)
+ *   LEDGERD_SKIP_BALANCES     skip the account-100/200 balance checks, verify supply only
  *   LEDGERD_QUERY_HOST        read replica host (default localhost:44000)
  *   LEDGERD_RESPONSE_HOST     routable host for this client's response channel
  *   LEDGERD_READ_TIMEOUT_MS   per-assertion convergence timeout (default 60000)
@@ -37,6 +38,8 @@ public final class ReadCheck {
         final long expectedSupply = requireLong("LEDGERD_EXPECT_SUPPLY");
         final long expectedA = envLong("LEDGERD_EXPECT_BALANCE_A", 0L);
         final long expectedB = envLong("LEDGERD_EXPECT_BALANCE_B", expectedSupply);
+        final String skipBalancesEnv = System.getenv("LEDGERD_SKIP_BALANCES");
+        final boolean skipBalances = "1".equals(skipBalancesEnv) || "true".equalsIgnoreCase(skipBalancesEnv);
         final String queryHost = System.getenv("LEDGERD_QUERY_HOST");
         final String responseHost = System.getenv("LEDGERD_RESPONSE_HOST");
 
@@ -49,20 +52,27 @@ public final class ReadCheck {
         }
 
         try (ReadClient client = new ReadClient(builder.build())) {
-            final BalanceResult a = awaitBalance(client, 0L, ACCOUNT_A, expectedA);
-            final BalanceResult b = awaitBalance(client, 0L, ACCOUNT_B, expectedB);
-            final TotalSupplyResult supply = awaitSupply(client, 0L, expectedSupply);
+            if (skipBalances) {
+                final TotalSupplyResult supply = awaitSupply(client, 0L, expectedSupply);
+                System.out.printf(
+                        "readcheck: supply=%d appliedPosition=%d submitted=%d completed=%d%n",
+                        supply.totalSupply(), supply.appliedPosition(), client.submitted(), client.completed());
+            } else {
+                final BalanceResult a = awaitBalance(client, 0L, ACCOUNT_A, expectedA);
+                final BalanceResult b = awaitBalance(client, 0L, ACCOUNT_B, expectedB);
+                final TotalSupplyResult supply = awaitSupply(client, 0L, expectedSupply);
 
-            System.out.printf(
-                    "readcheck: balance(%d)=%d balance(%d)=%d supply=%d appliedPosition=%d submitted=%d completed=%d%n",
-                    ACCOUNT_A,
-                    a.balance(),
-                    ACCOUNT_B,
-                    b.balance(),
-                    supply.totalSupply(),
-                    supply.appliedPosition(),
-                    client.submitted(),
-                    client.completed());
+                System.out.printf(
+                        "readcheck: balance(%d)=%d balance(%d)=%d supply=%d appliedPosition=%d submitted=%d completed=%d%n",
+                        ACCOUNT_A,
+                        a.balance(),
+                        ACCOUNT_B,
+                        b.balance(),
+                        supply.totalSupply(),
+                        supply.appliedPosition(),
+                        client.submitted(),
+                        client.completed());
+            }
         }
     }
 

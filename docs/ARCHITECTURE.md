@@ -144,7 +144,14 @@ ledgerd/
 |       |-- BatchTransferExample.java       TransferBatch walkthrough (ADR 0012)
 |       |-- ReadClientExample.java          CQRS quick start: write then read back
 |       |-- LoadGenerator.java              Remote sustained load driver (Docker smoke / fault)
-|       +-- ReadCheck.java                  Read-replica convergence check (Docker harness)
+|       |-- BatchLoadGenerator.java         Transfer-batch load driver (Docker smoke / fault)
+|       |-- ReadCheck.java                  Read-replica convergence check (balances or supply-only)
+|       |-- BenchAggregator.java            Merge per-client latency histograms
+|       |-- BenchHistogram.java             Read/write HdrHistogram files for the bench harness
+|       |-- CapacityFillDriver.java         Capacity-model fill driver (docs/CAPACITY-PLANNING.md)
+|       |-- ParetoSampler.java              Deterministic hot/cold account sampler for the Pareto drivers
+|       |-- ParetoLoadGenerator.java        Multi-account Pareto single-command bench driver (AWS)
+|       +-- ParetoBatchGenerator.java       Multi-account Pareto transfer-batch bench driver (AWS)
 |
 |-- tests/                     Unit, property, and integration tests
 |   +-- src/testFixtures/java/io/justrade/ledgerd/testkit/   Test-only helpers (NOT the Edge SDK)

@@ -1,10 +1,13 @@
 ---
-# Runs the batch load/bench harness on the bench host. Tunables via -e:
-#   ledgerd_total, ledgerd_legs_per_batch, ledgerd_max_batch_in_flight,
-#   ledgerd_concurrency.
+# Runs the multi-account Pareto batch load/bench harness on the bench host.
+# Tunables via -e: ledgerd_total, ledgerd_legs_per_batch,
+# ledgerd_max_batch_in_flight, ledgerd_concurrency, ledgerd_assets,
+# ledgerd_hot_accounts, ledgerd_cold_accounts, ledgerd_hot_ratio,
+# ledgerd_fund_amount, ledgerd_seed.
 # A comma list in SWEEP_LEGS_PER_BATCH repeats the run per value, e.g.:
 #   ansible-playbook -i inventory/hosts.yml playbooks/batch.yml \
 #     -e ledgerd_total=1000000 -e ledgerd_concurrency=4 \
+#     -e ledgerd_assets=4 -e ledgerd_hot_accounts=8 -e ledgerd_cold_accounts=10000 \
 #     -e SWEEP_LEGS_PER_BATCH=16,64,256,1024 -e SKIP_READCHECK=1
 - name: Run LEDGERD batch load/bench
   hosts: bench
@@ -19,6 +22,12 @@
         LEDGERD_LEGS_PER_BATCH: "{{ ledgerd_legs_per_batch | default(256) }}"
         LEDGERD_MAX_BATCH_IN_FLIGHT: "{{ ledgerd_max_batch_in_flight | default(16) }}"
         LEDGERD_CONCURRENCY: "{{ ledgerd_concurrency | default(4) }}"
+        LEDGERD_ASSETS: "{{ ledgerd_assets | default(1) }}"
+        LEDGERD_HOT_ACCOUNTS: "{{ ledgerd_hot_accounts | default(8) }}"
+        LEDGERD_COLD_ACCOUNTS: "{{ ledgerd_cold_accounts | default(1000) }}"
+        LEDGERD_HOT_RATIO: "{{ ledgerd_hot_ratio | default(0.9) }}"
+        LEDGERD_FUND_AMOUNT: "{{ ledgerd_fund_amount | default(1000000000000) }}"
+        LEDGERD_SEED: "{{ ledgerd_seed | default(12648430) }}"
         SWEEP_LEGS_PER_BATCH: "{{ sweep_legs_per_batch | default('') }}"
         SKIP_READCHECK: "{{ skip_readcheck | default(0) }}"
       register: batch_result

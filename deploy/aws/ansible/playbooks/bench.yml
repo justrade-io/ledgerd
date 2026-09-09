@@ -1,9 +1,12 @@
 ---
-# Runs the load/bench harness on the bench host. Tunables via -e:
-#   ledgerd_total, ledgerd_max_in_flight, ledgerd_concurrency.
+# Runs the multi-account Pareto load/bench harness on the bench host. Tunables
+# via -e: ledgerd_total, ledgerd_max_in_flight, ledgerd_concurrency,
+# ledgerd_assets, ledgerd_hot_accounts, ledgerd_cold_accounts, ledgerd_hot_ratio,
+# ledgerd_fund_amount, ledgerd_seed.
 # A comma list in SWEEP_IN_FLIGHT repeats the run per value, e.g.:
 #   ansible-playbook -i inventory/hosts.yml playbooks/bench.yml \
 #     -e ledgerd_total=200000 -e ledgerd_concurrency=8 \
+#     -e ledgerd_assets=4 -e ledgerd_hot_accounts=8 -e ledgerd_cold_accounts=10000 \
 #     -e SWEEP_IN_FLIGHT=128,512,1024,4096
 - name: Run LEDGERD load/bench
   hosts: bench
@@ -17,6 +20,12 @@
         LEDGERD_TOTAL: "{{ ledgerd_total | default(100000) }}"
         LEDGERD_MAX_IN_FLIGHT: "{{ ledgerd_max_in_flight | default(1024) }}"
         LEDGERD_CONCURRENCY: "{{ ledgerd_concurrency | default(4) }}"
+        LEDGERD_ASSETS: "{{ ledgerd_assets | default(1) }}"
+        LEDGERD_HOT_ACCOUNTS: "{{ ledgerd_hot_accounts | default(8) }}"
+        LEDGERD_COLD_ACCOUNTS: "{{ ledgerd_cold_accounts | default(1000) }}"
+        LEDGERD_HOT_RATIO: "{{ ledgerd_hot_ratio | default(0.9) }}"
+        LEDGERD_FUND_AMOUNT: "{{ ledgerd_fund_amount | default(1000000000000) }}"
+        LEDGERD_SEED: "{{ ledgerd_seed | default(12648430) }}"
         SWEEP_IN_FLIGHT: "{{ sweep_in_flight | default('') }}"
       register: bench_result
       changed_when: false

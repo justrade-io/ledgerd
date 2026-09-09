@@ -1,18 +1,25 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# LEDGERD load/bench driver.
+# LEDGERD load/bench driver (multi-account Pareto workload).
 #
-# Runs CONCURRENCY concurrent LoadGenerator processes against the deployed
+# Runs CONCURRENCY concurrent ParetoLoadGenerator processes against the deployed
 # cluster, aggregates the latency summary into a CSV, merges the per-client
 # latency histograms into a true combined percentile, verifies the read replica
-# converges, and reconciles the server-side command counter against the load.
+# converges to the expected supply, and reconciles the server-side command
+# counter against the load.
 #
 # Configuration is read from /etc/ledgerd/bench.env (written by the Ansible
 # bench role). Tunables:
-#   LEDGERD_TOTAL          commands per client          (default 100000)
-#   LEDGERD_MAX_IN_FLIGHT  per-client in-flight window  (default 1024)
-#   LEDGERD_CONCURRENCY    number of concurrent clients (default 4)
+#   LEDGERD_TOTAL          transfer commands per client    (default 100000)
+#   LEDGERD_MAX_IN_FLIGHT  per-client in-flight window     (default 1024)
+#   LEDGERD_CONCURRENCY    number of concurrent clients    (default 4)
+#   LEDGERD_ASSETS         number of assets                (default 1)
+#   LEDGERD_HOT_ACCOUNTS   hot accounts per asset          (default 8)
+#   LEDGERD_COLD_ACCOUNTS  cold accounts per asset         (default 1000)
+#   LEDGERD_HOT_RATIO      traffic fraction to hot bucket  (default 0.9)
+#   LEDGERD_FUND_AMOUNT    seed units per account          (default 1000000000000)
+#   LEDGERD_SEED           reproducible sampler seed       (default 12648430)
 #   SWEEP_IN_FLIGHT        optional comma list, e.g. "128,512,1024,4096";
 #                          when set, the whole run repeats per value.
 
@@ -21,7 +28,19 @@ source /etc/ledgerd/bench.env
 TOTAL="${LEDGERD_TOTAL:-100000}"
 MAX_IN_FLIGHT="${LEDGERD_MAX_IN_FLIGHT:-1024}"
 CONCURRENCY="${LEDGERD_CONCURRENCY:-4}"
+ASSETS="${LEDGERD_ASSETS:-1}"
+HOT_ACCOUNTS="${LEDGERD_HOT_ACCOUNTS:-8}"
+COLD_ACCOUNTS="${LEDGERD_COLD_ACCOUNTS:-1000}"
+HOT_RATIO="${LEDGERD_HOT_RATIO:-0.9}"
+FUND_AMOUNT="${LEDGERD_FUND_AMOUNT:-1000000000000}"
+SEED="${LEDGERD_SEED:-12648430}"
 RESULTS_DIR="${LEDGERD_RESULTS_DIR:-/var/lib/ledgerd/bench}"
+
+# Each client funds every account on every asset before the transfer storm, so
+# the per-client setup commands and the net supply growth are fixed by the shape.
+ACCOUNT_COUNT=$((HOT_ACCOUNTS + COLD_ACCOUNTS))
+FUNDED_PER_CLIENT=$((ASSETS * ACCOUNT_COUNT))
+SUPPLY_PER_CLIENT=$((FUNDED_PER_CLIENT * FUND_AMOUNT))
 RESULTS_FILE="$RESULTS_DIR/results.csv"
 MERGED_FILE="$RESULTS_DIR/merged-results.csv"
 RECONCILE_FILE="$RESULTS_DIR/reconcile.csv"
@@ -99,12 +118,18 @@ run_once() {
     LEDGERD_CLIENT_ID="$((client_id_base + i))" \
       LEDGERD_TOTAL="$total" \
       LEDGERD_MAX_IN_FLIGHT="$max_in_flight" \
+      LEDGERD_ASSETS="$ASSETS" \
+      LEDGERD_HOT_ACCOUNTS="$HOT_ACCOUNTS" \
+      LEDGERD_COLD_ACCOUNTS="$COLD_ACCOUNTS" \
+      LEDGERD_HOT_RATIO="$HOT_RATIO" \
+      LEDGERD_FUND_AMOUNT="$FUND_AMOUNT" \
+      LEDGERD_SEED="$SEED" \
       LEDGERD_HISTOGRAM_PATH="$RESULTS_DIR/client-$i.hlog" \
       LEDGERD_INGRESS_ENDPOINTS="$LEDGERD_INGRESS_ENDPOINTS" \
       LEDGERD_EGRESS_ENDPOINT="$LEDGERD_EGRESS_ENDPOINT" \
       "$JAVA" --add-opens java.base/jdk.internal.misc=ALL-UNNAMED \
       --add-opens java.base/sun.nio.ch=ALL-UNNAMED \
-      -cp "$CP" io.justrade.ledgerd.examples.LoadGenerator >"$log" 2>&1 &
+      -cp "$CP" io.justrade.ledgerd.examples.ParetoLoadGenerator >"$log" 2>&1 &
     pids+=("$!")
   done
 
@@ -179,8 +204,7 @@ run_once() {
 
   echo "==> verify read replica converges to supply=$expected_supply"
   LEDGERD_EXPECT_SUPPLY="$expected_supply" \
-    LEDGERD_EXPECT_BALANCE_A=0 \
-    LEDGERD_EXPECT_BALANCE_B="$expected_supply" \
+    LEDGERD_SKIP_BALANCES=1 \
     LEDGERD_QUERY_HOST="$LEDGERD_QUERY_HOST" \
     LEDGERD_RESPONSE_HOST="$LEDGERD_RESPONSE_HOST" \
     "$JAVA" --add-opens java.base/jdk.internal.misc=ALL-UNNAMED \
@@ -234,7 +258,7 @@ reconcile() {
   applied="$(read_metric ledgerd_read_applied_position)"
   integrity="$(read_metric ledgerd_read_integrity_failures)"
 
-  local expected_commands=$(((total + 1) * concurrency))
+  local expected_commands=$(((FUNDED_PER_CLIENT + total) * concurrency))
   local delta_commands=$((after_commands - base_commands))
   local delta_dups=$((after_dups - base_dups))
   local delta_lc=$((after_lc - base_lc))
@@ -263,9 +287,10 @@ reconcile() {
 
 SUPPLY_STATE="$RESULTS_DIR/supply_state"
 
-# The cluster supply only grows: each LoadGenerator run credits TOTAL per client,
-# so every run (sweep iteration or single run) adds TOTAL * CONCURRENCY. Persist
-# the running expected supply so re-running the harness continues correctly.
+# The cluster supply only grows: each ParetoLoadGenerator run funds every account
+# on every asset per client, so every run (sweep iteration or single run) adds
+# SUPPLY_PER_CLIENT * CONCURRENCY. Persist the running expected supply so
+# re-running the harness continues correctly.
 expected_supply=$(cat "$SUPPLY_STATE" 2>/dev/null || echo 0)
 
 # The engine dedups by (clientId, clientSeq); a restarted client with the same
@@ -282,14 +307,14 @@ printf '|---|---|---|---|---|---|---|---|\n' >>"$SUMMARY_FILE"
 if [[ -n "${SWEEP_IN_FLIGHT:-}" ]]; then
   IFS=',' read -ra values <<<"$SWEEP_IN_FLIGHT"
   for mif in "${values[@]}"; do
-    expected_supply=$((expected_supply + TOTAL * CONCURRENCY))
+    expected_supply=$((expected_supply + SUPPLY_PER_CLIENT * CONCURRENCY))
     run_once "$TOTAL" "$mif" "$CONCURRENCY" "$expected_supply"
     echo "$expected_supply" >"$SUPPLY_STATE"
     client_id_base=$((client_id_base + CONCURRENCY))
     echo "$client_id_base" >"$CLIENT_ID_STATE"
   done
 else
-  expected_supply=$((expected_supply + TOTAL * CONCURRENCY))
+  expected_supply=$((expected_supply + SUPPLY_PER_CLIENT * CONCURRENCY))
   run_once "$TOTAL" "$MAX_IN_FLIGHT" "$CONCURRENCY" "$expected_supply"
   echo "$expected_supply" >"$SUPPLY_STATE"
   client_id_base=$((client_id_base + CONCURRENCY))

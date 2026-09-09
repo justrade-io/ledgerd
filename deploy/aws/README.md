@@ -119,19 +119,25 @@ curl http://<node-0-public-ip>:9100/metrics
 ## 4. Run the load/bench
 
 The bench host has `/usr/local/bin/ledgerd-bench`, which runs N concurrent
-`LoadGenerator` processes, aggregates p50/p99/p99.9/max latency into a CSV under
-`/var/lib/ledgerd/bench/results.csv`, and verifies the read replica converges.
+`ParetoLoadGenerator` processes against a multi-account Pareto workload (hot +
+cold accounts across one or more assets), aggregates p50/p99/p99.9/max latency
+into a CSV under `/var/lib/ledgerd/bench/results.csv`, and verifies the read
+replica converges to the expected supply.
 
 ```bash
 cd deploy/aws/ansible
 
-# Default: 100000 commands/client x 4 concurrent clients.
+# Default: 100000 transfers/client x 4 concurrent clients, 8 hot + 1000 cold accounts.
 ansible-playbook -i inventory/hosts.yml playbooks/bench.yml
 
-# Sweep the in-flight window, 8 concurrent clients, 200k commands each.
+# Sweep the in-flight window, 8 concurrent clients, 200k transfers each.
 ansible-playbook -i inventory/hosts.yml playbooks/bench.yml \
   -e ledgerd_total=200000 -e ledgerd_concurrency=8 \
   -e sweep_in_flight=128,512,1024,4096
+
+# Four assets, 8 hot + 10000 cold accounts per asset.
+ansible-playbook -i inventory/hosts.yml playbooks/bench.yml \
+  -e ledgerd_assets=4 -e ledgerd_hot_accounts=8 -e ledgerd_cold_accounts=10000
 ```
 
 Alternatively, SSH into the bench host and drive it directly:
@@ -143,10 +149,10 @@ sudo LEDGERD_TOTAL=100000 LEDGERD_CONCURRENCY=4 /usr/local/bin/ledgerd-bench
 
 ### Batch load (high throughput)
 
-`/usr/local/bin/ledgerd-batch` drives `BatchLoadGenerator` processes submitting
-transfer batches (ADR 0012). Throughput is measured in legs/s, one to three
-orders of magnitude higher than single commands because each batch amortizes the
-consensus append.
+`/usr/local/bin/ledgerd-batch` drives `ParetoBatchGenerator` processes submitting
+transfer batches (ADR 0012) across the same multi-account Pareto workload.
+Throughput is measured in legs/s, one to three orders of magnitude higher than
+single commands because each batch amortizes the consensus append.
 
 ```bash
 cd deploy/aws/ansible
@@ -297,33 +303,38 @@ For a zero-GC operational window, switch to `-XX:+UnlockExperimentalVMOptions
 
 ## Benchmark findings
 
-Measured on a 3-node `c6i.xlarge` cluster in `ap-southeast-1` (single AZ).
+Measured on a 3-node `c6i.xlarge` cluster in `ap-southeast-1` (single AZ). The
+workload is multi-account Pareto: 8 hot accounts absorbing 90% of traffic plus
+1000 cold accounts, on a single asset (see `LEDGERD_HOT_ACCOUNTS` /
+`LEDGERD_COLD_ACCOUNTS` / `LEDGERD_HOT_RATIO`). This exercises account-map
+contention, unlike the former fixed two-account scenario.
 
 ### Single-command throughput
 
 Bounded by the consensus append rate (one Raft round-trip per command). p50
-grows with concurrency as the leader saturates:
+grows with concurrency as the leader saturates. Measured with 4 concurrent
+clients, 100000 transfers each (1008 funding credits per client up front):
 
-| Concurrency | p50 | p99 |
-|---|---|---|
-| 1 | 0.63 ms | 5.5 ms |
-| 2 | 1.0 ms | 10.1 ms |
-| 4 | 4.2 ms | 21.6 ms |
-| 8 | 11.1 ms | 40.4 ms |
+| Concurrency | rate | p50 | p99 | p99.9 |
+|---|---|---|---|---|
+| 4 | 272K cmd/s | 11.7 ms | 42.6 ms | 60.1 ms |
+
+Sweep concurrency with `-e ledgerd_concurrency=N` and the in-flight window with
+`-e sweep_in_flight=128,512,1024,4096` to reproduce a full curve.
 
 ### Transfer-batch throughput (ADR 0012)
 
 Each batch amortizes the consensus append, so legs/s is one to three orders of
 magnitude higher than single commands. The ceiling is ~1.7M legs/s, bounded by
-the single service agent thread (~0.56 us/leg end-to-end), not consensus:
+the single service agent thread (~0.56 us/leg end-to-end), not consensus.
+Measured with 4 concurrent clients, 1M legs each, `legsPerBatch=256`:
 
-| legsPerBatch | batches/s | legs/s | p50 |
-|---|---|---|---|
-| 16 | 14,278 | 0.23M | 3.9 ms |
-| 64 | 11,420 | 0.73M | 5.7 ms |
-| 256 | 4,565 | 1.17M | 12.2 ms |
-| 1024 | 1,561 | 1.60M | 35.7 ms |
-| 4096 | 430 | 1.76M | 134.6 ms |
+| legsPerBatch | batches/s | legs/s | p50 | p99 | p99.9 |
+|---|---|---|---|---|---|
+| 256 | 5,129 | 1.31M | 10.5 ms | 27.0 ms | 48.8 ms |
+
+Sweep `legsPerBatch` with `-e sweep_legs_per_batch=16,64,256,1024,4096` to
+reproduce the full batch curve.
 
 Notes:
 
@@ -333,6 +344,9 @@ Notes:
 - `ledgerd_commands_processed` counts consensus commands, one per batch not per
   leg; the useful throughput is legs/s on the `LEDGERD Client Batch Bench`
   dashboard.
+- The read replica is verified supply-only (`LEDGERD_SKIP_BALANCES=1`): transfer
+  legs conserve total supply, so the final supply equals the funding amount
+  times account count times client count.
 
 ## Production notes
 

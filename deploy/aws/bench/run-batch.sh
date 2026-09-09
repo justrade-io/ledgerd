@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# LEDGERD batch load/bench driver.
+# LEDGERD batch load/bench driver (multi-account Pareto workload).
 #
-# Runs CONCURRENCY concurrent BatchLoadGenerator processes against the deployed
+# Runs CONCURRENCY concurrent ParetoBatchGenerator processes against the deployed
 # cluster, aggregates legs/s and batches/s throughput into a CSV, merges the
 # per-client batch-latency histograms into a true combined percentile, verifies
-# the read replica converges, and reconciles the server-side command counter.
+# the read replica converges to the expected supply, and reconciles the
+# server-side command counter.
 #
 # Configuration is read from /etc/ledgerd/bench.env (written by the Ansible
 # bench role). Tunables:
@@ -14,6 +15,12 @@ set -euo pipefail
 #   LEDGERD_LEGS_PER_BATCH       legs per transfer batch          (default 256)
 #   LEDGERD_MAX_BATCH_IN_FLIGHT  in-flight batch window           (default 16)
 #   LEDGERD_CONCURRENCY          number of concurrent clients     (default 4)
+#   LEDGERD_ASSETS               number of assets                 (default 1)
+#   LEDGERD_HOT_ACCOUNTS         hot accounts per asset           (default 8)
+#   LEDGERD_COLD_ACCOUNTS        cold accounts per asset          (default 1000)
+#   LEDGERD_HOT_RATIO            traffic fraction to hot bucket   (default 0.9)
+#   LEDGERD_FUND_AMOUNT          seed units per account           (default 1000000000000)
+#   LEDGERD_SEED                 reproducible sampler seed        (default 12648430)
 #   SWEEP_LEGS_PER_BATCH         optional comma list, e.g. "16,64,256,1024";
 #                                when set, the whole run repeats per value.
 
@@ -23,7 +30,19 @@ TOTAL_LEGS="${LEDGERD_TOTAL:-1000000}"
 LEGS_PER_BATCH="${LEDGERD_LEGS_PER_BATCH:-256}"
 MAX_BATCH_IN_FLIGHT="${LEDGERD_MAX_BATCH_IN_FLIGHT:-16}"
 CONCURRENCY="${LEDGERD_CONCURRENCY:-4}"
+ASSETS="${LEDGERD_ASSETS:-1}"
+HOT_ACCOUNTS="${LEDGERD_HOT_ACCOUNTS:-8}"
+COLD_ACCOUNTS="${LEDGERD_COLD_ACCOUNTS:-1000}"
+HOT_RATIO="${LEDGERD_HOT_RATIO:-0.9}"
+FUND_AMOUNT="${LEDGERD_FUND_AMOUNT:-1000000000000}"
+SEED="${LEDGERD_SEED:-12648430}"
 RESULTS_DIR="${LEDGERD_RESULTS_DIR:-/var/lib/ledgerd/bench}"
+
+# Each client funds every account on every asset before the transfer storm, so
+# the per-client setup commands and the net supply growth are fixed by the shape.
+ACCOUNT_COUNT=$((HOT_ACCOUNTS + COLD_ACCOUNTS))
+FUNDED_PER_CLIENT=$((ASSETS * ACCOUNT_COUNT))
+SUPPLY_PER_CLIENT=$((FUNDED_PER_CLIENT * FUND_AMOUNT))
 RESULTS_FILE="$RESULTS_DIR/batch-results.csv"
 MERGED_FILE="$RESULTS_DIR/batch-merged-results.csv"
 RECONCILE_FILE="$RESULTS_DIR/batch-reconcile.csv"
@@ -82,8 +101,10 @@ fmt_latency() {
   fi
 }
 
-# The cluster supply only grows; persist the running expected supply so both the
-# single-command and batch harnesses continue correctly across re-runs.
+# The cluster supply only grows: each ParetoBatchGenerator run funds every
+# account on every asset per client, so every run adds SUPPLY_PER_CLIENT *
+# CONCURRENCY. Persist the running expected supply so re-running the harness
+# continues correctly.
 expected_supply=$(cat "$SUPPLY_STATE" 2>/dev/null || echo 0)
 
 # The engine dedups by (clientId, clientSeq); a restarted client with the same
@@ -120,12 +141,18 @@ run_batch_once() {
       LEDGERD_TOTAL="$total" \
       LEDGERD_LEGS_PER_BATCH="$legs_per_batch" \
       LEDGERD_MAX_BATCH_IN_FLIGHT="$max_bif" \
+      LEDGERD_ASSETS="$ASSETS" \
+      LEDGERD_HOT_ACCOUNTS="$HOT_ACCOUNTS" \
+      LEDGERD_COLD_ACCOUNTS="$COLD_ACCOUNTS" \
+      LEDGERD_HOT_RATIO="$HOT_RATIO" \
+      LEDGERD_FUND_AMOUNT="$FUND_AMOUNT" \
+      LEDGERD_SEED="$SEED" \
       LEDGERD_HISTOGRAM_PATH="$RESULTS_DIR/batch-client-$i.hlog" \
       LEDGERD_INGRESS_ENDPOINTS="$LEDGERD_INGRESS_ENDPOINTS" \
       LEDGERD_EGRESS_ENDPOINT="$LEDGERD_EGRESS_ENDPOINT" \
       "$JAVA" --add-opens java.base/jdk.internal.misc=ALL-UNNAMED \
       --add-opens java.base/sun.nio.ch=ALL-UNNAMED \
-      -cp "$CP" io.justrade.ledgerd.examples.BatchLoadGenerator >"$log" 2>&1 &
+      -cp "$CP" io.justrade.ledgerd.examples.ParetoBatchGenerator >"$log" 2>&1 &
     pids+=("$!")
   done
 
@@ -200,14 +227,13 @@ run_batch_once() {
     echo "   skip reconcile (LEDGERD_NODE_METRICS unset)"
   fi
 
-  expected_supply=$((expected_supply + concurrency * actual_legs))
+  expected_supply=$((expected_supply + concurrency * SUPPLY_PER_CLIENT))
   if [[ "${SKIP_READCHECK:-0}" == "1" ]]; then
     echo "==> skip readcheck (supply now $expected_supply)"
   else
     echo "==> verify read replica converges to supply=$expected_supply"
     LEDGERD_EXPECT_SUPPLY="$expected_supply" \
-      LEDGERD_EXPECT_BALANCE_A=0 \
-      LEDGERD_EXPECT_BALANCE_B="$expected_supply" \
+      LEDGERD_SKIP_BALANCES=1 \
       LEDGERD_QUERY_HOST="$LEDGERD_QUERY_HOST" \
       LEDGERD_RESPONSE_HOST="$LEDGERD_RESPONSE_HOST" \
       "$JAVA" --add-opens java.base/jdk.internal.misc=ALL-UNNAMED \
@@ -262,7 +288,7 @@ reconcile() {
   applied="$(read_metric ledgerd_read_applied_position)"
   integrity="$(read_metric ledgerd_read_integrity_failures)"
 
-  local expected_commands=$(((num_batches + 1) * concurrency))
+  local expected_commands=$(((FUNDED_PER_CLIENT + num_batches) * concurrency))
   local delta_commands=$((after_commands - base_commands))
   local delta_dups=$((after_dups - base_dups))
   local delta_lc=$((after_lc - base_lc))
