@@ -20,6 +20,8 @@ truth for balances and allowances - and does exactly that, fast.
   status codes, and driving the engine directly.
 - Operate it: [Operations](docs/OPERATIONS.md) - snapshots, node restart,
   deployment, Prometheus metrics.
+- Plan capacity: [Capacity planning](docs/CAPACITY-PLANNING.md) - memory model,
+  `CoreConfig` sizing, and server mapping.
 - Contribute: [Contributing](CONTRIBUTING.md) and [Security](SECURITY.md).
 
 ## Why
