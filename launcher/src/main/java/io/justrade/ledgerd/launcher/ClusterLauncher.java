@@ -52,6 +52,15 @@ public final class ClusterLauncher {
                 Integer.getInteger("ledgerd.batchDedupWindow", CoreConfig.DEFAULT_BATCH_DEDUP_WINDOW);
         coreConfig = coreConfig.withBatch(maxBatchSize, batchDedupWindow);
 
+        // Preallocated map capacities, tunable to size the hot-path stores for a
+        // target account/asset workload (docs/CAPACITY-PLANNING.md).
+        final int accountCapacity = Integer.getInteger("ledgerd.accountCapacity", CoreConfig.DEFAULT_ACCOUNT_CAPACITY);
+        final int allowanceOwnerCapacity =
+                Integer.getInteger("ledgerd.allowanceOwnerCapacity", CoreConfig.DEFAULT_ALLOWANCE_OWNER_CAPACITY);
+        final int dedupClientCapacity =
+                Integer.getInteger("ledgerd.dedupClientCapacity", CoreConfig.DEFAULT_DEDUP_CLIENT_CAPACITY);
+        coreConfig = coreConfig.withCapacities(accountCapacity, allowanceOwnerCapacity, dedupClientCapacity);
+
         final ClusterNode node = new ClusterNode(clusterConfig, coreConfig, cleanStart);
         Runtime.getRuntime().addShutdownHook(new Thread(node::close, "ledgerd-shutdown"));
 

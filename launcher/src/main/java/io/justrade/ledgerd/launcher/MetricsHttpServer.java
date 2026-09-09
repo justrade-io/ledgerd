@@ -6,6 +6,7 @@ import io.justrade.ledgerd.telemetry.CounterSink;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.io.UncheckedIOException;
+import java.lang.management.ManagementFactory;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.ExecutorService;
@@ -84,6 +85,13 @@ public final class MetricsHttpServer implements AutoCloseable {
             sb.append("# TYPE ").append(metric).append(' ').append(type).append('\n');
             sb.append(metric).append(' ').append(value).append('\n');
         }
+        // JVM heap-used gauge, computed lazily on scrape rather than on a separate
+        // sampler thread, which can be starved while the single-writer service
+        // saturates the node's cores under sustained load.
+        sb.append("# TYPE ledgerd_heap_used_bytes gauge\n");
+        sb.append("ledgerd_heap_used_bytes ")
+                .append(ManagementFactory.getMemoryMXBean().getHeapMemoryUsage().getUsed())
+                .append('\n');
         return sb.toString();
     }
 

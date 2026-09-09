@@ -21,6 +21,14 @@
     group: root
     mode: "0755"
 
+- name: Install capacity fill script
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../bench/run-fill.sh"
+    dest: /usr/local/bin/ledgerd-fill
+    owner: root
+    group: root
+    mode: "0755"
+
 - name: Render bench environment
   ansible.builtin.template:
     src: bench.env.j2

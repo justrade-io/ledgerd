@@ -133,6 +133,26 @@ public final class CoreConfig {
                 batchDedupWindow);
     }
 
+    /**
+     * Returns a copy of this configuration with the preallocated map capacities
+     * set (each a power of two): per-asset account capacity, per-asset allowance
+     * owner capacity, and the dedup client capacity. Used by the deploy knobs to
+     * size the hot-path stores for a target account/asset workload.
+     */
+    public CoreConfig withCapacities(
+            final int accountCapacity, final int allowanceOwnerCapacity, final int dedupClientCapacity) {
+        return new CoreConfig(
+                accountCapacity,
+                allowanceOwnerCapacity,
+                delegateCapacity,
+                dedupClientCapacity,
+                dedupWindow,
+                eventJournalEnabled,
+                eventJournalCapacity,
+                maxBatchSize,
+                batchDedupWindow);
+    }
+
     public boolean eventJournalEnabled() {
         return eventJournalEnabled;
     }

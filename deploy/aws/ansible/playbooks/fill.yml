@@ -1,0 +1,29 @@
+---
+# Runs the capacity-fill harness on the bench host. Tunables via -e:
+#   ledgerd_assets, ledgerd_hot_accounts, ledgerd_cold_accounts,
+#   ledgerd_concurrency.
+# The harness credits distinct accounts across the given assets (hot asset 0 +
+# cold assets 1..N-1) and reconciles the server-side balance count plus the JVM
+# heap growth against the capacity model in docs/CAPACITY-PLANNING.md.
+- name: Run LEDGERD capacity fill
+  hosts: bench
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Run capacity fill harness
+      ansible.builtin.command:
+        cmd: /usr/local/bin/ledgerd-fill
+      environment:
+        LEDGERD_ASSETS: "{{ ledgerd_assets | default(32) }}"
+        LEDGERD_HOT_ACCOUNTS: "{{ ledgerd_hot_accounts | default(681000) }}"
+        LEDGERD_COLD_ACCOUNTS: "{{ ledgerd_cold_accounts | default(1000) }}"
+        LEDGERD_CONCURRENCY: "{{ ledgerd_concurrency | default(4) }}"
+        LEDGERD_MAX_IN_FLIGHT: "{{ ledgerd_max_in_flight | default(1024) }}"
+      register: fill_result
+      changed_when: false
+      async: 7200
+      poll: 15
+
+    - name: Fill output
+      ansible.builtin.debug:
+        var: fill_result.stdout_lines

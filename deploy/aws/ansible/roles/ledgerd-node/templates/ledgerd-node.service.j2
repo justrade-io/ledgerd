@@ -21,6 +21,9 @@ ExecStart={{ jdk_home }}/bin/java \
   -Dledgerd.socketRcvbufLength={{ ledgerd_socket_buf_length }} \
   -Dledgerd.maxBatchSize={{ ledgerd_max_batch_size }} \
   -Dledgerd.batchDedupWindow={{ ledgerd_batch_dedup_window }} \
+  -Dledgerd.accountCapacity={{ ledgerd_account_capacity }} \
+  -Dledgerd.allowanceOwnerCapacity={{ ledgerd_allowance_owner_capacity }} \
+  -Dledgerd.dedupClientCapacity={{ ledgerd_dedup_client_capacity }} \
   -cp "{{ ledgerd_lib_dir }}/*" \
   io.justrade.ledgerd.launcher.ClusterLauncher \
   --config=/etc/ledgerd/node.properties

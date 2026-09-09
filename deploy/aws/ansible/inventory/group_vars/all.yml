@@ -56,3 +56,10 @@ ledgerd_heap: 2g
 # batchDedupWindow x maxBatchSize per-leg arrays, the dominant heap consumer).
 ledgerd_max_batch_size: 4096
 ledgerd_batch_dedup_window: 1024
+
+# CoreConfig preallocated map capacities (docs/CAPACITY-PLANNING.md). Each must
+# be a power of two. accountCapacity is per ASSET, not total; the hottest asset
+# drives the balance-map memory (accountCapacity x 16 B per touched asset).
+ledgerd_account_capacity: 1048576        # 2^20
+ledgerd_allowance_owner_capacity: 65536  # 2^16
+ledgerd_dedup_client_capacity: 65536     # 2^16

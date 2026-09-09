@@ -47,6 +47,15 @@ public final class ReadServiceLauncher {
                 Integer.getInteger("ledgerd.batchDedupWindow", CoreConfig.DEFAULT_BATCH_DEDUP_WINDOW);
         coreConfig = coreConfig.withBatch(maxBatchSize, batchDedupWindow);
 
+        // Preallocated map capacities must match the write cluster so the read
+        // projection applies the same account/allowance load without resizing.
+        final int accountCapacity = Integer.getInteger("ledgerd.accountCapacity", CoreConfig.DEFAULT_ACCOUNT_CAPACITY);
+        final int allowanceOwnerCapacity =
+                Integer.getInteger("ledgerd.allowanceOwnerCapacity", CoreConfig.DEFAULT_ALLOWANCE_OWNER_CAPACITY);
+        final int dedupClientCapacity =
+                Integer.getInteger("ledgerd.dedupClientCapacity", CoreConfig.DEFAULT_DEDUP_CLIENT_CAPACITY);
+        coreConfig = coreConfig.withCapacities(accountCapacity, allowanceOwnerCapacity, dedupClientCapacity);
+
         try (ReadReplicaNode node = new ReadReplicaNode(replicaConfig, coreConfig)) {
             // Optional Prometheus metrics + replication-aware /healthz endpoint,
             // enabled with -Dledgerd.metricsPort=<port>.
