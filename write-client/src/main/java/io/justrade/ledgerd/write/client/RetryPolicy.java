@@ -16,9 +16,15 @@ final class RetryPolicy {
     }
 
     private final int maxRetries;
+    private final boolean rawSingleShot;
 
     RetryPolicy(final int maxRetries) {
+        this(maxRetries, false);
+    }
+
+    RetryPolicy(final int maxRetries, final boolean rawSingleShot) {
         this.maxRetries = maxRetries;
+        this.rawSingleShot = rawSingleShot;
     }
 
     /**
@@ -36,6 +42,11 @@ final class RetryPolicy {
         final boolean due = forceResend || (now - deadlineNanos) >= 0;
         if (!due) {
             return Action.WAIT;
+        }
+        // Raw single-shot never resends: a timeout or leader change surfaces as an
+        // indeterminate outcome instead of being masked by an idempotent retry.
+        if (rawSingleShot) {
+            return Action.EXPIRE;
         }
         if (maxRetries > 0 && retries >= maxRetries) {
             return Action.EXPIRE;

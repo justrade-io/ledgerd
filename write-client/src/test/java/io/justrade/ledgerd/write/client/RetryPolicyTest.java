@@ -52,4 +52,28 @@ final class RetryPolicyTest {
         final RetryPolicy policy = new RetryPolicy(0);
         assertEquals(Action.RETRY, policy.evaluate(200L, 100L, 999, false, true));
     }
+
+    @Test
+    void rawSingleShotExpiresAtDeadlineInsteadOfRetrying() {
+        final RetryPolicy policy = new RetryPolicy(0, true);
+        assertEquals(Action.EXPIRE, policy.evaluate(100L, 100L, 0, false, true));
+    }
+
+    @Test
+    void rawSingleShotExpiresOnForcedResendInsteadOfRetrying() {
+        final RetryPolicy policy = new RetryPolicy(0, true);
+        assertEquals(Action.EXPIRE, policy.evaluate(50L, 100L, 0, true, true));
+    }
+
+    @Test
+    void rawSingleShotWaitsBeforeDeadline() {
+        final RetryPolicy policy = new RetryPolicy(0, true);
+        assertEquals(Action.WAIT, policy.evaluate(99L, 100L, 0, false, true));
+    }
+
+    @Test
+    void rawSingleShotWaitsWhenSlotIsFree() {
+        final RetryPolicy policy = new RetryPolicy(0, true);
+        assertEquals(Action.WAIT, policy.evaluate(200L, 100L, 0, false, false));
+    }
 }

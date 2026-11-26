@@ -87,7 +87,7 @@ public final class WriteClient implements EgressListener, AutoCloseable {
         this.config = config;
         this.handler = handler;
         this.nanoClock = nanoClock;
-        this.retryPolicy = new RetryPolicy(config.maxRetries());
+        this.retryPolicy = new RetryPolicy(config.maxRetries(), config.rawSingleShot());
         // Size the pending map so it never rehashes while the in-flight window
         // (bounded by maxInFlight) is populated: capacity * load factor must
         // cover maxInFlight entries.

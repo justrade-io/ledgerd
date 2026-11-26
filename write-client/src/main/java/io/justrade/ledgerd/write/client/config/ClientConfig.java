@@ -21,6 +21,7 @@ public final class ClientConfig {
     private final int maxInFlight;
     private final int maxBatchSize;
     private final int maxBatchInFlight;
+    private final boolean rawSingleShot;
 
     private ClientConfig(final Builder builder) {
         this.clientId = builder.clientId;
@@ -33,6 +34,7 @@ public final class ClientConfig {
         this.maxInFlight = builder.maxInFlight;
         this.maxBatchSize = builder.maxBatchSize;
         this.maxBatchInFlight = builder.maxBatchInFlight;
+        this.rawSingleShot = builder.rawSingleShot;
     }
 
     public static Builder builder(final long clientId, final String ingressEndpoints) {
@@ -79,6 +81,17 @@ public final class ClientConfig {
         return maxBatchInFlight;
     }
 
+    /**
+     * When {@code true}, a command is sent exactly once and is never resent on
+     * timeout or leader change; an unacknowledged command expires as an
+     * indeterminate outcome. Off by default. Intended for distributed-systems
+     * verification (for example a Jepsen linearizability client), where an
+     * idempotent retry would mask the raw outcome the checker needs to observe.
+     */
+    public boolean rawSingleShot() {
+        return rawSingleShot;
+    }
+
     /** Fluent builder with sensible defaults for local and production use. */
     public static final class Builder {
         private final long clientId;
@@ -91,6 +104,7 @@ public final class ClientConfig {
         private int maxInFlight = 1024;
         private int maxBatchSize = 1024;
         private int maxBatchInFlight = 16;
+        private boolean rawSingleShot;
 
         private Builder(final long clientId, final String ingressEndpoints) {
             this.clientId = clientId;
@@ -146,6 +160,16 @@ public final class ClientConfig {
         /** Maximum transfer batches in flight at once. */
         public Builder maxBatchInFlight(final int value) {
             this.maxBatchInFlight = value;
+            return this;
+        }
+
+        /**
+         * Send each command exactly once with no retry on timeout or leader
+         * change, so an unacknowledged command surfaces as indeterminate. Use for
+         * distributed-systems verification; leave off for normal idempotent use.
+         */
+        public Builder rawSingleShot(final boolean value) {
+            this.rawSingleShot = value;
             return this;
         }
 

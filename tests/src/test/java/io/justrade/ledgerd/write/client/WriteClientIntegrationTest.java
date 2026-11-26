@@ -132,6 +132,77 @@ class WriteClientIntegrationTest {
         }
     }
 
+    @Test
+    @Timeout(60)
+    void rawSingleShotStillDeliversResultOnHappyPath() {
+        final StatusCode[] lastStatus = {StatusCode.NULL_VAL};
+        final long[] lastCommandIdLo = {-1L};
+        final ResultHandler handler = (idHi, idLo, status, balance, hasBalance, allowance, hasAllowance) -> {
+            lastCommandIdLo[0] = idLo;
+            lastStatus[0] = status;
+        };
+
+        final ClientConfig config = ClientConfig.builder(1L, ClusterConfig.ingressEndpoints(1))
+                .rawSingleShot(true)
+                .build();
+
+        try (WriteClient client = new WriteClient(config, handler)) {
+            final long creditId = client.submit(CommandType.CREDIT, 100L, 0L, 0L, 500L);
+            awaitResult(client, creditId, lastCommandIdLo);
+            assertEquals(StatusCode.SUCCESS, lastStatus[0]);
+            assertEquals(1L, client.completed());
+        }
+    }
+
+    @Test
+    @Timeout(60)
+    void rawSingleShotExpiresOnTimeoutEvenWithUnboundedRetries() {
+        final AtomicInteger expiredCount = new AtomicInteger();
+        final ResultHandler handler = new ResultHandler() {
+            @Override
+            public void onResult(
+                    final long commandIdHi,
+                    final long commandIdLo,
+                    final StatusCode status,
+                    final long resultBalance,
+                    final boolean hasBalance,
+                    final long resultAllowance,
+                    final boolean hasAllowance) {
+                // no result is expected in this test
+            }
+
+            @Override
+            public void onExpired(final long commandIdHi, final long commandIdLo) {
+                expiredCount.incrementAndGet();
+            }
+        };
+
+        // maxRetries 0 means retry forever in normal mode; raw single-shot must
+        // override that and expire on the first deadline instead of resending.
+        final ClientConfig config = ClientConfig.builder(1L, ClusterConfig.ingressEndpoints(1))
+                .rawSingleShot(true)
+                .maxRetries(0)
+                .retryBackoffNs(java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(10))
+                .build();
+
+        try (WriteClient client = new WriteClient(config, handler)) {
+            node.close();
+            node = null;
+
+            client.submit(CommandType.CREDIT, 100L, 0L, 0L, 500L);
+
+            final long deadline = System.currentTimeMillis() + TIMEOUT_MS;
+            while (System.currentTimeMillis() < deadline && expiredCount.get() == 0) {
+                client.poll();
+                Thread.onSpinWait();
+            }
+
+            assertEquals(1, expiredCount.get(), "raw command must expire as indeterminate, not retry forever");
+            assertEquals(1L, client.expired());
+            assertEquals(0, client.pendingCount());
+        }
+    }
+
     private static void awaitResult(final WriteClient client, final long commandIdLo, final long[] lastCommandIdLo) {
         final long deadline = System.currentTimeMillis() + TIMEOUT_MS;
         while (System.currentTimeMillis() < deadline) {
