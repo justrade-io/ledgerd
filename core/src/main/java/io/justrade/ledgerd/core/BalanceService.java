@@ -46,6 +46,9 @@ public final class BalanceService implements io.aeron.cluster.service.ClusteredS
     private static final int EGRESS_BUFFER_LENGTH = 128;
     private static final int EVENT_BUFFER_LENGTH = 64;
 
+    // Bounded spin attempts before a BLOCK-policy event is dropped (ADR 0014).
+    private static final int JOURNAL_BLOCK_SPIN_LIMIT = 1024;
+
     private final BalanceEngine engine;
     private final SnapshotManager snapshotManager;
     private final CoreMetrics metrics;
@@ -64,6 +67,7 @@ public final class BalanceService implements io.aeron.cluster.service.ClusteredS
     // Domain event journal (ADR 0011): encoders and ring are only allocated when
     // journaling is enabled, so a non-journaling node pays nothing.
     private final boolean journalEnabled;
+    private final CoreConfig.JournalOverflowPolicy journalOverflowPolicy;
     private final EventJournalRing eventRing;
     private final MessageHeaderEncoder eventHeaderEncoder = new MessageHeaderEncoder();
     private final BalanceChangedEventEncoder balanceChangedEncoder = new BalanceChangedEventEncoder();
@@ -83,6 +87,7 @@ public final class BalanceService implements io.aeron.cluster.service.ClusteredS
         this.engine = new BalanceEngine(config, metrics);
         this.snapshotManager = new SnapshotManager(config.maxBatchSize());
         this.journalEnabled = config.eventJournalEnabled();
+        this.journalOverflowPolicy = config.journalOverflowPolicy();
         this.eventRing = journalEnabled ? new EventJournalRing(config.eventJournalCapacity()) : null;
         this.batchOutcome = new BatchOutcome(config.maxBatchSize());
         this.batchEgressBuffer = new UnsafeBuffer(
@@ -414,9 +419,21 @@ public final class BalanceService implements io.aeron.cluster.service.ClusteredS
     }
 
     private void offerEvent(final int length) {
-        if (!eventRing.write(eventBuffer, 0, length)) {
-            metrics.onEventJournalOverflow();
+        if (eventRing.write(eventBuffer, 0, length)) {
+            return;
         }
+        // BLOCK (ADR 0014): spin briefly so the journaler can drain, then fall back
+        // to dropping. This never blocks consensus; unconditional losslessness is a
+        // deferred follow-up. The dropped event does not affect the state machine.
+        if (journalOverflowPolicy == CoreConfig.JournalOverflowPolicy.BLOCK) {
+            for (int attempt = 0; attempt < JOURNAL_BLOCK_SPIN_LIMIT; attempt++) {
+                Thread.onSpinWait();
+                if (eventRing.write(eventBuffer, 0, length)) {
+                    return;
+                }
+            }
+        }
+        metrics.onEventJournalOverflow();
     }
 
     @Override

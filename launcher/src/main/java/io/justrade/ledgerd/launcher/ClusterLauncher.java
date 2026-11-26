@@ -1,9 +1,15 @@
 package io.justrade.ledgerd.launcher;
 
+import io.aeron.cluster.ClusterControl;
 import io.justrade.ledgerd.config.CoreConfig;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.Locale;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.LockSupport;
+import java.util.function.LongSupplier;
+import org.agrona.concurrent.status.AtomicCounter;
+import org.agrona.concurrent.status.CountersReader;
 
 /**
  * Entry point that starts a single LEDGERD cluster node and blocks until the JVM is
@@ -44,6 +50,12 @@ public final class ClusterLauncher {
             final int capacity =
                     Integer.getInteger("ledgerd.eventJournalCapacity", CoreConfig.DEFAULT_EVENT_JOURNAL_CAPACITY);
             coreConfig = coreConfig.withEventJournal(capacity);
+            // Overflow policy (ADR 0014): DROP (default, best-effort) or BLOCK (spin-drain).
+            final String policy = System.getProperty("ledgerd.journalOverflowPolicy");
+            if (policy != null) {
+                coreConfig = coreConfig.withJournalOverflowPolicy(
+                        CoreConfig.JournalOverflowPolicy.valueOf(policy.trim().toUpperCase(Locale.ROOT)));
+            }
         }
 
         // Transfer-batch capacities (ADR 0012), tunable for high-throughput batches.
@@ -76,10 +88,56 @@ public final class ClusterLauncher {
             Runtime.getRuntime().addShutdownHook(new Thread(metricsServer::close, "ledgerd-metrics-shutdown"));
         }
 
+        // Optional periodic snapshots (H2), enabled with a non-zero interval. Bounds
+        // log growth and keeps node restart and read-replica cold-start fast.
+        startSnapshotScheduler(clusterConfig, node);
+
         // Park the main thread; the service runs on the clustered service agent thread.
         while (!Thread.currentThread().isInterrupted()) {
             LockSupport.parkNanos(1_000_000_000L);
         }
+    }
+
+    private static void startSnapshotScheduler(final ClusterConfig clusterConfig, final ClusterNode node) {
+        final long intervalSeconds = Long.getLong("ledgerd.snapshotIntervalSeconds", 0L);
+        final long intervalCommands = Long.getLong("ledgerd.snapshotIntervalCommands", 0L);
+        if (intervalSeconds <= 0 && intervalCommands <= 0) {
+            return;
+        }
+        try {
+            final CountersReader clusterCounters = ClusterControl.mapCounters(clusterConfig.clusterDir());
+            final AtomicCounter controlToggle = ClusterControl.findControlToggle(clusterCounters, 0);
+            if (controlToggle == null) {
+                System.err.println("[ledgerd] WARN: snapshot scheduler disabled; cluster control toggle not found");
+                return;
+            }
+            final LongSupplier committedCommands = commandCountSupplier(node.countersManager());
+            final SnapshotScheduler scheduler = new SnapshotScheduler(
+                    controlToggle, committedCommands, TimeUnit.SECONDS.toNanos(intervalSeconds), intervalCommands);
+            scheduler.start();
+            Runtime.getRuntime().addShutdownHook(new Thread(scheduler::close, "ledgerd-snapshot-shutdown"));
+        } catch (final RuntimeException e) {
+            System.err.println("[ledgerd] WARN: snapshot scheduler disabled: " + e.getMessage());
+        }
+    }
+
+    private static LongSupplier commandCountSupplier(final CountersReader reader) {
+        final int id = findCounterId(reader, "ledgerd.commands_processed");
+        if (id < 0) {
+            return () -> 0L;
+        }
+        return () -> reader.getCounterValue(id);
+    }
+
+    private static int findCounterId(final CountersReader reader, final String label) {
+        final int maxId = reader.maxCounterId();
+        for (int id = 0; id <= maxId; id++) {
+            if (reader.getCounterState(id) == CountersReader.RECORD_ALLOCATED
+                    && label.equals(reader.getCounterLabel(id))) {
+                return id;
+            }
+        }
+        return -1;
     }
 
     private static String configPath(final String[] args) {

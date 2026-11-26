@@ -10,6 +10,23 @@ import org.agrona.BitUtil;
  */
 public final class CoreConfig {
 
+    /**
+     * How the service reacts when the domain event journal ring is full (ADR 0014).
+     * Neither policy affects the deterministic state machine; they only change
+     * whether a journal event is dropped.
+     */
+    public enum JournalOverflowPolicy {
+        /** Drop the event and increment the overflow counter. Zero hot-path impact. */
+        DROP,
+        /**
+         * Spin briefly to let the journaler drain, then drop as a fail-safe if the
+         * ring is still full. Best-effort completeness at the cost of tail latency
+         * under saturation; it never blocks consensus. Unconditional losslessness
+         * (ingress backpressure) remains a deferred follow-up.
+         */
+        BLOCK
+    }
+
     /** Default number of accounts preallocated in the balance map. */
     public static final int DEFAULT_ACCOUNT_CAPACITY = 1 << 20;
 
@@ -55,6 +72,7 @@ public final class CoreConfig {
     private final int eventJournalCapacity;
     private final int maxBatchSize;
     private final int batchDedupWindow;
+    private final JournalOverflowPolicy journalOverflowPolicy;
 
     private CoreConfig(
             final int accountCapacity,
@@ -65,7 +83,8 @@ public final class CoreConfig {
             final boolean eventJournalEnabled,
             final int eventJournalCapacity,
             final int maxBatchSize,
-            final int batchDedupWindow) {
+            final int batchDedupWindow,
+            final JournalOverflowPolicy journalOverflowPolicy) {
         this.accountCapacity = requirePowerOfTwo(accountCapacity, "accountCapacity");
         this.allowanceOwnerCapacity = requirePowerOfTwo(allowanceOwnerCapacity, "allowanceOwnerCapacity");
         this.delegateCapacity = requirePowerOfTwo(delegateCapacity, "delegateCapacity");
@@ -75,6 +94,7 @@ public final class CoreConfig {
         this.eventJournalCapacity = requirePowerOfTwo(eventJournalCapacity, "eventJournalCapacity");
         this.maxBatchSize = requirePowerOfTwo(maxBatchSize, "maxBatchSize");
         this.batchDedupWindow = requirePowerOfTwo(batchDedupWindow, "batchDedupWindow");
+        this.journalOverflowPolicy = journalOverflowPolicy == null ? JournalOverflowPolicy.DROP : journalOverflowPolicy;
     }
 
     /** Returns a configuration populated with the documented defaults. */
@@ -88,7 +108,8 @@ public final class CoreConfig {
                 false,
                 DEFAULT_EVENT_JOURNAL_CAPACITY,
                 DEFAULT_MAX_BATCH_SIZE,
-                DEFAULT_BATCH_DEDUP_WINDOW);
+                DEFAULT_BATCH_DEDUP_WINDOW,
+                JournalOverflowPolicy.DROP);
     }
 
     /** Returns a configuration with explicit capacities; each must be a power of two. */
@@ -107,7 +128,8 @@ public final class CoreConfig {
                 false,
                 DEFAULT_EVENT_JOURNAL_CAPACITY,
                 DEFAULT_MAX_BATCH_SIZE,
-                DEFAULT_BATCH_DEDUP_WINDOW);
+                DEFAULT_BATCH_DEDUP_WINDOW,
+                JournalOverflowPolicy.DROP);
     }
 
     /**
@@ -124,7 +146,8 @@ public final class CoreConfig {
                 true,
                 capacity,
                 maxBatchSize,
-                batchDedupWindow);
+                batchDedupWindow,
+                journalOverflowPolicy);
     }
 
     /**
@@ -142,7 +165,8 @@ public final class CoreConfig {
                 eventJournalEnabled,
                 eventJournalCapacity,
                 maxBatchSize,
-                batchDedupWindow);
+                batchDedupWindow,
+                journalOverflowPolicy);
     }
 
     /**
@@ -162,7 +186,30 @@ public final class CoreConfig {
                 eventJournalEnabled,
                 eventJournalCapacity,
                 maxBatchSize,
-                batchDedupWindow);
+                batchDedupWindow,
+                journalOverflowPolicy);
+    }
+
+    /**
+     * Returns a copy of this configuration with the event-journal overflow policy
+     * set (ADR 0014). The default is {@link JournalOverflowPolicy#DROP}.
+     */
+    public CoreConfig withJournalOverflowPolicy(final JournalOverflowPolicy policy) {
+        return new CoreConfig(
+                accountCapacity,
+                allowanceOwnerCapacity,
+                delegateCapacity,
+                dedupClientCapacity,
+                dedupWindow,
+                eventJournalEnabled,
+                eventJournalCapacity,
+                maxBatchSize,
+                batchDedupWindow,
+                policy);
+    }
+
+    public JournalOverflowPolicy journalOverflowPolicy() {
+        return journalOverflowPolicy;
     }
 
     public boolean eventJournalEnabled() {

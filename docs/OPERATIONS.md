@@ -190,6 +190,29 @@ Take snapshots during low-load windows. The `onTakeSnapshot` callback runs on th
 `ClusteredServiceAgent` thread; it does not block command processing but does consume agent time
 while streaming records.
 
+### Automatic snapshot scheduling
+
+Instead of triggering every snapshot externally, the launcher can request them on a schedule, which
+bounds consensus log growth and keeps node restart and read-replica cold-start fast. Enable either
+trigger (or both) with a non-zero interval; an unset or zero value disables that trigger.
+
+| Property                          | Default | Purpose                                                        |
+|-----------------------------------|---------|----------------------------------------------------------------|
+| `ledgerd.snapshotIntervalSeconds` | `0`     | Request a snapshot this many seconds after the previous one.   |
+| `ledgerd.snapshotIntervalCommands`| `0`     | Request a snapshot after this many additional committed commands. |
+
+The scheduler runs on every node but only the leader acts on the request, by toggling the cluster
+control counter to `SNAPSHOT`; the consensus module then takes the snapshot deterministically at a
+committed log position, off the single-writer hot path. Choose an interval long enough that snapshot
+streaming (which scales with account count, see CAPACITY-PLANNING.md) does not overlap the next one.
+
+```bash
+# Snapshot every 5 minutes or every 1,000,000 committed commands, whichever comes first.
+./gradlew :launcher:run \
+  -Dledgerd.snapshotIntervalSeconds=300 \
+  -Dledgerd.snapshotIntervalCommands=1000000
+```
+
 ### Snapshot record order
 
 Records are written one at a time into a reusable buffer sized to the largest record (a batch
