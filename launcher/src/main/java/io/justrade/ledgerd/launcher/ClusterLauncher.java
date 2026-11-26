@@ -61,6 +61,11 @@ public final class ClusterLauncher {
                 Integer.getInteger("ledgerd.dedupClientCapacity", CoreConfig.DEFAULT_DEDUP_CLIENT_CAPACITY);
         coreConfig = coreConfig.withCapacities(accountCapacity, allowanceOwnerCapacity, dedupClientCapacity);
 
+        final String batchDedupWarning = coreConfig.batchDedupSizingWarning();
+        if (batchDedupWarning != null) {
+            System.err.println("[ledgerd] WARN: " + batchDedupWarning);
+        }
+
         final ClusterNode node = new ClusterNode(clusterConfig, coreConfig, cleanStart);
         Runtime.getRuntime().addShutdownHook(new Thread(node::close, "ledgerd-shutdown"));
 

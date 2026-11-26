@@ -58,6 +58,35 @@ and `DEDICATED` on 8+ vCPU. Socket buffers must not exceed the OS max
 (`net.core.rmem_max` / `net.core.wmem_max`); the kernel doubles a requested
 socket buffer for bookkeeping, so size the OS max at least 2x the socket buffer.
 
+### Consensus and failover tuning
+
+Leader failure is detected by a follower that sees no leader heartbeat within the
+leader heartbeat timeout; it then runs an election. At Aeron defaults this makes
+observed failover roughly 15-20 s. These `-D` system properties lower that at the
+cost of more false-positive elections under load or GC; an unset property keeps
+the Aeron default untouched.
+
+| Property                           | Purpose                                                                 |
+|------------------------------------|-------------------------------------------------------------------------|
+| `ledgerd.leaderHeartbeatTimeoutNs` | How long a follower waits without a heartbeat before starting an election. Dominant failover-detection knob. |
+| `ledgerd.leaderHeartbeatIntervalNs`| Leader heartbeat send interval. Keep it well below the timeout.          |
+| `ledgerd.electionTimeoutNs`        | Election round timeout.                                                  |
+| `ledgerd.startupCanvassTimeoutNs`  | Startup canvass timeout before the first election.                       |
+
+Safe bounds: keep `leaderHeartbeatIntervalNs` at most a third of
+`leaderHeartbeatTimeoutNs`, and do not set the timeout below a few hundred
+milliseconds on real networks or a busy node pausing for GC will be mistaken for
+a dead leader and trigger a needless election. Lower values are appropriate for
+fault testing (for example Jepsen) where a short nemesis cycle must still allow
+the cluster to make progress.
+
+```bash
+# Faster failover: 2 s heartbeat timeout, 500 ms heartbeat interval.
+./gradlew :launcher:run \
+  -Dledgerd.leaderHeartbeatTimeoutNs=2000000000 \
+  -Dledgerd.leaderHeartbeatIntervalNs=500000000
+```
+
 ---
 
 ## 2. Running a Single Node

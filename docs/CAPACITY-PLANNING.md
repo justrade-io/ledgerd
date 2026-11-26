@@ -97,6 +97,24 @@ with the number of write clients that submit batches, not with accounts:
 `maxBatchSize`; setting it to `maxBatchSize` (for example 4096 x 4096) OOMs a
 small heap (`OPERATIONS.md`).
 
+#### Worked examples
+
+Footprint per batch client is `batchDedupWindow * maxBatchSize * 10 B`. Multiply
+by the number of clients that submit batches for the total.
+
+| Deployment | maxBatchSize | batchDedupWindow | Per client | 32 batch clients |
+|------------|--------------|------------------|------------|------------------|
+| Small (display-style batches) | 256 | 256 | ~0.6 MB | ~20 MB |
+| Medium (deploy default) | 4096 | 1024 | ~40 MB | ~1.3 GB |
+| Large (deep in-flight window) | 1024 | 4096 | ~40 MB | ~1.3 GB |
+| Misconfigured (window = batch size) | 4096 | 4096 | ~160 MB | ~5 GB |
+
+`CoreConfig.batchDedupSizingWarning()` returns a non-null message, and the
+launcher prints it to stderr at startup, once the per-client footprint exceeds
+`CoreConfig.BATCH_DEDUP_WARN_BYTES_PER_CLIENT` (64 MiB). Treat that warning as a
+prompt to re-check `batchDedupWindow` against `maxBatchInFlight`, not as a hard
+failure.
+
 ## 3. CPU model
 
 The write hot path is single-writer: one `ClusteredServiceAgent` thread runs the

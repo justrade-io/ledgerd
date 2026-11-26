@@ -51,6 +51,22 @@ public final class ClusterNode implements AutoCloseable {
     private static final int DEFAULT_SOCKET_RCVBUF_LENGTH = 16 * 1024 * 1024;
 
     /**
+     * System property overriding the leader heartbeat timeout (ns): how long a
+     * follower waits without a heartbeat before starting an election. Lowering it
+     * shortens failover detection at the cost of more false-positive elections.
+     */
+    private static final String LEADER_HEARTBEAT_TIMEOUT_PROP = "ledgerd.leaderHeartbeatTimeoutNs";
+
+    /** System property overriding the leader heartbeat send interval (ns). */
+    private static final String LEADER_HEARTBEAT_INTERVAL_PROP = "ledgerd.leaderHeartbeatIntervalNs";
+
+    /** System property overriding the election round timeout (ns). */
+    private static final String ELECTION_TIMEOUT_PROP = "ledgerd.electionTimeoutNs";
+
+    /** System property overriding the startup canvass timeout (ns). */
+    private static final String STARTUP_CANVASS_TIMEOUT_PROP = "ledgerd.startupCanvassTimeoutNs";
+
+    /**
      * Creates the {@link ClusteredService} hosted by this node, given the core
      * configuration and the node's mirrored metrics. Allows alternative services
      * (for example the read-side projection) to reuse this bootstrap.
@@ -132,6 +148,7 @@ public final class ClusterNode implements AutoCloseable {
                 .replicationChannel(config.replicationChannel())
                 .archiveContext(archiveClientContext.clone())
                 .deleteDirOnStart(cleanStart);
+        applyConsensusTimeouts(consensusModuleContext);
 
         final ClusteredService service = serviceFactory.create(coreConfig, metrics);
         final ClusteredServiceContainer.Context serviceContext = new ClusteredServiceContainer.Context()
@@ -185,6 +202,27 @@ public final class ClusterNode implements AutoCloseable {
             throw new IllegalArgumentException(
                     THREADING_MODE_PROP + " must be one of INVOKER, SHARED, SHARED_NETWORK, DEDICATED, was: " + value,
                     e);
+        }
+    }
+
+    // Applies any consensus timeout overrides supplied as system properties; an
+    // unset property leaves the Aeron default in place. Startup-only (cold path).
+    static void applyConsensusTimeouts(final ConsensusModule.Context context) {
+        final Long leaderHeartbeatTimeoutNs = Long.getLong(LEADER_HEARTBEAT_TIMEOUT_PROP);
+        if (leaderHeartbeatTimeoutNs != null) {
+            context.leaderHeartbeatTimeoutNs(leaderHeartbeatTimeoutNs);
+        }
+        final Long leaderHeartbeatIntervalNs = Long.getLong(LEADER_HEARTBEAT_INTERVAL_PROP);
+        if (leaderHeartbeatIntervalNs != null) {
+            context.leaderHeartbeatIntervalNs(leaderHeartbeatIntervalNs);
+        }
+        final Long electionTimeoutNs = Long.getLong(ELECTION_TIMEOUT_PROP);
+        if (electionTimeoutNs != null) {
+            context.electionTimeoutNs(electionTimeoutNs);
+        }
+        final Long startupCanvassTimeoutNs = Long.getLong(STARTUP_CANVASS_TIMEOUT_PROP);
+        if (startupCanvassTimeoutNs != null) {
+            context.startupCanvassTimeoutNs(startupCanvassTimeoutNs);
         }
     }
 

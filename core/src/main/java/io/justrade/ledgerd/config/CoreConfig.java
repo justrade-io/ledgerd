@@ -34,6 +34,18 @@ public final class CoreConfig {
     /** Default batch dedup window size (most recent batches retained per client). */
     public static final int DEFAULT_BATCH_DEDUP_WINDOW = 1 << 10;
 
+    /**
+     * Bytes a batch dedup ring spends per leg slot: one status byte, one
+     * has-balance byte, and an eight-byte result balance (see {@code BatchDedupRing}).
+     */
+    public static final int BATCH_DEDUP_BYTES_PER_LEG = 10;
+
+    /**
+     * Per-client batch dedup footprint above which {@link #batchDedupSizingWarning()}
+     * flags a likely misconfiguration (64 MiB). Guidance, not a hard limit.
+     */
+    public static final long BATCH_DEDUP_WARN_BYTES_PER_CLIENT = 64L << 20;
+
     private final int accountCapacity;
     private final int allowanceOwnerCapacity;
     private final int delegateCapacity;
@@ -187,6 +199,32 @@ public final class CoreConfig {
 
     public int batchDedupWindow() {
         return batchDedupWindow;
+    }
+
+    /**
+     * Estimated memory a single client's batch dedup ring occupies:
+     * {@code batchDedupWindow * maxBatchSize * }{@link #BATCH_DEDUP_BYTES_PER_LEG}.
+     * One ring is allocated per client that submits batches.
+     */
+    public long batchDedupBytesPerClient() {
+        return (long) batchDedupWindow * maxBatchSize * BATCH_DEDUP_BYTES_PER_LEG;
+    }
+
+    /**
+     * Returns a sizing warning when the per-client batch dedup footprint exceeds
+     * {@link #BATCH_DEDUP_WARN_BYTES_PER_CLIENT}, or {@code null} when it is within
+     * budget. The dedup window only needs to cover the batches a client keeps
+     * in flight, never {@code maxBatchSize}; equating the two multiplies the
+     * per-client footprint and can exhaust a small heap (docs/CAPACITY-PLANNING.md).
+     */
+    public String batchDedupSizingWarning() {
+        final long bytes = batchDedupBytesPerClient();
+        if (bytes <= BATCH_DEDUP_WARN_BYTES_PER_CLIENT) {
+            return null;
+        }
+        return "batch dedup footprint is ~" + (bytes >> 20) + " MiB per client (batchDedupWindow="
+                + batchDedupWindow + ", maxBatchSize=" + maxBatchSize + "); size batchDedupWindow to the"
+                + " number of batches a client keeps in flight, not maxBatchSize, to avoid exhausting the heap";
     }
 
     private static int requirePowerOfTwo(final int value, final String name) {
