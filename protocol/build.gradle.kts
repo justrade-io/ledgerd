@@ -10,6 +10,9 @@ dependencies {
     sbeTool(libs.sbe.tool)
     // Generated SBE codecs require Agrona at compile and runtime.
     api(libs.agrona)
+
+    testImplementation(libs.junit.jupiter)
+    testRuntimeOnly(libs.junit.platform.launcher)
 }
 
 val generateSbe by tasks.registering(JavaExec::class) {
