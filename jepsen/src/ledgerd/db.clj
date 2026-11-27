@@ -84,6 +84,14 @@
                  "curl -sf http://localhost:" port "/healthz >/dev/null 2>&1 && exit 0; "
                  "sleep 1; done; exit 1"))))
 
+(defn start-recover!
+  "Restarts a node so it recovers from its own archive and snapshot, then waits
+  for it to report healthy. Runs in the target node's SSH context (for example
+  inside a nemesis c/on-nodes block)."
+  [test node]
+  (start-node! test node false)
+  (await-healthz test node))
+
 (defn db
   "Returns a Jepsen DB that installs and runs one LEDGERD node per test node, and
   supports kill/restart and pause/resume for the combined nemesis."

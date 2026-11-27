@@ -1,0 +1,60 @@
+name: Jepsen (nightly)
+
+# Distributed-systems verification for LEDGERD. This workflow runs off the normal
+# PR gate. On a schedule and on demand it builds the artifacts the harness needs
+# and compiles the Jepsen harness against the real client jars, which continuously
+# validates the Clojure harness without provisioning a cluster.
+#
+# A full fault run needs a set of DB nodes reachable over SSH with root (for
+# process and network control) and cannot run on a stock GitHub-hosted runner.
+# Point the workflow_dispatch "nodes" input at provisioned hosts and run on a
+# self-hosted runner, or run jepsen/ manually per its README, to execute the
+# actual partition, kill, pause, clock, and corruption tests.
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+    inputs:
+      nemesis:
+        description: "Fault package (none, partition, kill, pause, clock, corrupt, all)"
+        default: "partition"
+      nodes:
+        description: "Comma-separated DB hostnames for a full run (blank = compile only)"
+        default: ""
+
+jobs:
+  harness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Build LEDGERD artifacts
+        run: ./gradlew :launcher:distTar :write-client:jar :protocol:jar
+
+      - name: Install Leiningen
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/technomancy/leiningen/stable/bin/lein \
+            -o "${HOME}/.local/bin/lein" --create-dirs
+          chmod +x "${HOME}/.local/bin/lein"
+          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+
+      - name: Compile Jepsen harness
+        working-directory: jepsen
+        run: lein check
+
+      - name: Upload harness artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ledgerd-jepsen-artifacts
+          path: |
+            launcher/build/distributions/launcher.tar
+            write-client/build/libs/write-client.jar
+            protocol/build/libs/protocol.jar
+          retention-days: 7

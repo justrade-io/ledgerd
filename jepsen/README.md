@@ -53,9 +53,16 @@ lein run test \
   --nemesis partition
 ```
 
-`--nemesis` accepts `none`, `partition`, `kill`, `pause`, or `all`. Crash and
-pause faults require root on the DB nodes (to signal the process); partitions
-additionally require `iptables`.
+`--nemesis` accepts `none`, `partition`, `kill`, `pause`, `clock`, `corrupt`, or
+`all`. Crash, pause, and clock faults require root on the DB nodes; partitions
+additionally require `iptables`; `corrupt` flips bytes in a node's newest
+snapshot recording and expects LEDGERD to reject it by checksum on recovery.
+
+A nightly GitHub Actions workflow (`.github/workflows/jepsen-nightly.yml`) builds
+the artifacts and compiles this harness against the real client jars on a
+schedule, so the Clojure harness stays valid. The full fault run needs
+provisioned DB nodes and is triggered manually (workflow_dispatch) or run from
+here per the steps above.
 
 Results, histories, and the checker report are written under `store/`. Launch
 the built-in web viewer with:

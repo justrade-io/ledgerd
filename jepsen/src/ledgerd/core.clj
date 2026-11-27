@@ -4,8 +4,7 @@
   Workers credit a single account through the real cluster while a nemesis may
   inject faults, and a fault-tolerant conservation checker confirms exactly-once
   value conservation. J1 ran with no nemesis; J2 added network partitions; J3
-  adds process crashes (kill then recover) and pauses. Clock and disk nemeses
-  arrive in J4."
+  added process crashes and pauses; J4 adds clock skew and snapshot corruption."
   (:gen-class)
   (:require [jepsen [checker :as checker]
                     [cli :as cli]
@@ -51,7 +50,7 @@
 
 (def cli-opts
   "Extra CLI options for the LEDGERD test."
-  [[nil "--nemesis NAME" "Fault package: none, partition, kill, pause, or all."
+  [[nil "--nemesis NAME" "Fault package: none, partition, kill, pause, clock, corrupt, or all."
     :default "none"]
    [nil "--nemesis-interval SECONDS" "Seconds between nemesis fault operations."
     :default 15
