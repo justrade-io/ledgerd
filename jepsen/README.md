@@ -5,7 +5,9 @@ This is a standalone Leiningen project; it is not part of the Gradle build.
 
 Milestone 3 / Sprint 5 (J1) is a no-nemesis smoke test: Jepsen workers credit a
 single account through the real Aeron cluster and a conservation checker confirms
-the history is well-formed and value is conserved. Later sprints add partition,
+the history is well-formed and value is conserved. Sprint 6 (J2) adds network
+partitions: a partition that splits the cluster must force a leader change
+without losing an acknowledged command or applying one twice. Later sprints add
 crash, pause, clock, and disk nemeses on top of this harness (see
 `docs/ROADMAP.md`).
 
@@ -47,8 +49,10 @@ lein run test \
   --ssh-private-key ~/.ssh/id_rsa \
   --concurrency 10 \
   --time-limit 60 \
-  --nemesis none
+  --nemesis partition-halves
 ```
+
+`--nemesis` accepts `none`, `partition-halves`, or `partition-ring`.
 
 Results, histories, and the checker report are written under `store/`. Launch
 the built-in web viewer with:

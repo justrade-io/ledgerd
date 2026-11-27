@@ -1,10 +1,11 @@
 (ns ledgerd.core
   "Jepsen test entry point for LEDGERD.
 
-  Sprint 5 (J1) runs a no-nemesis smoke test: Jepsen workers credit a single
-  account through the real cluster and a conservation checker confirms the
-  history is well-formed and value is conserved. Later sprints add partition,
-  crash, pause, clock, and disk nemeses on top of this harness."
+  Workers credit a single account through the real cluster while a nemesis may
+  inject faults, and a fault-tolerant conservation checker confirms exactly-once
+  value conservation. Sprint 5 (J1) ran with no nemesis; Sprint 6 (J2) adds
+  network partitions. Crash, pause, clock, and disk nemeses arrive in later
+  sprints."
   (:gen-class)
   (:require [jepsen [checker :as checker]
                     [cli :as cli]
@@ -25,7 +26,7 @@
   (let [pkg (nem/package opts)]
     (merge tests/noop-test
            opts
-           {:name      "ledgerd"
+           {:name      (str "ledgerd-" (:nemesis opts "none"))
             :os        debian/os
             :db        (db/db)
             :client    (client/client)
@@ -34,14 +35,22 @@
                          {:conservation (lc/conservation-checker)
                           :stats        (checker/stats)
                           :perf         (checker/perf)})
-            :generator (gen/clients
+            :generator (gen/phases
+                         ;; Interleave client credits with nemesis start/stop ops
+                         ;; for the run duration.
                          (gen/time-limit
                            (:time-limit opts 60)
-                           (gen/stagger 1/50 credit-op)))})))
+                           (gen/nemesis
+                             (:generator pkg)
+                             (gen/stagger 1/50 credit-op)))
+                         ;; Heal any outstanding fault so the cluster settles and
+                         ;; a final credit can observe the converged balance.
+                         (gen/nemesis (:final-generator pkg))
+                         (gen/clients (gen/once credit-op)))})))
 
 (def cli-opts
   "Extra CLI options for the LEDGERD test."
-  [[nil "--nemesis NAME" "Fault package to run; J1 supports only 'none'."
+  [[nil "--nemesis NAME" "Fault package: none, partition-halves, or partition-ring."
     :default "none"]])
 
 (defn -main [& args]
