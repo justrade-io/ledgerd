@@ -7,9 +7,10 @@ Milestone 3 / Sprint 5 (J1) is a no-nemesis smoke test: Jepsen workers credit a
 single account through the real Aeron cluster and a conservation checker confirms
 the history is well-formed and value is conserved. Sprint 6 (J2) adds network
 partitions: a partition that splits the cluster must force a leader change
-without losing an acknowledged command or applying one twice. Later sprints add
-crash, pause, clock, and disk nemeses on top of this harness (see
-`docs/ROADMAP.md`).
+without losing an acknowledged command or applying one twice. Sprint 7 (J3) adds
+process crashes (SIGKILL then restart, recovering from the archive and snapshot)
+and pauses (SIGSTOP/SIGCONT, simulating a long GC). Clock and disk nemeses arrive
+in J4 (see `docs/ROADMAP.md`).
 
 ## How it works
 
@@ -49,10 +50,12 @@ lein run test \
   --ssh-private-key ~/.ssh/id_rsa \
   --concurrency 10 \
   --time-limit 60 \
-  --nemesis partition-halves
+  --nemesis partition
 ```
 
-`--nemesis` accepts `none`, `partition-halves`, or `partition-ring`.
+`--nemesis` accepts `none`, `partition`, `kill`, `pause`, or `all`. Crash and
+pause faults require root on the DB nodes (to signal the process); partitions
+additionally require `iptables`.
 
 Results, histories, and the checker report are written under `store/`. Launch
 the built-in web viewer with:
