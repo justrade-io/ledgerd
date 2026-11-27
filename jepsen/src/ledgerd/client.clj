@@ -38,7 +38,8 @@
 
 (defn- await-result
   "Drives the client's poll loop until the command resolves (result or expiry)
-  or the deadline passes, returning :ok / :fail / :info enriched op data."
+  or the deadline passes, returning :ok / :fail / :info enriched op data. Every
+  outcome carries {:amount ...} so the checker sees a uniform value shape."
   [^WriteClient wc results expired id-lo amount op timeout-ms]
   (let [deadline (+ (System/currentTimeMillis) timeout-ms)]
     (loop []
@@ -48,16 +49,16 @@
         (let [{:keys [status balance]} (get @results id-lo)]
           (if (= StatusCode/SUCCESS status)
             (assoc op :type :ok :value {:amount amount :balance balance})
-            (assoc op :type :fail :error (str status))))
+            (assoc op :type :fail :value {:amount amount} :error (str status))))
 
         (contains? @expired id-lo)
-        (assoc op :type :info :error :timeout)
+        (assoc op :type :info :value {:amount amount} :error :timeout)
 
         (< (System/currentTimeMillis) deadline)
         (recur)
 
         :else
-        (assoc op :type :info :error :timeout)))))
+        (assoc op :type :info :value {:amount amount} :error :timeout)))))
 
 (defrecord LedgerdClient [^WriteClient wc results expired op-timeout-ms]
   client/Client

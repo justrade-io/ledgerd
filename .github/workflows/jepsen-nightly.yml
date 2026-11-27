@@ -49,6 +49,10 @@ jobs:
         working-directory: jepsen
         run: lein check
 
+      - name: Test checker logic
+        working-directory: jepsen
+        run: lein test
+
       - name: Upload harness artifacts
         uses: actions/upload-artifact@v4
         with:

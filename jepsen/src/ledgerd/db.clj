@@ -39,7 +39,7 @@
   (->> nodes (map-indexed member-entry) (str/join "|")))
 
 (defn node-id [test node]
-  (.indexOf (vec (:nodes test)) node))
+  (.indexOf ^java.util.List (vec (:nodes test)) node))
 
 (defn- metrics-port [test node]
   (+ metrics-base (node-id test node)))
